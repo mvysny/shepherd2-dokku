@@ -183,11 +183,44 @@ repo is software or a guide. See `Q_descriptor`.
 | `F_app_logs` | Per-app runtime logs | Web Admin / `shepherd-cli logs` | `dokku logs <app> -t -p web`, plus optional Vector shipping | ✅ |
 | `F_app_stats` | Per-app CPU / memory | Web Admin / `shepherd-cli stats`, from `docker` | Dokku won't do monitoring by design — but apps are plain containers, so `docker stats` / `lazydocker` / `ctop`, zero code | ✅ |
 | `F_admin_iface` | Create, deploy, restart, inspect | Web Admin + `shepherd-cli` | Dokku's CLI over SSH; `*:report --format json` makes it a structured interface, not screen-scraping | ✅ |
-| `F_web_admin` | A **browser** UI | shepherd-web (Vaadin), with a user registry, Google SSO and an email-domain allowlist | Dokku Pro (paid, proprietary); third-party UIs are a graveyard with one survivor | ✂️ |
+| `F_web_admin` | A **browser** UI | shepherd-web (Vaadin) | Dokku Pro (paid, proprietary); third-party UIs are a graveyard with one survivor | ✂️ |
+| `F_multi_user` ⁿᵉʷ | **An admin adds users; each user sees, creates, edits and deletes only their own projects** | `UserRoles.USER`/`ADMIN`; the project list filters on `owner.email` unless you're admin | **Nothing in core** — an authorised SSH key may do anything to any app. Buildable on the `user-auth` trigger; `dokku-acl` is the stale community attempt | 🕳️ |
+| `F_user_login` ⁿᵉʷ | **Log in with a password or Google SSO**, SSO self-provisioning a user whose email ends with an allowed domain | `webadmin-users.json` + hashed passwords; `googleSSOClientId`, `ssoOnlyAllowEmailsEndingWith` | **Nothing** — no password, no SSO, no OIDC, and no HTTP API to attach one to. SSH keys are the sole authentication | ✂️ |
 
-`F_web_admin` is decided in principle by `D_retire_shepherd_java` — but that entry's `Status:` says the
-*shape* is still open, and dropping it takes Google SSO and the multi-user registry with it. Access
-control becomes SSH keys. See `Q_web_admin`.
+`F_web_admin` is decided in principle by `D_retire_shepherd_java`, but that entry's `Status:` says the
+*shape* is still open — and the two rows under it are what dropping the UI actually costs, which is why
+they now have slugs of their own rather than living inside `F_web_admin`'s parenthesis. See `Q_web_admin`
+and `Q_multi_user`.
+
+**`D_retire_shepherd_java` says "access control becomes SSH keys". That understates it** — SSH keys are
+not access control. In core Dokku the *only* privilege distinction is the substring `admin` in a key
+name (which grants adding further keys); every other key may run every command against every app,
+`apps:destroy` on someone else's project included. Dokku's maintainer states this is by design: the
+product assumes a personal or fully-trusted-team box, and anyone with real SSH access bypasses added
+restrictions anyway. So today a regular Shepherd user gets a scoped view of their own projects; the
+naive Dokku successor gives every keyholder the whole box. `RESEARCH.md` → *Users and access control*
+has the detail.
+
+`F_user_login` is proposed as a straight drop rather than a gap, because nothing short of Dokku Pro
+(paid, and its reverse-proxy auth) could ever provide it and there is no browser UI left to log in to.
+`F_multi_user` is a real fork, with four positions:
+
+1. **Single-operator box.** Only the operator holds a key. User management evaporates; `F_project_owner`
+   becomes a contact field in the descriptor, not an ACL. Cheapest, and the honest reading of "no web
+   admin". The question this turns on is simply *who else gets a key*.
+2. **Our own `user-auth` hook.** If `Q_descriptor` goes declarative, the descriptor already names an
+   owner, so the check is "is `$SSH_NAME` the `owner` of `$APP`" — a small Bash hook, no third-party
+   dependency, and squarely "the answer is a wrapper script". Buys per-user push / restart / logs;
+   still no self-service and no SSO, and we would own a security-critical hook.
+3. **`dokku-acl`.** More features than we'd write, but: last commit 2024-01, written against 0.32 (six
+   minors behind our pin), self-described as not security-audited — and that last commit was *adapting
+   to a trigger rename*, i.e. the failure mode when Dokku moves is that the hook stops being invoked at
+   all and enforcement silently disappears. That is the `D_retire_shepherd_java`
+   death-rate argument again, except in the authorization path. It also does not give Shepherd's model
+   without glue: ACLs cannot be edited over SSH, creating an app does not add the creator to its ACL,
+   and `apps:create` is all-users-or-none.
+4. **Dokku Pro.** Teams, `users:create`, reverse-proxy SSO — the only real mirror of Shepherd, and
+   already rejected in `D_retire_shepherd_java` for being paid and proprietary.
 
 ## F. Host operations
 
@@ -202,7 +235,10 @@ control becomes SSH keys. See `Q_web_admin`.
 
 Say so if any of these is wrong:
 
-- **`F_web_admin`** — the browser UI, its user registry, Google SSO and the email-domain allowlist.
+- **`F_web_admin`** — the browser UI.
+- **`F_user_login`** — password and Google SSO login, and the email-domain allowlist. Nothing outside
+  Dokku Pro can provide it, and with the UI gone there is nothing to log in to. (`F_multi_user` is *not*
+  on this list — it is an open fork, see `Q_multi_user`.)
 - **`F_reserved_ids`** — there is no admin plane left to collide with.
 - **The naming contract** — `shepherd_PROJECTID` / `shepherd/PROJECTID` / `PROJECTID.shepherd`. It
   existed because there was no scheduler or registry, so the name *was* the lookup. Dokku owns naming.
@@ -233,6 +269,12 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   converger emits.
 - **`Q_isolation`** — keep one Docker network per app, or accept Dokku's shared default bridge? Cheaper
   than before (no network-sharing gotcha) but more manual, and the admin plane it protected is gone.
+- **`Q_multi_user`** — is Shepherd2 a single-operator box, or does it keep per-user project ownership?
+  Really the question *who else gets an SSH key*, because in core Dokku a key is unrestricted: there is
+  no ownership to scope it with. Answering "only me" deletes `F_multi_user` and `F_user_login` outright
+  and makes `F_project_owner` a contact field; answering "the team" costs a `user-auth` hook of our own
+  (cheap only if `Q_descriptor` goes declarative) or an unmaintained plugin in the authorization path.
+  *(Section E.)*
 - **`Q_web_admin`** — confirm the drop, or is "no browser UI at all" the thing that makes this not worth
   doing? A middle option exists and is not obviously silly: a read-only status page generated by cron
   from `dokku *:report --format json`, served as static files. No auth to get wrong, no framework, and

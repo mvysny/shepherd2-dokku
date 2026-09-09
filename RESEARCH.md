@@ -652,17 +652,8 @@ dokku builds:output myapp "$(dokku builds:list myapp --status failed --format js
 ## Admin interface
 
 - **The CLI is the primary and only official interface, and it is remote over SSH.** Users authenticate
-  as the `dokku` system user; `ssh dokku@host <command>` is the sanctioned remote form. **[docs]**
-
-  ```bash
-  dokku ssh-keys:add <name> [/path/to/key]     # or by pipe
-  dokku ssh-keys:list [--format text|json]
-  dokku ssh-keys:remove <name>|--fingerprint <fp>
-  cat ~/.ssh/id_rsa.pub | ssh root@dokku.me dokku ssh-keys:add KEY_NAME
-  ```
-
-  **A key name containing `admin` grants the right to add further keys remotely.** Keys are stored with
-  `no-agent-forwarding,no-user-rc,no-X11-forwarding,no-port-forwarding`. **[docs]**
+  as the `dokku` system user by SSH public key; `ssh dokku@host <command>` is the sanctioned remote
+  form. Who may run what is *Users and access control* below. **[docs]**
 - **There is no HTTP API.** **[docs, by absence]**
 - **Reports are machine-readable**, which makes command-and-parse a structured interface rather than
   screen-scraping: `--format json` on `*:report`, `apps:list`, `network:list`, `ps:scale`; and
@@ -675,6 +666,84 @@ dokku builds:output myapp "$(dokku builds:list myapp --status failed --format js
   2026-09-03) is the one live option and is single-maintainer; `ledokku` (642★, MIT — and the one Dokku
   itself endorsed in 2021) died 2023-10, `cywio/atlas` 2022-01, `HarborJS` 2018-05. Pruvon advertises
   AGPLv3 but no public repo was locatable on 2026-09-09. **[repo metadata]**
+
+## Users and access control
+
+The one-line version: **an SSH key is the whole identity model, and every key is effectively root over
+every app.** There is no user registry, no password, no OAuth, and nothing to log in *to*.
+
+- **A "user" is a named public key** in `~dokku/.ssh/authorized_keys`. The key name reaches plugin hooks
+  as `$NAME` / `$SSH_NAME`; the system user is always `dokku`. **[docs]**
+
+  ```bash
+  dokku ssh-keys:add <name> [/path/to/key]     # or by pipe
+  dokku ssh-keys:list [--format text|json]
+  dokku ssh-keys:remove <name>|--fingerprint <fp>
+  cat ~/.ssh/id_rsa.pub | ssh root@dokku.me dokku ssh-keys:add KEY_NAME
+  ```
+
+  Keys are stored with `no-agent-forwarding,no-user-rc,no-X11-forwarding,no-port-forwarding`. **[docs]**
+- **The only privilege distinction in core is the substring `admin` in a key name**, which grants the
+  right to add further keys remotely. **[docs]**
+- **There is no app ownership and no per-user authorization.** Any authorised key may run any command
+  against any app, `apps:destroy` on someone else's project included. **[docs, by absence]** The
+  maintainer's stated position is that this is by design: Dokku assumes a personal or fully-trusted-team
+  box, granular team access "is not part of Dokku's core offering", and anyone with real SSH access to
+  the host bypasses restrictions anyway. **[docs]** (discussion #4927)
+- **No password, no SSO, no OIDC**, in any form — a consequence of there being no HTTP API to attach a
+  provider to. **[docs, by absence]**
+- **The extension point is the `user-auth` plugin trigger**, called with `$SSH_USER $SSH_NAME $COMMAND
+  $ARGS`; a non-zero exit denies the command. `user-auth-app` is the per-app variant. The docs
+  recommend `user-auth` over `git-pre-pull` for authentication because it also covers
+  `git-upload-archive`. **[docs]** This is what any multi-user story here has to be built on.
+
+### `dokku-acl` — the community multi-tenancy plugin
+
+[dokku-acl](https://github.com/dokku-community/dokku-acl) (MIT, 66★) implements per-app and per-service
+ACLs on the `user-auth` trigger. It is the only open-source answer, and it is **stale**: last commit
+**2024-01-16**, README still claiming "dokku 0.32.0+, docker 1.8.x", and its own README says it *"has not
+been extensively audited for security"*. The staleness is not cosmetic — that final commit is
+`fix: adapt to new trigger naming`, so a Dokku trigger rename makes it stop enforcing. **[src]**
+
+```bash
+acl:add <app> <user>      acl:remove <app> <user>      acl:list <app>      acl:allowed <user>
+acl:add-service <type> <service> <user>                # …and the service-scoped equivalents
+```
+
+Global knobs live in `~dokku/.dokkurc/acl`: `DOKKU_SUPER_USER` (always allowed; when set, nobody else
+may push to an app with an empty ACL), `DOKKU_ACL_ALLOW_COMMAND_LINE`, and four command whitelists —
+`DOKKU_ACL_USER_COMMANDS` (any user, any time), `DOKKU_ACL_PER_APP_COMMANDS`,
+`DOKKU_ACL_PER_SERVICE_COMMANDS`, `DOKKU_ACL_LINK_COMMANDS`. With none set, the plugin is inert and all
+users can run everything. **[src]**
+
+Four behaviours matter more than the command list, because they are what a Shepherd-shaped model would
+run into: **[src]**
+
+1. **ACLs cannot be edited over SSH.** `fn-acl-check-app` fails with *"You can only modify ACL using
+   local dokku command on target host"* whenever `$NAME` is set. Every grant is the operator, on the box.
+2. **Creating an app does not add the creator to its ACL.** There is no auto-ownership hook; a
+   user-created app is owned by nobody until someone runs `acl:add` locally.
+3. **`apps:create` takes no app argument**, so it can only sit in `DOKKU_ACL_USER_COMMANDS` — all users
+   or none, with no per-user scope or quota. `apps:destroy` does take an app, so per-app delete works.
+4. **Repos are readable by default.** Any user can `git clone` any app unless `git-upload-pack` and
+   `git-upload-archive` are added to the per-app whitelist.
+
+### Dokku Pro
+
+The paid product is where the team model lives, and it is the only thing in the Dokku world resembling a
+user registry with logins: **[docs]**
+
+- **Teams** grant members a whitelisted set of commands against a set of apps (`*` allowed) and
+  services; **Admins** is a special team with full access; **Owners** administer membership without
+  inheriting it. Nothing is permitted until whitelisted, and some commands are admin-only.
+- `users:create <username> [password]` — with no password, a reset URL is printed for the user to set
+  their own. Users are automatically mapped to the matching key from `ssh-keys:add`.
+- **Reverse-proxy authentication since Pro 1.4.0**: a trusted identity-aware proxy (oauth2-proxy,
+  Tailscale Serve) sets a configured header naming the user and Pro issues a session with no login form.
+  This is the only route to Google SSO anywhere in the Dokku ecosystem. Fails closed; must be scoped to
+  trusted proxies.
+- Pricing seen 2026-09-09: **$849 lifetime**, 1 production + 2 pre-production servers. **[unverified]**
+  (vendor marketing, not read off an invoice)
 
 ## What Dokku does *not* do
 
@@ -693,6 +762,8 @@ The honest gap list, for the feature discussion:
 | **A single declarative project descriptor** | Project state is spread over `apps`/`config`/`resource`/`domains`/`ports`/`network`/`git`/`builder-dockerfile` properties. |
 | **Open-source web UI** | Pro is paid; third-party is a graveyard with one survivor. |
 | **HTTP API** | None. SSH is the transport. |
+| **App ownership / per-user access** | An authorised key may do anything to any app. Buildable on the `user-auth` trigger; `dokku-acl` is the stale community attempt, teams are a Pro feature. |
+| **Any login that is not an SSH key** | No password, no SSO, no OIDC. Pro's reverse-proxy auth is the only door. |
 | **Graceful "safe to reboot"** | No equivalent of shepherd-cli's `shutdown`. |
 | **Per-project git credentials** | `git:auth` is per host, not per app. |
 
@@ -744,6 +815,10 @@ Dokku documentation (dokku.com, read 2026-09-09):
 [Build tracking](https://dokku.com/docs/advanced-usage/builds/) ·
 [Event logs](https://dokku.com/docs/advanced-usage/event-logs/) ·
 [User management / ssh-keys](https://dokku.com/docs/deployment/user-management/) ·
+[Plugin triggers](https://dokku.com/docs/development/plugin-triggers/) (`user-auth`, `user-auth-app`) ·
+[Pro: team management](https://pro.dokku.com/docs/features/team-management/) ·
+[Pro: user management](https://pro.dokku.com/docs/features/user-management/) ·
+[Pro 1.4.0 — reverse-proxy auth](https://dokku.com/blog/2026/pro-release-1.4.0/) ·
 [SSL configuration](http://dokku.viewdocs.io/dokku/configuration/ssl/) ·
 [Dokku Pro](https://github.com/dokku/dokku/blob/master/docs/enterprise/pro.md) ·
 [0.38.0 release notes](https://dokku.com/blog/2026/dokku-0.38.0/).
@@ -756,6 +831,9 @@ Plugins: [dokku-letsencrypt](https://github.com/dokku/dokku-letsencrypt) (and
 Gaps and third parties: [deploy history — discussion #5114](https://github.com/dokku/dokku/discussions/5114),
 **superseded by the `builds` plugin in 0.38.0 except for its git-SHA half** ·
 [monitoring stance — discussion #5681](https://github.com/dokku/dokku/discussions/5681) ·
+[security model / multi-tenancy — discussion #4927](https://github.com/dokku/dokku/discussions/4927) ·
+[dokku-acl](https://github.com/dokku-community/dokku-acl) (`README.md`, `user-auth` and
+`internal-functions` read on 2026-09-09; repo metadata for the last-commit date) ·
 [wharf](https://github.com/palfrey/wharf) · [ledokku](https://github.com/ledokku/ledokku) ·
 [lazydocker](https://github.com/jesseduffield/lazydocker) · [ctop](https://github.com/bcicen/ctop).
 

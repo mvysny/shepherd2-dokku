@@ -159,7 +159,11 @@ box.
 - **No browser UI at all**, unless a later decision reverses this. Administration is `ssh dokku@host …`
   and whatever local scripts this repo grows.
 - **Google SSO and the multi-user registry go away.** Access control becomes SSH keys
-  (`dokku ssh-keys:add`, where a key name containing `admin` is privileged).
+  (`dokku ssh-keys:add`, where a key name containing `admin` is privileged) — and that is *less* than it
+  sounds: core Dokku has no app ownership, so every authorised key may run every command against every
+  app. Per-user scoping would have to be built on the `user-auth` trigger. See *Users and access
+  control* in `RESEARCH.md`, and `F_multi_user` / `Q_multi_user` in `ideas/features-to-preserve.md` for
+  whether we want it at all.
 - **Five behaviours lose their only home** and must each be re-provided, re-scoped or consciously
   dropped: the project descriptor, the box-wide memory quota, reserved ids, the smart-update logic, and
   the graceful "safe to reboot" wait. They are itemised as `F_` entries in

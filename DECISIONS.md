@@ -101,9 +101,13 @@ of why the verdict landed on Dokku:
 - **The naming contract is deleted, not ported.** `shepherd_PROJECTID` / `shepherd/PROJECTID` /
   `PROJECTID.shepherd` existed because there was no scheduler or registry, so the name *was* how a
   container was found again. Dokku owns naming now. Do not reintroduce a naming contract.
-- **Jenkins goes, and with it the build history.** Dokku tracks no deploy history and no retained build
-  logs (`RESEARCH.md`, *Observability*). The per-project build list and build log that the Web Admin
-  shows today have no upstream counterpart.
+- **Jenkins goes; the build history does not go with it — corrected 2026-09-09.** Dokku's core `builds`
+  plugin (new in 0.38.0) records every deploy and keeps its log on disk, 20 per app by default, and the
+  capture is trigger-independent — so `git:sync` from our rebuild cron is recorded like a `git push`
+  (`RESEARCH.md`, *Build tracking*). The per-project build list and build log that the Web Admin shows
+  today have a direct upstream counterpart in `builds:list` / `builds:output`. What is genuinely lost is
+  the *browser* view of them (`D_retire_shepherd_java`) and the git SHA per build, which Dokku's record
+  does not carry.
 - **Build cache isolation is *not* a regression, which is a large part of why Dokku won.** The
   Dockerfile builder allowlists `--cache-to`/`--cache-from` and appends them to `docker image build`, so
   today's per-project `type=local` cache directory migrates as one `docker-options:add` per app —

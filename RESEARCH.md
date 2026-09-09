@@ -169,6 +169,8 @@ dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git
 - `--build` always builds; **`--build-if-changes` builds only when the fetch moved the ref** — exactly
   the poll-SCM semantics.
 - The app must already exist (`apps:create`).
+- **Its output is captured** like any other deploy — a build record plus a log file per run, no
+  redirection needed in the crontab line. See *Build tracking*.
 
 Related git commands: **[docs]**
 
@@ -588,10 +590,64 @@ fixed `postgres-service` with a hardcoded password.
 - **Event log:** Dokku writes events to `/var/log/syslog` and `/var/log/dokku/events.log`, with
   `dokku events [-t]`, `events:list`, `events:on`, `events:off`. (A separate third-party
   `alessio/dokku-events` logs to `/var/log/dokku.log` — don't confuse the two.) **[docs]**
-- **No build history.** "Deploy history with Git SHAs isn't tracked by Dokku at the moment, though it
-  was considered as part of a builds plugin effort that has stalled" — the events log notes the SHA
-  attempted/deployed, and that is all. So the per-project build list + retained build log that Jenkins
-  provides today has **no Dokku counterpart**. **[docs/discussion #5114]**
+- **Build history is first-class** — see *Build tracking* below. Discussion #5114 ("deploy history with
+  Git SHAs isn't tracked … it was considered as part of a builds plugin effort that has stalled") is
+  **superseded**: the effort landed in 0.38.0. Only its git-SHA half still holds.
+
+### Build tracking — the `builds` plugin
+
+**New as of 0.38.0**, core (nothing to install), and present in every 0.38.x tag including our pinned
+v0.38.27. **Every deploy is recorded**, whatever triggered it: `git push`, `ps:rebuild`, `ps:restart`,
+`ps:start`, `config:set`, `deploy`, and `git:sync` / `git:from-archive` / `git:from-image` /
+`git:load-image`. **[docs]**
+
+```bash
+dokku builds:list [<app>] [--format json] [--kind build|deploy] [--status <status>]
+dokku builds:info <app> <build-id> [--format json]
+dokku builds:output <app> [<build-id>|current]   # tail -f while live, cat once finished
+dokku builds:cancel <app>                        # SIGQUIT to the deploy's process group
+dokku builds:prune <app> [--all-apps]
+dokku builds:report [<app>] [<flag>]
+dokku builds:set [--global|<app>] retention <N>  # `retention` is the only property
+```
+
+- **On disk, per build:** `/var/lib/dokku/data/builds/<app>/<build-id>.json` (the record) and
+  `<build-id>.log` (the captured stdout+stderr). The output is *also* tagged into syslog as
+  `dokku-<build-id>`, but the file is the durable copy — `builds:output` falls back to
+  `journalctl -t dokku-<build-id>` only when the file is missing. **[docs]**
+- **The record** is `id, app, kind, pid, started_at, finished_at, status, source, exit_code`; `--format
+  json` adds a computed `display_status`, `duration` and `log_path`. `kind` is `build` (paths that
+  produce an image) or `deploy` (paths that re-deploy one); `source` names the originating command,
+  `git:sync` among them; `status` is `running|succeeded|failed|canceled` on disk, plus a display-only
+  `abandoned` computed for a `running` record whose PID is dead. **[src]**
+- **Retention is by count, not age: 20 records per app** by default (minimum 1), a per-app override
+  cascading to a `--global` one. Pruning removes the record *and* its log, runs at the end of every
+  deploy, and never touches a live build. Deleting the app deletes its build data; renaming moves it.
+  **[src]**
+- **No git SHA in the record.** "Which commit was that build?" is still answerable only from the events
+  log. That is the half of discussion #5114 that survives. **[src]**
+- `builds:list` **with no app** lists the builds running box-wide — which is a cheaper
+  "is it safe to reboot?" than watching a lock file. **[docs]**
+
+**The capture is trigger-independent by construction**, which is the property that matters here:
+`dokku_setup_build_capture` in `plugins/common/functions` generates the id, writes the record, and then
+redirects the *entire* deploy — **[src]**
+
+```bash
+exec &> >(tee -a "$LOG" >(logger -i -t "dokku-${DOKKU_BUILD_ID}"))
+```
+
+`plugins/git/internal-functions` calls it with source `git:sync`, so **the rebuild cron gets its build
+log for free**: no redirection of our own in the crontab line, and no glue to write.
+
+**Sharp edge: bare `builds:output <app>` does not mean "the last build".** Given no build id (or the
+literal `current`) it resolves one from the app's `.deploy.lock`, so on an idle app it prints
+`App not currently deploying` rather than the failure you came for. `builds:list` is sorted
+newest-first and emits `id`, so the two-step scripts: **[src]**
+
+```bash
+dokku builds:output myapp "$(dokku builds:list myapp --status failed --format json | jq -r '.[0].id')"
+```
 
 ## Admin interface
 
@@ -629,7 +685,7 @@ The honest gap list, for the feature discussion:
 | **Isolation of *cache mounts*** | The per-app **layer** cache is fine — `--cache-to`/`--cache-from` go through per app (*Build caching*). What no builder can scope is a `RUN --mount=type=cache` written by the app: its `id` defaults to `target`, so unkeyed mounts share one directory box-wide. |
 | **Build CPU limit (Dockerfile builder)** | Documented `✗`. Memory yes, CPU no. |
 | **Periodic rebuild** | `app.json` cron runs the deployed image, never a build. Host crontab required. |
-| **Build history / build logs** | Not tracked; `logs:failed` keeps the last failed deploy only. |
+| **A git SHA per build** | Build history itself is covered (*Build tracking*), but the record has no commit field — only the events log notes the SHA attempted/deployed. |
 | **Box-wide resource quota** | `resource:limit` is per app. Nothing sums them or refuses an over-committing app. |
 | **App isolation by default** | Default bridge is shared; isolation is opt-in per app. |
 | **Wildcard-cert-once-for-all-apps** | Every route has a caveat; see *TLS* above. |
@@ -685,6 +741,7 @@ Dokku documentation (dokku.com, read 2026-09-09):
 [Environment variables](https://dokku.com/docs/configuration/environment-variables/) ·
 [Repository management](https://dokku.com/docs/advanced-usage/repository-management/) ·
 [Log management](https://dokku.com/docs/deployment/logs/) ·
+[Build tracking](https://dokku.com/docs/advanced-usage/builds/) ·
 [Event logs](https://dokku.com/docs/advanced-usage/event-logs/) ·
 [User management / ssh-keys](https://dokku.com/docs/deployment/user-management/) ·
 [SSL configuration](http://dokku.viewdocs.io/dokku/configuration/ssl/) ·
@@ -696,15 +753,20 @@ Plugins: [dokku-letsencrypt](https://github.com/dokku/dokku-letsencrypt) (and
 [dokku-global-cert](https://github.com/dokku-community/dokku-global-cert) ·
 [dokku-postgres](https://github.com/dokku/dokku-postgres).
 
-Gaps and third parties: [no deploy history — discussion #5114](https://github.com/dokku/dokku/discussions/5114) ·
+Gaps and third parties: [deploy history — discussion #5114](https://github.com/dokku/dokku/discussions/5114),
+**superseded by the `builds` plugin in 0.38.0 except for its git-SHA half** ·
 [monitoring stance — discussion #5681](https://github.com/dokku/dokku/discussions/5681) ·
 [wharf](https://github.com/palfrey/wharf) · [ledokku](https://github.com/ledokku/ledokku) ·
 [lazydocker](https://github.com/jesseduffield/lazydocker) · [ctop](https://github.com/bcicen/ctop).
 
-Dokku source, read at **v0.38.27** on 2026-09-09 (the `[src]` claims about the build-option allowlist
-and the per-app buildpack cache volume):
+Dokku source, read at **v0.38.27** on 2026-09-09 (the `[src]` claims about the build-option allowlist,
+the per-app buildpack cache volume, and build tracking):
 [`plugins/builder-dockerfile/builder-build`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builder-dockerfile/builder-build) ·
-[`plugins/builder-herokuish/builder-build`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builder-herokuish/builder-build).
+[`plugins/builder-herokuish/builder-build`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builder-herokuish/builder-build) ·
+[`plugins/builds/builds.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/builds.go) (retention, record schema, pruning) ·
+[`plugins/builds/subcommands.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/subcommands.go) (the `builds:output` deploy-lock resolution) ·
+[`plugins/common/functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/common/functions) (`dokku_setup_build_capture`) ·
+[`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it).
 
 Build-cache background (carried over, not re-verified here):
 [buildx mount caches vs per-project `type=local`](https://mvysny.github.io/docker-build-cache/) ·

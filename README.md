@@ -25,6 +25,12 @@ The two predecessors of this project stay online and readable:
 (Docker + Traefik + Jenkins + a Vaadin web admin). Why they were retired in favour of Dokku, and what
 that cost: `D_dokku` and `D_retire_shepherd_java` in [DECISIONS.md](DECISIONS.md).
 
+There is a sibling repo, [shepherd2-dokploy](https://github.com/mvysny/shepherd2-dokploy), which asks
+the same question of [Dokploy](https://dokploy.com). The two are alternatives, not stages: Dokku
+enforces a per-project build cache and caps build memory but has no web UI; Dokploy keeps a browser UI
+and the same Traefik as shepherd-traefik, and enforces nothing about the cache. `D_dokku` argues that
+fork out.
+
 ## Where things are documented
 
 | If you want to… | Read |

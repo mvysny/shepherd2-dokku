@@ -72,6 +72,9 @@ of why the verdict landed on Dokku:
   so Jenkins — the heaviest single component of the old box — is deleted for one crontab line. Plain
   Docker, no Swarm, no control-plane database, no Postgres to upgrade.
 - **Bash + Go plugins is the smallest conceptual delta** from Bash + compose.
+- **It is the only one that accepts our build command.** `docker-options:add <app> build '--cache-to …'`
+  reaches `docker image build` through a flag allowlist, so the per-project build cache is kept rather
+  than traded away — the one requirement none of the other three can meet.
 - **Nothing is hidden.** State is files under `/home/dokku` plus Docker; every operation is a command
   whose output can be read (`--format json` on the reports).
 
@@ -101,10 +104,14 @@ of why the verdict landed on Dokku:
 - **Jenkins goes, and with it the build history.** Dokku tracks no deploy history and no retained build
   logs (`RESEARCH.md`, *Observability*). The per-project build list and build log that the Web Admin
   shows today have no upstream counterpart.
-- **Build cache isolation is a standing regression.** No candidate — Dokku included — lets you template
-  `--cache-to`/`--cache-from` per app, so the property that `D_no_shared_cache` in shepherd-traefik
-  exists to guarantee cannot be reproduced by the platform. The replacement position is an open design
-  question, not a solved one; it is the largest single item in `ideas/features-to-preserve.md`.
+- **Build cache isolation is *not* a regression, which is a large part of why Dokku won.** The
+  Dockerfile builder allowlists `--cache-to`/`--cache-from` and appends them to `docker image build`, so
+  today's per-project `type=local` cache directory migrates as one `docker-options:add` per app —
+  enforced on the build command, exactly as `shepherd-build` enforces it now (`RESEARCH.md`,
+  *Build caching*). Coolify, Dokploy and CapRover expose no such knob. What does *not* carry over is the
+  `RUN --mount=type=cache` half: the app writes its own Dockerfile and so names its own mount ids, which
+  stays a convention rather than a boundary — the same known gap `D_no_shared_cache` in shepherd-traefik
+  already records, neither widened nor closed by the move.
 - **Build CPU cannot be limited** with the Dockerfile builder — memory can. Documented `✗` upstream.
 - **One thing gets strictly better:** Dokku's nginx runs on the *host*, not in a container, and reaches
   apps by container IP. That deletes shepherd-traefik's network-sharing gotcha — and with it

@@ -26,37 +26,49 @@ answer, and `[unverified]` there means it is a hypothesis, not a plan.
 | `F_build_dockerfile` | Build from the `Dockerfile` at the repo root, on the box | Jenkins → `shepherd-build` → `docker build` | Dockerfile builder, auto-detected | ✅ |
 | `F_poll_rebuild` | Rebuild **on a schedule**, not on push — we host repos we don't own | Jenkins poll-SCM job per project | `dokku git:sync --build-if-changes <app> <url> <ref>` from a **host crontab** — `app.json` cron runs the deployed image and cannot build | 🔧 |
 | `F_build_mem_limit` | Cap build memory | `shepherd-build` `--memory` | `resource:limit --process-type build --memory N` | ✅ |
-| `F_build_cpu_limit` | Cap build CPU | `shepherd-build` `--cpu-quota` | **Not supported for the Dockerfile builder** (documented `✗`) | 🕳️ |
+| `F_build_cpu_limit` | Cap build CPU | `shepherd-build` `--cpu-quota` | **Not supported for the Dockerfile builder** (documented `✗`, and confirmed by the build-option allowlist: `--memory` is on it, no `--cpus`/`--cpu-quota` is) | 🕳️ |
 | `F_build_args` ⁿᵉʷ | Per-project build args — the Vaadin offline key needs to exist at *build* time | `build.buildArgs` in the project JSON | `docker-options:add <app> build '--build-arg K=V'`; config vars are runtime-only for Dockerfile builds | 🔧 |
 | `F_custom_dockerfile` ⁿᵉʷ | Per-project Dockerfile path (`vherd.Dockerfile`) | `build.dockerFile` | `builder-dockerfile:set <app> dockerfile-path …` | ✅ |
-| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | Cache mounts, documented; box-wide and unkeyed | 🔧 |
-| `F_cache_isolation` | …and that cache must be **per project** — one project must not reach another's artifacts | `--cache-to/--cache-from` per project id, enforced on the build command | **Nothing.** No per-app `--cache-to`; `docker-options … build` is *container* options, not build flags | 🕳️ |
+| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | Both halves survive: cache mounts documented, and `--cache-to/--cache-from` go through per app | ✅ |
+| `F_cache_isolation` | …and that cache must be **per project** — one project must not reach another's artifacts | `--cache-to/--cache-from` per project id, enforced on the build command | **Parity, not a gap** — `docker-options:add <app> build '--cache-to …'` is allowlisted through to `docker image build`. The `RUN --mount` half stays convention, as it is today | 🔧 |
 | `F_build_serial` ⁿᵉʷ | Never two builds at once (`concurrentJenkinsBuilders: 1`) — the corruption half of the cache problem | Jenkins executor count | Free if the poll is one serial cron loop; `parallel-schedule-count` is about deploys, not builds | 🔧 |
 | `F_build_history` ⁿᵉʷ | The list of past builds, and each one's build log | Jenkins; `shepherd-cli builds` / `buildlog` | **Nothing.** No deploy history, no git SHAs; `logs:failed` keeps the last failed deploy only | 🕳️ |
 | `F_private_repos` ⁿᵉʷ | Build private repos, with a credential per project | Jenkins credentials store, `gitRepo.credentialsID` | `git:auth <host> <user> <token>` (netrc) or a deploy key — but **per host, not per project** | 🕳️ |
 
-**The one that matters most: `F_cache_isolation`.** This is the property no off-the-shelf PaaS
-reproduces, and `D_no_shared_cache` in shepherd-traefik is 100 lines on why a shared cache is a no-go —
-worth re-reading before we hand-wave it. Its short form: **corruption** (concurrent writers) is fixed by
-serial builds, but **pollution** (one project's artifacts reaching another's build) is not, and the path
-that bites is not malice but `mvn install` — a demo farm is full of forks of the same starter, so two
-projects legitimately share `com.example:my-app:1.0-SNAPSHOT` and the second silently resolves the
-first one's jar with a green build.
+**`F_cache_isolation` was the scariest row here and it has shrunk — corrected 2026-09-09.** The earlier
+reading ("no per-app `--cache-to`; `docker-options … build` is container options") was wrong, and it was
+wrong in the direction that mattered: the docs' container-options warning describes the *herokuish*
+builder, while the *Dockerfile* builder allowlists the option and appends it to `docker image build`.
+`RESEARCH.md` → *Build caching* has the allowlist and the source it was read from. So **the layer-cache
+half of today's setup migrates verbatim**, one `docker-options:add` per app, still enforced by us rather
+than by the app.
 
-Candidate positions, cheapest first:
+What is left is exactly the gap that exists *today* — `D_no_shared_cache` in shepherd-traefik files it
+under *Known gap*: an app's own `RUN --mount=type=cache` names its own id, defaulting to the mount
+target, so unkeyed mounts share one directory box-wide. Worth re-reading that entry before hand-waving
+it; its short form is that **corruption** (concurrent writers) is fixed by serial builds, but
+**pollution** is not, and the path that bites is not malice but `mvn install` — a demo farm is full of
+forks of the same starter, so two projects legitimately share `com.example:my-app:1.0-SNAPSHOT` and the
+second silently resolves the first one's jar with a green build.
 
-1. **Layer cache only.** Drop cache mounts entirely; rely on a `COPY pom.xml` + `mvn dependency:go-offline`
-   layer. Safe, no glue, and slower — a dependency bump re-downloads. But it only works for repos whose
-   `Dockerfile` we can influence, which is the same cooperation problem in a different hat.
-2. **Convention: `id=<project>` on every cache mount** we control, and accept that a repo we don't own
-   can use any id it likes. `D_no_shared_cache` already keeps this "as a collision-avoidance convention,
-   never as a boundary" — the question is whether that is enough now that the platform no longer
-   enforces anything.
+Positions on that remaining half, cheapest first — the question is now "close a gap we already have?",
+not "absorb a regression":
+
+1. **Status quo: layer cache per project, mounts by convention.** `--cache-to` per app plus an
+   `id=<project>` convention on the mounts we can influence. `D_no_shared_cache` already keeps `id=`
+   "as a collision-avoidance convention, never as a boundary". Zero new glue; the gap stays open.
+2. **Layer cache only.** Drop cache mounts entirely; rely on a `COPY pom.xml` + `mvn dependency:go-offline`
+   layer, which the per-app `--cache-to` cache then protects properly. Safe and slower — a dependency
+   bump re-downloads — and it only works for repos whose `Dockerfile` we can influence.
 3. **A Maven repo proxy** (Nexus et al.) — the classic CI answer, sidesteps pollution entirely, and was
    rejected in `D_no_shared_cache` on cost + cooperation. Reconsider: the cost argument was "adds a
    container to a small box", and we just deleted Jenkins.
-4. **Accept the regression, document it.** Say plainly in `README.md` that builds share a cache and that
-   projects hosted here are not isolated at the artifact level.
+4. **Switch to a buildpack builder**, where Dokku mounts a `cache-$APP` volume the app cannot name and
+   `repo:purge-cache <app>` clears exactly one project's. Fully enforced, both halves — at the price of
+   `F_build_dockerfile`, since a buildpack means there is no Dockerfile. Almost certainly not worth it,
+   but it is the only option that actually *closes* the gap, so it belongs on the list.
+5. **Accept it and document it.** Say plainly in `README.md` that cache mounts are shared and that
+   projects hosted here are not isolated at the artifact level. This is what is true today, unstated.
 
 *Also carried over regardless of which we pick:* buildkitd runs its own GC (reported to evict unused
 entries after ~48 h), so a cache mount is not a durable store — and the purge cadence is the cache's
@@ -203,9 +215,11 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - **`Q_cert`** — one cert we renew ourselves (`dokku-global-cert`), or per-app ACME with renewal solved
   (`dokku-letsencrypt`)? The requirement as written says the former; the requirement may be worth
   relaxing now that a new app appearing is a `dokku` command rather than a JSON file edit.
-- **`Q_cache`** — which of the four positions on `F_cache_isolation`? This is the one place where
-  retiring shepherd-traefik is a genuine capability regression rather than a deletion, and
-  `D_no_shared_cache` deserves re-reading before we pick.
+- **`Q_cache`** — which of the five positions on `F_cache_isolation`? **Downgraded 2026-09-09**: the
+  per-app `--cache-to` carries over, so this is no longer a regression to absorb but a pre-existing gap
+  (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
+  pick. Cheap either way if `Q_descriptor` goes declarative — the cache flags are two more lines the
+  converger emits.
 - **`Q_isolation`** — keep one Docker network per app, or accept Dokku's shared default bridge? Cheaper
   than before (no network-sharing gotcha) but more manual, and the admin plane it protected is gone.
 - **`Q_web_admin`** — confirm the drop, or is "no browser UI at all" the thing that makes this not worth
@@ -234,7 +248,8 @@ Assuming the declarative answer to `Q_descriptor`, nginx for `Q_proxy` and `dokk
 projects/PROJECTID.json      # per-project descriptor, in git, the source of truth
 shepherd2-apply PROJECTID    # converge one project: apps:create, config:set, resource:limit,
                              #   domains:set, ports:set, network:set, builder-dockerfile:set,
-                             #   docker-options build args, then git:sync --build-if-changes
+                             #   docker-options build args + per-project --cache-to/--cache-from,
+                             #   then git:sync --build-if-changes
 shepherd2-poll               # weekly-ish cron: shepherd2-apply for every project, serially,
                              #   under a lock file; tees build logs
 shepherd2-renew-cert         # lego/certbot DNS-01 → dokku global-cert:set
@@ -247,7 +262,9 @@ Seven Bash scripts and a directory of JSON, against today's Jenkins + Traefik + 
 a Kotlin/Vaadin repo. **`shepherd2-poll` is the whole of Jenkins**, and `F_safe_reboot` is `flock` on the
 lock file it already holds.
 
-Where this sketch is weakest: it says nothing about `Q_cache` (the descriptor could pass
-`--build-arg CACHE_ID=PROJECTID` and we could *document* an `id=` convention, but that is cooperation,
-not enforcement — same as before), and `shepherd2-apply` has to know which changes need a rebuild versus
-a re-apply, which is `F_smart_update` and is where shepherd-java's non-obvious logic lived.
+Where this sketch is weakest: `shepherd2-apply` has to know which changes need a rebuild versus a
+re-apply, which is `F_smart_update` and is where shepherd-java's non-obvious logic lived. `Q_cache` is
+*mostly* handled by it — the converger emits `docker-options:add … build '--cache-to …'` per project, so
+the layer cache is enforced the way `shepherd-build` enforces it today; what the sketch still cannot do
+is scope an app's own `RUN --mount=type=cache`, which stays convention (`--build-arg CACHE_ID=PROJECTID`
+plus a documented `id=`, cooperation rather than enforcement).

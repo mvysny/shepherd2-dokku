@@ -77,11 +77,14 @@ unless noted; re-check before relying on a version-sensitive claim.
   dokku docker-options:add node-js-app build '--build-arg NODE_ENV'
   ```
 
-  An explicit `--build-arg NAME=value` in the same position is the obvious way to pin a value (this is
-  how a per-project secret like a Vaadin offline key would be passed), but Dokku's docs do not show that
-  form. **[unverified]**
+  The explicit `--build-arg NAME=value` form works as well, though the docs never show it: the builder
+  allowlists the `--build-arg` *flag* and appends it together with its value to `docker image build`
+  without inspecting either (see the allowlist under *`docker-options`*, below). That is how a
+  per-project secret like a Vaadin offline key gets to a build. **[src]**
+- **`DOKKU_GLOBAL_BUILD_ARGS` is appended to every app's build options**, after the per-app ones — a
+  box-wide escape hatch, and a thing to check when a build behaves unexpectedly. **[src]**
 
-### `docker-options` and its sharp edge
+### `docker-options` and its sharp edges
 
 Three phases — `build`, `deploy`, `run`: **[docs]**
 
@@ -92,15 +95,66 @@ dokku docker-options:clear  [--process PROC...] <app> [<phase(s)>...]
 dokku docker-options:report [<app>] [<flag>] [--format json|stdout]
 ```
 
-Two caveats that matter, quoted:
-
-- **`build` options are *container* options for the builder, not `docker build` flags.** "A given builder
-  may strip out or ignore options that are unsupported by the builder in question — as an example, the
-  `dockerfile` builder does not support mounted volumes." So this is **not** a way to reach
-  `--cache-to` / `--cache-from`. **[docs]**
 - **`run` is not `docker run`.** "The `run` phase does *not* correspond 1-to-1 to `docker run` … Specifying
   a container option at the `run` phase will only be invoked on containers created by the `run` plugin
   and cron tasks." Deployed processes take `deploy`. **[docs]**
+- **What the `build` phase means depends on the builder** — and the docs' blanket warning that "`build`
+  options are container options … the `dockerfile` builder does not support mounted volumes" describes
+  the *herokuish* path, not the Dockerfile one. Both builders read the same `docker-args-build`
+  trigger and then use its output completely differently. Read at **v0.38.27**: **[src]**
+  - `plugins/builder-dockerfile/builder-build` concatenates the `docker-args-build` and
+    `docker-args-process-build` trigger output with `DOKKU_GLOBAL_BUILD_ARGS`, splits it through
+    `fn-docker-args-split`, filters it against a **flag allowlist**, and appends the survivors to
+    `docker image build`. Value-taking flags keep their value (`DOCKERFILE_ARGS+=("--cache-to");
+    DOCKERFILE_ARGS+=("$2"); shift 2`); anything off the list is silently dropped, with no warning.
+  - `plugins/builder-herokuish/builder-build` hands the same options to `docker container create`
+    instead. *There* they are genuinely container options — which is what the doc note is about.
+- **The allowlist, verbatim at v0.38.27:** `--add-host`, `--allow`, `--annotation`, `--attest`,
+  `--build-arg`, `--builder`, `--cache-from`, **`--cache-to`**, `--call`, `--cgroup-parent`, `--label`,
+  `--memory`/`-m`, `--memory-swap`, `--network`, `--platform`, `--progress`, `--provenance`, `--sbom`,
+  `--secret`, `--shm-size`, `--ssh`, `--tag`, `--target`, `--ulimit`, `--check`, `-D`/`--debug`,
+  `--no-cache`. **[src]**
+
+  Two things follow from reading it. `--cache-to`/`--cache-from` are on it, so a per-project build
+  cache *is* reachable per app — see *Build caching*. And there is **no `--cpus`/`--cpu-quota` on it
+  while `--memory` is**, which is the mechanism behind the documented `✗` for build CPU limits: the
+  flag would be dropped on the floor rather than rejected.
+
+### Build caching
+
+Two independent mechanisms, and Dokku exposes both. The short version: **Dokku is the one product in
+the survey that lets the *platform* name a per-app build cache**, so shepherd-traefik's per-project
+`type=local` cache directory migrates rather than being lost.
+
+- **Cache mounts** — `RUN --mount=type=cache,target=…` in the app's own Dockerfile, documented by Dokku
+  under *BuildKit directory caching*. Zero glue, and it survives changes that invalidate every layer.
+  But the mount's `id` defaults to its `target`, so unkeyed mounts from every app on the box resolve to
+  the same directory: shared and unkeyed unless each Dockerfile opts into an `id=`. Since the app writes
+  its own Dockerfile, that is cooperation, never a boundary — the argument is `D_no_shared_cache` in
+  shepherd-traefik. **[docs]**
+- **Per-app `--cache-to` / `--cache-from`** — both are on the Dockerfile builder's allowlist (above), so
+  they reach `docker image build` as one `docker-options:add` per app: **[src]**
+
+  ```bash
+  dokku docker-options:add myapp build '--cache-to type=local,dest=/var/cache/shepherd2/myapp,mode=max'
+  dokku docker-options:add myapp build '--cache-from type=local,src=/var/cache/shepherd2/myapp'
+  ```
+
+  The flag sits on the *build command*, not in the repo, so the app cannot name another project's
+  cache. This is the same mechanism `shepherd-build` uses today, and it covers the **layer** cache
+  only — the `RUN --mount` half above stays the app's business.
+- **The hinge is `docker image build` routing to buildx**, which is where `type=local` export comes
+  from. That holds on Docker Engine 23+, but it is a property of the *engine*, not of Dokku, and it has
+  not been run on our box. **[unverified]**
+- **The buildpack builders solve it a different way, and completely.** `builder-herokuish` runs
+  `docker volume create cache-$APP`, mounts it with `-v "cache-$APP:/cache"` and sets
+  `--env=CACHE_PATH=/cache`, so the app never learns the cache's name and cannot address another's;
+  `dokku repo:purge-cache <app>` clears exactly that one, and the docs scope that command to buildpack
+  builds. The price is that with a buildpack there is no Dockerfile, which is the whole build contract.
+  **[src]** / **[docs]**
+- **buildkitd runs its own GC**, independently of Dokku and of any prune cron of ours; the defaults are
+  reported to evict unused entries after roughly 48 h. A cache mount is therefore not a durable store,
+  and an explicit buildkitd GC policy belongs in the install guide. **[unverified]**
 
 ### `git:sync` — the SCM poll
 
@@ -572,7 +626,7 @@ The honest gap list, for the feature discussion:
 
 | Missing | Detail |
 |---|---|
-| **Per-project build cache isolation** | No per-app `--cache-to`/`--cache-from`; `docker-options … build` is container options, not build flags. Cache mounts are shared box-wide and unkeyed. |
+| **Isolation of *cache mounts*** | The per-app **layer** cache is fine — `--cache-to`/`--cache-from` go through per app (*Build caching*). What no builder can scope is a `RUN --mount=type=cache` written by the app: its `id` defaults to `target`, so unkeyed mounts share one directory box-wide. |
 | **Build CPU limit (Dockerfile builder)** | Documented `✗`. Memory yes, CPU no. |
 | **Periodic rebuild** | `app.json` cron runs the deployed image, never a build. Host crontab required. |
 | **Build history / build logs** | Not tracked; `logs:failed` keeps the last failed deploy only. |
@@ -591,16 +645,18 @@ The honest gap list, for the feature discussion:
 The `[unverified]` claims above, plus the ones that decide the design. This is the punch list for the
 first throwaway VPS:
 
-1. Does `--build-arg NAME=value` work in `docker-options:add <app> build`, or only the pass-through
-   `NAME` form?
+1. Does the box's Docker route `docker image build` to buildx, so that a `--cache-to type=local` passed
+   through `docker-options` actually *exports* a cache rather than being accepted and ignored? The
+   allowlist gets the flag to the build command (`[src]`); the engine decides whether it means anything.
 2. Does `network:create` + `network:set <app> initial-network` actually isolate apps *and* leave
    host-nginx routing intact?
 3. Does `bootstrap.sh` write `/etc/docker/daemon.json`, and does it survive our enlarged
    `default-address-pools`?
 4. Can `dokku-letsencrypt` on a current version issue a `*.domain` cert, and can that one cert serve
    every app — or is `dokku-global-cert` + our own renewal cron the only way?
-5. Are cache mounts actually preserved across `git:sync --build` runs, and for how long, given
-   buildkitd's own GC (reported to evict unused entries after ~48 h)?
+5. Are cache mounts, and a per-app `type=local` cache directory, actually preserved across
+   `git:sync --build` runs, and for how long, given buildkitd's own GC (reported to evict unused
+   entries after ~48 h)?
 6. **The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
    Vaadin-Boot app, commit trivially, redeploy — timed. Then deploy a second app sharing Maven
    coordinates with the first and check whether it resolves the first one's `1.0-SNAPSHOT` jar.
@@ -627,6 +683,7 @@ Dokku documentation (dokku.com, read 2026-09-09):
 [Application management](https://dokku.com/docs/deployment/application-management/) ·
 [Domains](https://dokku.com/docs/configuration/domains/) ·
 [Environment variables](https://dokku.com/docs/configuration/environment-variables/) ·
+[Repository management](https://dokku.com/docs/advanced-usage/repository-management/) ·
 [Log management](https://dokku.com/docs/deployment/logs/) ·
 [Event logs](https://dokku.com/docs/advanced-usage/event-logs/) ·
 [User management / ssh-keys](https://dokku.com/docs/deployment/user-management/) ·
@@ -643,6 +700,11 @@ Gaps and third parties: [no deploy history — discussion #5114](https://github.
 [monitoring stance — discussion #5681](https://github.com/dokku/dokku/discussions/5681) ·
 [wharf](https://github.com/palfrey/wharf) · [ledokku](https://github.com/ledokku/ledokku) ·
 [lazydocker](https://github.com/jesseduffield/lazydocker) · [ctop](https://github.com/bcicen/ctop).
+
+Dokku source, read at **v0.38.27** on 2026-09-09 (the `[src]` claims about the build-option allowlist
+and the per-app buildpack cache volume):
+[`plugins/builder-dockerfile/builder-build`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builder-dockerfile/builder-build) ·
+[`plugins/builder-herokuish/builder-build`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builder-herokuish/builder-build).
 
 Build-cache background (carried over, not re-verified here):
 [buildx mount caches vs per-project `type=local`](https://mvysny.github.io/docker-build-cache/) ·

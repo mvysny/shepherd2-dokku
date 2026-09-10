@@ -338,12 +338,12 @@ With nginx settled by `D_proxy`, per-project networks by `D_isolation`, no descr
 
 ```
 shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --owner EMAIL
-                             #   --build-dir PATH --domain D…]
+                             #   --buildpack BP --build-dir PATH --domain D…]
                              #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
                              #   + any build-time vars (--no-restart), resource:limit,
                              #   network:create + network:set, postgres:create -N + link if asked,
-                             #   then git:sync --build. NB no buildpacks:set — the repo's own
-                             #   .buildpacks names it (D_builder); the property is the override
+                             #   buildpacks:set if --buildpack given (else the repo's own
+                             #   .buildpacks names it — D_builder), then git:sync --build
 shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, postgres:destroy, network:destroy
 shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
                              #   and the retry after a failed build

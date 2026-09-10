@@ -117,8 +117,9 @@ save *after* the Java buildpack, this comes back.
   Dockerfile-builder artefact. Punch-list 17.
 - **Name the buildpack, never trust detection.** herokuish detects `nodejs` before `java` **[src]**
   and Vaadin's own guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo is a Node
-  app unless its repo carries a `.buildpacks` saying `heroku/java`. Settled, not open — it is in
-  `D_builder` and in the README's project contract. Listed here only because it will be the first
+  app unless something says `heroku/java` — either a `.buildpacks` in the repo or
+  `create-app --buildpack`. Settled, not open — it is in `D_builder` and in the README's project
+  contract. Listed here only because it will be the first
   thing to go wrong on the box, and a Node build of a Java repo looks exactly like a caching bug.
 
 ## Where this graduates to

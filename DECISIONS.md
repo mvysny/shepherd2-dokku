@@ -732,13 +732,19 @@ whole decision in one sentence.
 - **The buildpack must be *named*, never detected — and the repo names it.** Detection is a trap
   here: herokuish detects `nodejs` **before** `java` **[src]**, and Vaadin's own source-control
   guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo would build as a Node app.
-  The fix is a one-line **`.buildpacks` at the repo root** (`heroku/java` — the shorthand is expanded
-  to the full GitHub URL, and an unparseable line fails the build rather than being ignored
-  **[src]**). This is the same file the project already needs a `Procfile` and `system.properties`
-  alongside, it keeps the box free of per-app knowledge, and it is the reason `create-app` stays
-  generic. `app.json`'s `buildpacks` array works too, and outranks `.buildpacks`.
-- **`dokku buildpacks:set <app> …` remains as the operator override, one layer above the repo.** The
-  real precedence, from `getBuildpacks` and the `buildpacks` plugin's `post-extract` trigger
+  **v1 supports naming it from either end, and both are first-class:**
+  - **in the repo** — a one-line `.buildpacks` at the root (`heroku/java`; the shorthand is expanded
+    to the full GitHub URL, and an unparseable line fails the build rather than being ignored
+    **[src]**), sitting alongside the `Procfile` and `system.properties` the project already needs.
+    `app.json`'s `buildpacks` array works too, and outranks `.buildpacks`.
+  - **at registration** — `create-app … --buildpack heroku/java`, which is
+    `dokku buildpacks:set <app> …` and is expected to be the common case here, since nearly every
+    project on this box is the same kind of Java app. It is also the repair for a repo we cannot
+    edit or one that chose wrongly, with no commit and no fork.
+
+  These compose rather than competing: registration wins, so the repo's choice is a default the
+  operator can override. Neither is mandatory, but *relying on detection* is a bug waiting to happen.
+- **The precedence, from `getBuildpacks` and the `buildpacks` plugin's `post-extract` trigger**
   **[src]** — note the function's own doc comment states the reverse and is stale:
 
   | | source | who controls it |
@@ -748,9 +754,8 @@ whole decision in one sentence.
   | 3 | `.buildpacks` at the repo root | the repo; kept, with each line validated and normalised |
   | 4 | herokuish's own detection order | nobody — the trap above |
 
-  So the default path needs no per-app state at all, and a repo we cannot edit, or one whose choice
-  turns out to be wrong, is still fixable with one command and no fork. That is the layering we want,
-  and it comes free.
+  So a self-describing repo needs no per-app state at all, and `--buildpack` at registration is one
+  property when we'd rather say it on the box. The layering comes free — it is Dokku's, not ours.
 - **Letting the repo name its buildpack costs no privilege, only provenance.** Worth writing down
   because it looks alarming and mostly isn't. A custom buildpack's `bin/compile` runs in the same
   build container, as the same unprivileged user, with the same config vars, the same `/cache` and

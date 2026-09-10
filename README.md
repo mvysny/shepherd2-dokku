@@ -85,26 +85,75 @@ retrofit:
 
 ## Adding your project
 
-Not written yet. **The contract has changed from both predecessors** — see
+Not written yet, but the contract is settled. **It has changed from both predecessors** — see
 [`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
 is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency
-cache is isolated from every other's. What it needs instead:
+cache is isolated from every other's.
 
-1. A `Procfile` at the root of its git repo, naming the `web` process.
-2. A `.buildpacks`, also at the root, naming the buildpack — one per line, `heroku/java` shorthand
-   accepted. **Don't skip this and rely on auto-detection:** a Java project that commits a
-   `package.json` (which Vaadin tells you to do) is detected as a Node app, because `nodejs` is tried
-   before `java`.
-3. For a Maven project, a `system.properties` pinning `java.runtime.version`; the buildpack runs
+### What the repo needs
+
+1. A `Procfile` at the root, naming the `web` process.
+2. For a Maven project, a `system.properties` pinning `java.runtime.version`. The buildpack runs
    `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
    say otherwise.
-4. Optionally a committed `.env` for build-time settings — it reaches the build environment, so a
-   Vaadin project points its caches at the per-app cache volume there:
-   `npm_config_cache=/cache/npm`. `dokku config:set` does the same thing from the box side and wins.
+3. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
+   Java project that commits a `package.json`, which Vaadin tells you to do, is detected as a *Node*
+   app, because `nodejs` is tried before `java`.
+4. Optionally a `.env`, for build-time settings the project wants to carry itself — see *The `.env`
+   recipe* below.
 
-The project chooses its own buildpack, and the box does not need to know about it. If a repo can't be
-edited or picks wrongly, the operator can override it without touching the repo:
-`dokku buildpacks:set PROJECTID heroku/java`.
+### Naming the buildpack: in the repo, or at registration
+
+Both work, and they compose — **whatever is set at registration wins over the repo**, so a project
+that gets it wrong is fixable without a commit.
+
+```bash
+# in the repo: .buildpacks, one entry per line, heroku/… shorthand accepted
+heroku/java
+
+# …or at registration, which is what most projects here do:
+shepherd2 create-app myproject https://github.com/me/myproject --buildpack heroku/java
+
+# …or after the fact, on an app that already exists:
+dokku buildpacks:set myproject heroku/java
+```
+
+Pin a *third-party* buildpack to a commit — `https://github.com/someone/their-buildpack#a1b2c3d` —
+or it is re-cloned at whatever that branch points to on the day, and the same commit of your app
+stops building the same way twice. The bundled Heroku buildpacks are already pinned inside the
+builder image.
+
+### The `.env` recipe
+
+A committed `.env` reaches the **build** environment, so a project can point its own caches at the
+per-app cache volume that Dokku mounts at `/cache`. That volume is yours alone, survives between
+builds, and is what stops the Maven tree being re-downloaded on every scheduled rebuild. Maven needs
+nothing — the buildpack already puts `.m2/repository` there. A **Vaadin** project wants two more
+lines, because its frontend build is driven by Maven and so is invisible to the buildpack that would
+otherwise cache it:
+
+```dotenv
+# .env — build-time only; not your runtime config
+npm_config_cache=/cache/npm
+MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction -Duser.home=/cache/home
+```
+
+- `npm_config_cache` keeps npm's downloads across rebuilds.
+- `-Duser.home=/cache/home` moves `~/.vaadin` — where Vaadin installs its own Node — into the cache
+  volume too, so that download happens once rather than every build. Drop it if your build doesn't
+  like a relocated home.
+- `-Pproduction` is Vaadin's production profile; keep `-DskipTests`, which is the buildpack default
+  you are replacing.
+
+Two things to know before leaning on this. **It is not yet verified on a real box** — the whole
+frontend-caching question is open, tracked in `ideas/vaadin-build-under-herokuish.md` — and if your
+app has no add-ons with frontend customisations and no custom JS/TS, Vaadin 24.1+ uses its
+pre-compiled production bundle and skips npm entirely, in which case none of this matters. Check that
+first.
+
+Prefer `.env` to `.npmrc` for the npm cache: recent pnpm no longer expands `${VAR}` in a
+repository-controlled `.npmrc`, and Vaadin's own recommended `.gitignore` excludes that file anyway.
+`dokku config:set` sets the same variables from the box side and wins over `.env`.
 
 **Pay attention to the memory limit** the container will run under (256 MB on the reference box). If
 the JVM asks for more it is hard-killed by the Linux OOM killer with no warning and no log message

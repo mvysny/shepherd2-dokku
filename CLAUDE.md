@@ -123,6 +123,11 @@ knobs and prerequisites. Put new technical truth *there*, not here.
   Don't install `dokku-letsencrypt` or `letsencrypt:enable` an app in v1, and don't make `create-app`
   touch certificates — the plugin covers new apps at creation. The DNS API token is root-only and must
   stay unreadable to the `dokku` user. See `D_cert`.
+  - **…but https is a *mode*, and the box also installs http-only.** Everything above is the `https`
+    mode; the `http` mode installs none of it (`F_http_only`). So nothing outside `install` /
+    `uninstall` may *assume* a certificate exists, and nothing anywhere may offer to convert a running
+    box between the two — the choice is made once, at install, and HSTS makes the downgrade
+    unrepairable from the box. See `D_cert`.
 - **Each project gets its own Docker network, and nothing has to re-attach anything.** `initial-network`
   is persisted app state that Dokku re-applies at container creation, so there is no successor to
   `shepherd-traefik-connect-networks` — if you find yourself writing one, something else is wrong. See

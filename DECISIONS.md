@@ -277,7 +277,8 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 ## D_isolation — One Dokku-managed bridge network per project (2026-09-10)
 
 **Status:** Accepted 2026-09-10. Not yet implemented; `initial-network` isolating apps while leaving
-nginx routing intact is `[unverified]` until the first box (punch-list items 2, 9, 12).
+nginx routing intact is `[unverified]` until the first box (punch-list items 2 and 12; item 9 went to v2
+with `F_postgres`).
 
 **Context.** The box hosts other people's example projects and addons — mutually untrusted code, on one
 Docker daemon. Both predecessors gave each project its own network (`D_network_per_project` in
@@ -292,7 +293,8 @@ reach any other app's unpublished ports by container IP.
 ```bash
 dokku network:create app-<id>
 dokku network:set    <app> initial-network app-<id>
-dokku postgres:create <svc> --initial-network app-<id>   # if the project wants a database
+dokku postgres:create <svc> --initial-network app-<id>   # v2 only — F_postgres is deferred, and this
+                                                         #   flag is the one thing it must not forget
 ```
 
 The requirement this delivers, stated honestly: **no app can reach another app's non-public ports.**
@@ -342,10 +344,12 @@ properties of Dokku's version make the predecessor's price disappear:
   walls at ~30 bridge networks, i.e. ~30 apps. This is precedent, not a new cost — shepherd-traefik
   already does it — but it needs a daemon restart, so it belongs in the installer and cannot be
   retrofitted cheaply. Whether Dokku's `bootstrap.sh` writes that file is `[unverified]`.
-- **A project's database must be created with `--initial-network`.** It is a creation-time flag; a
-  service created without it sits on the shared bridge, where the app can no longer reach it under this
-  decision. `postgres:set <svc> post-create-network` is the repair. `postgres:link` additionally adds a
-  legacy `--link`, whose behaviour on a user-defined bridge is `[unverified]` (punch-list item 9).
+- **A project's database must be created with `--initial-network` — a v2 obligation this entry records
+  in advance.** `F_postgres` is deferred to v2 (2026-09-10), so v1 creates no services and this costs
+  nothing yet; it is written down because the flag is *creation-time only*. A service created without it
+  sits on the shared bridge, where the app can no longer reach it under this decision, and the repair is
+  `postgres:set <svc> post-create-network`. `postgres:link` additionally adds a legacy `--link`, whose
+  behaviour on a user-defined bridge is `[unverified]` (punch-list item 9, now a v2 question).
 - **Project teardown grows a step:** `network:destroy app-<id>` after `apps:destroy`, or `F_uninstall`
   leaks a network per project.
 - **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
@@ -399,15 +403,15 @@ became whether to keep a second one on top of it.
   converger and no drift policy to get wrong. Since this box is used only through Shepherd2 and `dokku`,
   there is no third thing to reconcile.
 - **Creation is the error-prone part; operation is not.** Onboarding a project is roughly ten commands,
-  three of them (`apps:create`, `network:create`, `postgres:create`) not idempotent, plus the cache flags
-  and the first sync. That earns a script. Every day-N action is one well-named `dokku` command, and
-  re-exposing those one-to-one is `shepherd-cli` again — the component class `D_retire_shepherd_java`
-  retired.
+  two of them (`apps:create`, `network:create`) not idempotent, plus the first sync — and it was more
+  before `D_builder` deleted the cache flags and `F_postgres` moved to v2. That still earns a script.
+  Every day-N action is one well-named `dokku` command, and re-exposing those one-to-one is
+  `shepherd-cli` again — the component class `D_retire_shepherd_java` retired.
 - **Config var over inference, because of one edge.** `git:sync` does record its URL (`apps:report
   --app-deploy-source-metadata`), but only after a build that succeeded far enough to fire
-  `deploy-source-set`. Many first builds fail — the Dockerfile usually needs a couple of iterations — and
-  an app with no recorded URL is invisible to a poll derived from Dokku's records, so the developer's fix
-  upstream is never picked up. A config var written *before* the first build puts the app in the poll
+  `deploy-source-set`. Many first builds fail — the `Procfile` / buildpack / `system.properties` trio
+  usually needs a couple of iterations — and an app with no recorded URL is invisible to a poll derived
+  from Dokku's records, so the developer's fix upstream is never picked up. A config var written *before* the first build puts the app in the poll
   from the moment it exists, and the next upstream commit heals it. `RESEARCH.md` → *`git:sync`* has
   the source reading.
 
@@ -499,11 +503,12 @@ per app; `D_dokku_is_truth` already does.
 - **Nothing in v1 may assume more than one keyholder** — no per-user paths, no owner checks in
   `shepherd2` — so that v2 adds the hook without unpicking anything.
 
-## D_cert — One wildcard certificate: lego DNS-01 on the host, propagated by `dokku-global-cert` (2026-09-10)
+## D_cert — One wildcard certificate: lego DNS-01 on the host, propagated by `dokku-global-cert` — or plain http, chosen at install (2026-09-10)
 
 **Status:** Accepted 2026-09-10, awaiting implementation — it lands as `install` steps (lego, the plugin,
 the first issuance, one root cron line) and nothing per app. Depends on `D_proxy`: the `certs` plugin
-this rides on is ignored under the Traefik plugin.
+this rides on is ignored under the Traefik plugin. **Amended the same day** with `F_http_only`: https as
+described here is one of *two* install modes, and the second one is the absence of all of it.
 
 **Context.** `F_wildcard_https` asks for **one** `*.mydomain.me` certificate, so that a new app is on
 https the moment it exists and nobody performs a per-app ACME order, ever. shepherd-traefik does this
@@ -530,6 +535,17 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   certificate alone. It is the one third-party plugin Shepherd2 depends on, and this entry is the `D_`
   that `CLAUDE.md`'s *Conventions* require for that.
 - **No per-app ACME in v1.** `dokku-letsencrypt` is not installed; no app runs `letsencrypt:enable`.
+- **TLS is an install-time *mode*, and `http` is a supported one** — `F_http_only`, added 2026-09-10.
+  `install` asks once, and the answer is recorded on the box:
+  - **`https`** — everything above: lego, the DNS credentials, `dokku-global-cert`, the renewal cron.
+    This is what a real box runs, and it needs a DNS zone with `@` and `*` records plus API access to it.
+  - **`http`** — none of the above is installed. Apps are served over port 80 by the same nginx, which
+    needs no flag for it: an app with no certificate is an http app, and `domains:set-global` is
+    identical in both modes. It exists for a throwaway VM where obtaining a wildcard certificate is
+    either impossible or not worth it, and it is how the box gets tested without a DNS zone at all —
+    `app1.mydomain.me`, `app2.mydomain.me` … in the *client's* `/etc/hosts`, pointed at the VM.
+  - **The two are not switchable on a running box**, by decision rather than by mechanism — see
+    *Consequences*. Pick per install; to change, reinstall.
 
 **Why.**
 
@@ -593,15 +609,32 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   provider ever misbehaves, the fallback is upstream's static binary, pinned the way Dokku is.
 - **Rate limits stop mattering.** One certificate renewed roughly every sixty days is far below every
   Let's Encrypt limit, where a per-app route would have had to batch a farm migration.
+- **The mode is one-way in practice, and that is why it is an install-time question.** Mechanically
+  Dokku would let you add a certificate later; what makes the switch a bad promise is the *other*
+  direction. nginx's `hsts` property defaults to **`true`**, with `hsts-include-subdomains` `true` and
+  `hsts-max-age` `15724800` — 182 days (`RESEARCH.md` → *nginx*). So the moment one app is served over
+  https, every browser that saw it refuses plain http for half a year, and the fix lives in each
+  visitor's browser rather than on the box. Downgrading is therefore not something `install` can undo,
+  and rather than support half a switch we support neither: **pick per install; to change, reinstall.**
+  Two implications for the code: `install` records the mode where `uninstall` can find it (so the
+  teardown is symmetric — `F_uninstall`), and nothing in http mode may pre-set `nginx:set … hsts`, which
+  is inert without a certificate but would go live the instant one appeared.
+- **http mode makes the DNS requirements conditional, not the domain.** `domains:set-global mydomain.me`
+  is still set and apps are still `PROJECTID.mydomain.me`; what http mode drops is the zone, the `*`
+  record and the API token. Resolution can then come from the client's `/etc/hosts`, one line per app —
+  which is exactly why this mode is the one a test VM uses, and why `README.md` owns that recipe.
 - **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*):
   that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
-  re-applies to every app and reloads nginx without dropping connections; and that an app created and
-  never yet deployed serves the global cert on its first successful deploy.
+  re-applies to every app and reloads nginx without dropping connections; that an app created and
+  never yet deployed serves the global cert on its first successful deploy; and — for `F_http_only` —
+  that an app on a box with no certificate serves plain http with no redirect and no HSTS header.
 
 ## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented. One `[unverified]` could force a re-read rather
-than a reversal: whether a Vaadin *frontend* build stays warm across rebuilds (punch-list items 13–17).
+**Status:** Accepted 2026-09-10. Not yet implemented. The one `[unverified]` that could have forced a
+re-read — whether a Vaadin *frontend* build stays warm across rebuilds — **stopped being load-bearing
+the same day**: every app on this box uses Vaadin's pre-compiled production bundle, so it runs no
+frontend build at all, and caching one is deferred to v2 (see *Consequences*).
 Supersedes nothing, but it makes `D_no_shared_cache` in shepherd-traefik's *Known gap* closed rather
 than inherited.
 
@@ -780,20 +813,26 @@ whole decision in one sentence.
   becomes one lever — `repo:purge-cache <app>` — and the successor to `shepherd-clearcache` prunes
   *volumes*, not buildx caches. Punch-list item 1 (does `--cache-to type=local` export at all) is moot
   and has been struck.
-- **The frontend half of a Vaadin build is the one thing this decision does not solve,** and it is not
-  a herokuish weakness — the frontend is driven by Maven, so it is invisible to the node buildpack
-  that would otherwise have cached it, on any builder. What the decision *does* give is the place to
-  put the fix, **and the fix is app-side like the buildpack choice**: `/cache` is a per-app volume
-  that the build can write to (herokuish chowns it to the build user before `bin/compile` **[src]**),
-  and a committed `.env` reaches the build environment **[src]** — so `npm_config_cache=/cache/npm`
-  warms npm, and `MAVEN_CUSTOM_OPTS=… -Duser.home=/cache/home` should relocate `~/.vaadin` into the
-  same volume. Both are lines in the repo; the box learns nothing per-app. Vaadin's pre-compiled
-  production bundle (24.1+) removes the frontend build entirely for apps with no custom frontend or
-  add-ons, which is likely most of the farm. Note what is *not* available: **providing a system
-  Node** — it is not in `heroku/heroku:24-build` **[docs]**, `heroku/nodejs` exports no `PATH` to a
-  later buildpack **[src]**, and we do not build the herokuish image — so `~/.vaadin` must be
-  relocated rather than made unnecessary. Tracked in `ideas/vaadin-build-under-herokuish.md`;
-  punch-list items 13–17.
+- **The frontend half of a Vaadin build is the one thing this decision does not solve — and v1 does not
+  need it solved.** It is not a herokuish weakness: the frontend is driven by Maven, so it is invisible
+  to the node buildpack that would otherwise have cached it, on any builder. What retires the problem
+  is the app side. Vaadin's pre-compiled production bundle (24.1+) removes the frontend build entirely
+  for an app with no custom frontend and no frontend-customising add-ons **[docs]**, and **every app on
+  this box is such an app** (operator, 2026-09-10). So **caching `node_modules` and `~/.vaadin` is
+  deferred to v2**, and `README.md`'s recommendation is to stay on that bundle rather than to configure
+  a cache.
+- **When v2 needs it, the fix is app-side like the buildpack choice** — `/cache` is a per-app volume the
+  build can write to (herokuish chowns it to the build user before `bin/compile` **[src]**) and a
+  committed `.env` reaches the build environment **[src]**, so `npm_config_cache=/cache/npm` warms npm
+  and `MAVEN_CUSTOM_OPTS=… -Duser.home=/cache/home` should relocate `~/.vaadin` into the same volume.
+  Two things bound that plan, both recorded 2026-09-10. **Vaadin has no property for where `~/.vaadin`
+  lives** — `require.home.node` only *forces* that location, and the project-local alternative sits in
+  the throwaway build directory **[docs]** — so moving `user.home` is the only lever; and **providing a
+  system Node is unreachable** (not in `heroku/heroku:24-build` **[docs]**, `heroku/nodejs` exports no
+  `PATH` **[src]**, and we do not build the herokuish image). Whether the two settings belong in the
+  repo's `.env` or in a box-side `config:set --global` is the live fork, since a committed `/cache` path
+  is a platform path in someone else's repo. Tracked in `ideas/vaadin-build-under-herokuish.md`;
+  punch-list 13 and 15 are v1 curiosities, 14 and 16 are v2.
 - **A `heroku/nodejs` + `heroku/java` multi-buildpack is not the answer to that**, and the reason is
   worth recording so nobody re-derives it: the node buildpack's cache bracket opens and closes inside
   *its own* compile, which runs before Maven, so anything Maven creates is saved by nobody; it prunes

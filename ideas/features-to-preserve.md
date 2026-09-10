@@ -13,7 +13,8 @@ equally. Reading shepherd-traefik's scripts and shepherd-java-client's README/CL
 features with no `R_` box at all** (marked ⁿᵉʷ below), most of them in shepherd-java, which is exactly
 the component being deleted. That is the point of doing this before writing code.
 
-**Verdicts.** ✅ Dokku does it · 🔧 glue we write · 🕳️ gap, no answer yet · ✂️ propose dropping.
+**Verdicts.** ✅ Dokku does it · 🔧 glue we write · 🕳️ gap, no answer yet · ✂️ not in v1 — either dropped
+or deferred, and the row says which (see *Proposed drops, and the deferrals to v2*).
 Every Dokku claim below is sourced in `RESEARCH.md`; nothing is restated here beyond the one-line
 answer, and `[unverified]` there means it is a hypothesis, not a plan.
 
@@ -24,16 +25,16 @@ answer, and `[unverified]` there means it is a hypothesis, not a plan.
 | `F_` | Feature | Today | Dokku answer | |
 |---|---|---|---|---|
 | ~~`F_build_dockerfile`~~ | ~~Build from the `Dockerfile` at the repo root, on the box~~ | Jenkins → `shepherd-build` → `docker build` | **Dropped — `D_builder`.** The Dockerfile builder is prohibited box-wide; apps are built by the herokuish buildpack builder | ✂️ |
-| `F_poll_rebuild` | Rebuild **on a schedule**, not on push — we host repos we don't own | Jenkins poll-SCM job per project | `dokku git:sync --build-if-changes <app> <url> <ref>` from a **host crontab** — `app.json` cron runs the deployed image and cannot build | 🔧 |
+| `F_poll_rebuild` | Rebuild **on a schedule**, not on push — we host repos we don't own | Jenkins poll-SCM job per project | `dokku git:sync --build-if-changes <app> <url> <ref>` from a **host crontab**, **every 5 minutes** (`*/5`) — `app.json` cron runs the deployed image and cannot build | 🔧 |
 | `F_build_mem_limit` | Cap build memory | `shepherd-build` `--memory` | `resource:limit --process-type build --memory N` | ✅ |
 | `F_build_cpu_limit` | Cap build CPU | `shepherd-build` `--cpu-quota` | **Probably no longer a gap under `D_builder`**: the documented `✗` and the missing `--cpus` are *Dockerfile-builder* facts, and on the herokuish path build options go to `docker container create` unfiltered `[src]`. Punch-list 17 | ❓ |
 | `F_build_args` ⁿᵉʷ | Per-project build args — the Vaadin offline key needs to exist at *build* time | `build.buildArgs` in the project JSON | **Simpler under `D_builder`**: plain `dokku config:set`, since herokuish bundles config vars into the build's ENV_DIR `[src]`. (The `--build-arg` route was a Dockerfile-builder workaround) | ✅ |
 | ~~`F_custom_dockerfile`~~ ⁿᵉʷ | ~~Per-project Dockerfile path (`vherd.Dockerfile`)~~ | `build.dockerFile` | **Dropped with `F_build_dockerfile` — `D_builder`.** The nearest equivalent is `builder:set <app> build-dir` for a monorepo subdirectory | ✂️ |
-| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | **`cache-$APP` volume, and the Heroku Java buildpack puts `maven.repo.local` inside it** `[src]`. Maven half solved; the Vaadin *frontend* half is open — punch-list 13–16 | 🔧 |
+| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | **`cache-$APP` volume, and the Heroku Java buildpack puts `maven.repo.local` inside it** `[src]` — the Maven half, which is the half that mattered. The Vaadin *frontend* half (`node_modules`, `~/.vaadin`) is **deferred to v2**: every app here uses Vaadin's pre-compiled production bundle, so there is no npm/Vite build to cache. Punch-list 13, 15 | 🔧 |
 | `F_cache_isolation` | …and that cache must be **per project** — one project must not reach another's artifacts | `--cache-to/--cache-from` per project id, enforced on the build command | **Closed, and now enforced rather than conventional** — Dokku names the volume, the app has no Dockerfile in which to name another. `repo:purge-cache <app>` purges exactly one. See `D_builder` | ✅ |
-| `F_build_serial` ⁿᵉʷ | Never two builds at once (`concurrentJenkinsBuilders: 1`) — the corruption half of the cache problem | Jenkins executor count | Free if the poll is one serial cron loop; `parallel-schedule-count` is about deploys, not builds | 🔧 |
+| `F_build_serial` ⁿᵉʷ | Never two builds at once (`concurrentJenkinsBuilders: 1`) — the corruption half of the cache problem | Jenkins executor count | Free if the poll is one serial cron loop — but at a 5-minute tick the lock must be **non-blocking** (`flock -n`), or polls queue behind a long build; `parallel-schedule-count` is about deploys, not builds | 🔧 |
 | `F_build_history` ⁿᵉʷ | The list of past builds, and each one's build log | Jenkins; `shepherd-cli builds` / `buildlog` | Core `builds` plugin since 0.38.0: `builds:list` / `builds:output`, a record + log file per deploy, 20 per app. `git:sync` is captured like a push. No git SHA in the record | ✅ |
-| `F_private_repos` ⁿᵉʷ | Build private repos, with a credential per project | Jenkins credentials store, `gitRepo.credentialsID` | `git:auth <host> <user> <token>` (netrc) or a deploy key — but **per host, not per project** | 🕳️ |
+| `F_private_repos` ⁿᵉʷ | Build private repos, with a credential per project | Jenkins credentials store, `gitRepo.credentialsID` | **Deferred to v2** — v1 builds publicly cloneable repos only. The v2 mechanism is `git:auth <host> <user> <token>` (netrc) or a deploy key, and the gap is that it is **per host, not per project**; see `Q_credentials` | ✂️ |
 
 **Section A was settled by `D_builder` on 2026-09-10, and it cost a feature.** The Dockerfile builder
 is prohibited box-wide (`builder:set --global selected herokuish`) and apps are built by Heroku v2a
@@ -43,15 +44,29 @@ features this migration deletes rather than preserves. Read `D_builder` before r
 above; the five positions this file used to list under `F_cache_isolation` are gone with it, and so is
 `ideas/build-cache.md`, which existed to choose between them.
 
-Two loose ends survive into `ideas/vaadin-build-under-herokuish.md`: the frontend half of a Vaadin
-build (`F_build_cache`), and whether `F_build_cpu_limit` was ever really a gap.
+Two loose ends survive into `ideas/vaadin-build-under-herokuish.md`, and **both shrank on 2026-09-10**:
+the frontend half of a Vaadin build (`F_build_cache`) is *deferred to v2*, because every app on this box
+uses Vaadin's pre-compiled production bundle and therefore runs no npm/Vite build at all; and whether
+`F_build_cpu_limit` was ever really a gap is still one command on the first box.
 
-**One number still isn't written down anywhere, and `F_poll_rebuild` depends on it: the poll
-interval.** Under the Dockerfile builder it was load-bearing (BuildKit evicts mount caches after
-~48 h, so a weekly poll meant a permanently cold cache); under `D_builder` the cache volume has no TTL,
-so the stakes are lower — but the housekeeping cron still must not wipe a cache the poll is about to
-use, and `builds:set --global retention 20` was sized for "a weekly poll" in `Q_build_history`. Look up
-the predecessor's Jenkins poll cadence rather than assuming.
+**The poll interval is 5 minutes** — stated by the operator on 2026-09-10, so `F_poll_rebuild` is a
+`*/5 * * * *` crontab line and the number this file kept flagging as unwritten is now written. That is
+**288 ticks a day**, a different regime from the weekly cadence this file used to assume, and three
+things follow:
+
+- **The lock must skip, not queue.** `F_build_serial` needs `flock -n`: a Vaadin build takes minutes, so
+  ticks *will* land on a running build, and a blocking lock would accumulate polls that then rebuild the
+  same commit repeatedly. Skip, and let the next tick do it.
+- **A failed or broken repo does not churn.** `--build-if-changes` builds only when the fetch moved the
+  ref, and a failed build is not retried until upstream commits again (`RESEARCH.md` → *`git:sync`*). So
+  288 ticks produce a build only on a real change — which is also what keeps
+  `builds:set --global retention 20` sensible: the retained builds are the last 20 *changes*, not the
+  last 20 ticks. `Q_build_history`'s "sized for a weekly poll" framing is void, not wrong-by-a-factor.
+- **The cache is permanently warm, and permanently about to be used.** The old fear was the opposite one:
+  under the Dockerfile builder BuildKit evicted mount caches after ~48 h, so a *weekly* poll meant a
+  permanently cold cache. `D_builder` killed that (the `cache-$APP` volume has no TTL) and 5 minutes
+  kills it twice. What is left is the other direction — housekeeping must never purge a cache volume,
+  because at this cadence a poll is always imminent. See `F_housekeeping`.
 
 ---
 
@@ -96,13 +111,14 @@ git SHA).
 | `F_run_limits` | Runtime memory + CPU quota per app | `docker run -m … --cpus …` by shepherd-java | `resource:limit --memory N --cpu N` | ✅ |
 | `F_keep_alive` | Restart on crash and after a host reboot | Docker restart policy | `ps:set --global restart-policy always` (default is `on-failure:10`) + `ps:restore` from the init service | ✅ |
 | `F_runtime_env` ⁿᵉʷ | Per-project runtime env vars | `runtime.envVars` | `config:set` | ✅ |
-| `F_network_isolation` | Apps can't reach another app's non-public ports (was: "…or the admin plane" — there is no longer an admin plane) | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opted into per project: `network:create` + `network:set <app> initial-network`, and `postgres:create --initial-network` for the app's database. **Decided — `D_isolation`** | 🔧 |
-| `F_postgres` | Optional per-project Postgres | a README TODO in *both* predecessors; shepherd-java has a fixed `postgres-service` with a hardcoded password | `dokku-postgres`: `postgres:create` + `postgres:link` → `DATABASE_URL`, plus S3 backup schedules | ✅ |
+| `F_network_isolation` | Apps can't reach another app's non-public ports (was: "…or the admin plane" — there is no longer an admin plane) | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opted into per project: `network:create` + `network:set <app> initial-network` (plus `postgres:create --initial-network` for the app's database, once `F_postgres` lands in v2). **Decided — `D_isolation`** | 🔧 |
+| `F_postgres` | Optional per-project Postgres | a README TODO in *both* predecessors; shepherd-java has a fixed `postgres-service` with a hardcoded password | **Deferred to v2** — the plugin is not installed and `create-app` has no `--postgres`. The cheapest deferral on this list: `dokku-postgres` adds a database to an *existing* app in two commands (`postgres:create` + `postgres:link` → `DATABASE_URL`, plus S3 backup schedules), so waiting costs no v1 groundwork — except remembering `--initial-network` when it lands (`D_isolation`) | ✂️ |
 | `F_restart` | Restart one app on demand | `shepherd-cli restart` | `ps:restart <app>` | ✅ |
 
 **`F_network_isolation` — decided 2026-09-10, see `D_isolation`.** One Dokku-managed bridge network per
-project (`network:create` + `network:set <app> initial-network`, and `postgres:create --initial-network`
-for the project's database), which is `D_network_per_project` carried forward. The argument, the two
+project (`network:create` + `network:set <app> initial-network`, and — in v2, with `F_postgres` —
+`postgres:create --initial-network` for the project's database), which is `D_network_per_project`
+carried forward. The argument, the two
 rejected rungs and the consequences are in that entry; the mechanics are in `RESEARCH.md`
 (*Networking and app isolation*). The three things worth knowing from here:
 
@@ -123,6 +139,7 @@ rejected rungs and the consequences are in that entry; the mechanics are in `RES
 | `F_subdomain` | App reachable at `PROJECTID.<domain>` | Traefik host rule from a label | `domains:set-global <domain>` and the app name becomes the subdomain | ✅ |
 | `F_port_contract` | ~~`EXPOSE 8080` is the whole app contract~~ → **listen on `$PORT`** | Traefik routes to 8080 | **Free under `D_builder`** — the buildpack builders end the build with `ports-set-detected http:<proxy-port>:5000` `[src]` and the app reads `$PORT`. The `EXPOSE`/`ports:set` dance was Dockerfile-only | ✅ |
 | `F_wildcard_https` | **One** wildcard Let's Encrypt cert via DNS-01 — a new app is on https immediately, with no per-app ACME round-trip | Traefik, DNS challenge, one wildcard cert | lego (`--dns godaddy`) on the host + a root cron line, pushed into every app by `dokku-global-cert`. **Decided — `D_cert`** | 🔧 |
+| `F_http_only` ⁿᵉʷ | The box runs **either** wildcard https **or** plain http — an install-time choice, deliberately **not switchable afterwards**. http-only is for a test VM with no DNS zone to hand | nothing; shepherd-traefik is https-only | Ours, and it is mostly *not* doing things: skip lego, skip `dokku-global-cert`, leave every app on port 80. Dokku needs no flag — an app with no certificate is served over http, and `domains:set-global` is the same either way. Testing without wildcard DNS is `/etc/hosts` entries. **Added to v1 2026-09-10 — `D_cert`** | 🔧 |
 | `F_custom_domains` ⁿᵉʷ | Extra domains per project, with https on them | `publication.additionalDomains` | `domains:add <app> …` — but the wildcard cert covers no foreign domain, so https on one needs `dokku-letsencrypt` on that app. **Deferred to v2** (`D_cert`); never used in practice | ✂️ |
 | `F_apex_domain` ⁿᵉʷ | One project can own the apex domain | `publication.publishOnMainDomain` | Name the app as an FQDN and the global vhost is ignored; or `domains:set`. The wildcard cert does not cover the apex, so it is one more `-d` on the lego command. **Deferred to v2** (`D_cert`) — nothing to run there | ✂️ |
 | `F_ingress_tuning` ⁿᵉʷ | Per-project max body size and proxy read timeout | `publication.ingressConfig` | `nginx:set <app> client-max-body-size` / `proxy-read-timeout`, app-scoped, first-class | ✅ |
@@ -139,6 +156,12 @@ knowing from here:
 - **Nothing per app.** `create-app` does no TLS work at all; the plugin imports the cert at app creation.
   The requirement's *"no per-app round-trip"* half is met literally.
 - **The DNS API token lives on the box, root-only**, which is one more reason `D_single_operator` holds.
+- **…and https is now a *mode*, not the only mode** (`F_http_only`, added 2026-09-10). The install asks
+  once — wildcard https, or plain http — and the answer is not meant to be changed on a running box.
+  Nothing in Dokku forbids the switch; what does is `nginx:set`'s `hsts` default of `true` with a
+  ~182-day `hsts-max-age` (`RESEARCH.md` → *nginx*): once a browser has seen an app over https it will
+  refuse plain http for half a year, and that is not repairable from the box. So the http-only mode is
+  for a throwaway VM, and the real box is https from the first app.
 
 ## D. Project lifecycle and configuration
 
@@ -223,14 +246,16 @@ Google SSO back. `F_multi_user` is a real fork, with four positions; **position 
 
 | `F_` | Feature | Today | Dokku answer | |
 |---|---|---|---|---|
-| `F_install` | Reproducible one-shot host provisioning | `install` | Dokku's `bootstrap.sh` is two commands; **everything on top of it is ours** — daemon address pools, plugins, global properties, the poll cron, the prune cron, TLS | 🔧 |
-| `F_uninstall` ⁿᵉʷ | Tear the box down, symmetrically with what `install` created | `uninstall` | Nothing; ours. Worth keeping the old invariant that install/uninstall stay symmetric | 🔧 |
-| `F_housekeeping` | Periodic prune of images and build caches | `shepherd-clearcache`, weekly cron | Ours: `docker buildx prune` + `docker system prune`, **weekly not nightly** (the purge cadence is the cache's real lifetime) | 🔧 |
+| `F_install` | Reproducible one-shot host provisioning | `install` | Dokku's `bootstrap.sh` is two commands; **everything on top of it is ours** — daemon address pools, plugins, global properties, the `*/5` poll cron, the weekly prune cron, and TLS *if* the https mode was chosen (`F_http_only`). It is also the only place the mode is chosen | 🔧 |
+| `F_uninstall` ⁿᵉʷ | Tear the box down, symmetrically with what `install` created | `uninstall` | Nothing; ours. Worth keeping the old invariant that install/uninstall stay symmetric — which `F_http_only` sharpens: the teardown must remove lego, the plugin and the cron line in https mode and not trip over their absence in http mode, so the mode has to be discoverable on the box | 🔧 |
+| `F_housekeeping` | Periodic prune of images and build caches | `shepherd-clearcache`, weekly cron | Ours: a weekly `docker system prune` (dangling images, stopped containers) and **never a blanket volume prune** — under `D_builder` the build cache *is* the `cache-$APP` volume, and at a 5-minute poll one is always about to be used. The per-app lever is `repo:purge-cache`. `docker buildx prune` has nothing left to prune, and the old nightly-vs-weekly argument was about BuildKit mount lifetime, so it is void | 🔧 |
 | `F_safe_reboot` ⁿᵉʷ | Graceful "wait until it's safe" before a host reboot, so a reboot never lands mid-build | `shepherd-cli shutdown` — blocks until Jenkins is idle | Half of it is upstream: `builds:list` with no app lists every running build box-wide. Blocking until it's empty (or until our poll's lock file is free) is ours | 🔧 |
 
-## Proposed drops
+## Proposed drops, and the deferrals to v2
 
-Say so if any of these is wrong:
+Two different verdicts, kept in one list because they are all "not in v1": a **drop** has no plan to
+return, a **deferral** is a feature we still want whose absence costs v1 nothing structural. Say so if
+any of these is wrong:
 
 - **`F_web_admin`** — the browser UI.
 - **`F_user_login`** — password and Google SSO login, and the email-domain allowlist. Nothing outside
@@ -241,6 +266,14 @@ Say so if any of these is wrong:
   used: every app has been a demo at `PROJECTID.<domain>`, and there is nothing to publish on the apex
   when a visitor cannot ask for an app. v2 is `dokku-letsencrypt` on the affected apps only, which
   coexists with the global cert.
+- **`F_private_repos`** — *deferred to v2* (2026-09-10). v1 builds publicly cloneable repos only, so the
+  box holds no git credential and `create-app` grows no flag for one. See `Q_credentials`.
+- **`F_postgres`** — *deferred to v2* (2026-09-10). `dokku-postgres` is not installed, `create-app` has
+  no `--postgres`, and `destroy-app` has no `postgres:destroy`. The cheapest thing on this list to
+  un-defer, because a database can be added to an app that already exists.
+- **The Vaadin frontend build cache** — *deferred to v2* (2026-09-10), the open half of `F_build_cache`.
+  Every app here uses Vaadin's pre-compiled production bundle, so there is no npm/Vite build to cache;
+  the day one isn't, `ideas/vaadin-build-under-herokuish.md` has the candidates.
 - **The naming contract** — `shepherd_PROJECTID` / `shepherd/PROJECTID` / `PROJECTID.shepherd`. It
   existed because there was no scheduler or registry, so the name *was* the lookup. Dokku owns naming.
 - **`shepherd-java-api` on Maven Central** — no successor library; published versions stay published.
@@ -270,13 +303,13 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   `dokku-global-cert` for propagation. See `D_cert`.** Relaxing the requirement to per-app ACME was
   argued and lost: it only paid off with custom domains, which no app has ever used, so
   `F_custom_domains` and `F_apex_domain` are deferred to v2 instead. *(Section C.)*
-- **`Q_cache`** — which of the five positions on `F_cache_isolation`? **Downgraded 2026-09-09**: the
-  per-app `--cache-to` carries over, so this is no longer a regression to absorb but a pre-existing gap
-  (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
-  pick. **Reframed 2026-09-10, not decided — see `ideas/build-cache.md`**: the five positions collapse
-  to a two-way fork (convention vs. prune mounts between builds), and two things this file treats as
-  settled are open there too — whether the per-project `--cache-to` dirs are wanted at all, and the
-  poll interval every cadence answer hangs on.
+- ~~**`Q_cache`**~~ — **answered 2026-09-10 by `D_builder`, which took the position this file had called
+  "almost certainly not worth it": no Dockerfile, so the cache is Dokku's `cache-$APP` volume and
+  isolation is enforced rather than conventional.** All five positions, the `--cache-to` dirs and
+  `ideas/build-cache.md` are gone with it; the two things that file left open are answered here — the
+  per-project `--cache-to` dirs are not wanted (there is no BuildKit cache any more), and the poll
+  interval is 5 minutes (section A). What survives is not a fork but a v2 deferral: the Vaadin frontend
+  half of `F_build_cache`, in `ideas/vaadin-build-under-herokuish.md`.
 - ~~**`Q_isolation`**~~ — **answered 2026-09-10: one bridge network per project. See `D_isolation`.** The
   shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
   remains open is only the axis that was never this question's — app-to-host and egress, now
@@ -316,16 +349,21 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
      Ruby `dokku-cli` gem. Cheapest of the four to build and the one that adds no new surface to the box.
 - ~~**`Q_build_history`**~~ — **closed 2026-09-09, not answered**: Dokku's `builds` plugin already does
   it (see section A). The tee-to-`/var/log/shepherd2` sketch this question proposed is dead — writing it
-  would duplicate `/var/lib/dokku/data/builds/` with a worse retention story. The only thing left to
-  decide is whether the default retention of 20 is right for a weekly poll, which is one
-  `builds:set --global retention N` in the installer, not a fork in the design.
+  would duplicate `/var/lib/dokku/data/builds/` with a worse retention story. The last loose end —
+  whether the default retention of 20 suits the poll cadence — **closed too, once the interval was
+  pinned at 5 minutes**: `--build-if-changes` only builds when the ref moved, so 20 records are the last
+  20 *changes* to a project rather than a window of clock time, and the default needs no
+  `builds:set --global retention N` in the installer at all.
 - **`Q_quota`** — keep `F_memory_quota`? It has never been Dokku's job and never will be. Summing
   `resource:report --format json` across apps and refusing an over-commit is maybe 20 lines in
   `create-app` — but only *there*: under `D_dokku_is_truth` a later hand `resource:limit` bypasses it.
   Is creation-time-only enforcement worth the 20 lines?
-- **`Q_credentials`** — `git:auth` is per *host*, not per project, so one GitHub token would cover the
-  whole box. Is per-project git credentials still a requirement, or was it an artifact of Jenkins having
-  a credentials store? (Deploy keys per project may still work; `[unverified]`.)
+- **`Q_credentials`** — **deferred, not answered, 2026-09-10: `F_private_repos` is v2, so v1 needs no git
+  credentials at all** and every hosted repo must be publicly cloneable. The question it defers is still
+  the interesting one, and it is the *shape* rather than the requirement: `git:auth` is per *host*, so one
+  GitHub token would cover the whole box and any app could then be pointed at any private repo the token
+  can read. Whether per-project credentials are a real requirement or an artifact of Jenkins having a
+  credentials store is a v2 question; per-project deploy keys may work and are `[unverified]`.
 - **`Q_language`** — what is the glue written in? Bash matches both predecessors and adds no runtime.
   Its main input is gone: with `D_dokku_is_truth` there is no descriptor to parse, only `--format json`
   reports to read, which is `jq`. Bash + `jq` is the default; the remaining case for anything richer is
@@ -334,26 +372,30 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 ## A concrete sketch, to argue against
 
 With nginx settled by `D_proxy`, per-project networks by `D_isolation`, no descriptor by
-`D_dokku_is_truth` and one wildcard cert by `D_cert`, the whole repo is roughly:
+`D_dokku_is_truth`, one wildcard cert (or none — `F_http_only`) by `D_cert`, and neither Postgres nor
+private repos in v1, the whole repo is roughly:
 
 ```
-shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --owner EMAIL
+shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --owner EMAIL
                              #   --buildpack BP --build-dir PATH --domain D…]
                              #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
                              #   + any build-time vars (--no-restart), resource:limit,
-                             #   network:create + network:set, postgres:create -N + link if asked,
+                             #   network:create + network:set,
                              #   buildpacks:set if --buildpack given (else the repo's own
                              #   .buildpacks names it — D_builder), then git:sync --build
-shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, postgres:destroy, network:destroy
+                             #   (no --postgres: F_postgres is v2)
+shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, network:destroy
 shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
                              #   and the retry after a failed build
-shepherd2 poll               # cron: for every app with SHEPHERD_GIT_URL, git:sync --build-if-changes,
-                             #   serially under a lock file (Dokku records the build logs itself)
+shepherd2 poll               # */5 cron: for every app with SHEPHERD_GIT_URL, git:sync
+                             #   --build-if-changes, serially under flock -n so a tick that lands
+                             #   on a running build skips (Dokku records the build logs itself)
 shepherd2-clearcache         # weekly: docker system prune. NOT a blanket volume prune — under
                              #   D_builder the per-app cache-$APP volumes are the build cache;
                              #   the per-app lever is dokku repo:purge-cache ID
 shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons,
-                             #   lego + global-cert + first issuance (D_cert)
+                             #   and in https mode lego + global-cert + first issuance (D_cert);
+                             #   in http mode those three are simply skipped (F_http_only)
 shepherd2-uninstall
 ```
 
@@ -373,9 +415,9 @@ Traefik container; a host-side nginx dialling container IPs cannot have that fai
 `network:rebuild` covers the rest. See `ideas/app-network-isolation.md`.
 
 Where this sketch is weakest: `create-app` is a dozen flags, and a project whose creation fails halfway
-(the first build usually does) must be re-runnable without tripping over the three non-idempotent
-commands — `apps:exists` / `network:exists` / `postgres:exists` guards, or a `destroy-app` first.
-`Q_cache` is *mostly* handled — `create-app` emits `docker-options:add … build '--cache-to …'` per
-project, so the layer cache is enforced the way `shepherd-build` enforces it today; what the sketch
-still cannot do is scope an app's own `RUN --mount=type=cache`, which stays convention
-(`--build-arg CACHE_ID=PROJECTID` plus a documented `id=`, cooperation rather than enforcement).
+(the first build usually does) must be re-runnable without tripping over the non-idempotent commands —
+`apps:exists` / `network:exists` guards, or a `destroy-app` first. Caching is no longer a weak spot at
+all: with `D_builder` there is nothing for `create-app` to pass, because the cache is the `cache-$APP`
+volume Dokku mounts and an app with no Dockerfile has no syntax in which to name another. The two
+remaining soft edges are the install-time `F_http_only` choice, which is a mode the *uninstaller* has to
+know about too, and `F_memory_quota` being enforced only where `create-app` can see it.

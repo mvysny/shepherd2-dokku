@@ -12,10 +12,12 @@ projects. Built with off-the-shelf tools: **Dokku and nothing else.**
 How this is meant to work:
 
 * Each app is a Dokku app, built from its git repo by a **Heroku buildpack** — you supply a `Procfile`,
-  not a `Dockerfile` — and run as a Docker container, published at `PROJECTID.<domain>` over https.
+  not a `Dockerfile` — and run as a Docker container, published at `PROJECTID.<domain>` over https (or
+  plain http, if that is how the box was installed — see *Installation*).
   Each project gets its own build cache, so one project can never resolve another's jars.
-* Dokku **polls** each repo on a schedule rather than waiting for a push
-  (`dokku git:sync --build-if-changes`), so Shepherd2 can host repos you don't own.
+* Dokku **polls** each repo **every 5 minutes** rather than waiting for a push
+  (`dokku git:sync --build-if-changes`), so Shepherd2 can host repos you don't own. A commit is live
+  within a few minutes of being pushed *somewhere else*, and nothing is rebuilt when nothing changed.
 * Dokku's proxy terminates https and routes by hostname; Docker keeps the containers up and brings them
   back after a reboot.
 * Administration is `ssh dokku@host …` — Dokku's own CLI. There is no web UI and no JVM anywhere.
@@ -59,6 +61,9 @@ real box.
   The one wildcard certificate is issued over the DNS-01 challenge, so the box holds an API token that
   can edit the zone (root-only). GoDaddy is what the reference box uses; note that GoDaddy restricts its
   DNS API to accounts with 10+ domains or a Discount Domain Club plan.
+  * **Both DNS points apply only to an https box.** A box installed in **http mode** needs no zone, no
+    `*` record and no API token — see *Installation*. That mode exists for a test VM, where resolution
+    comes from `/etc/hosts` on whatever machine browses it.
 * Docker 24+ is wanted so BuildKit is the default. (The build cache itself is a per-app Docker volume,
   not a BuildKit cache — see [`D_builder`](DECISIONS.md).)
 
@@ -68,8 +73,27 @@ Not written yet. Dokku's own install is two commands and is documented in
 [RESEARCH.md](RESEARCH.md#versions-platform-install); everything Shepherd2 adds on top of it is what
 this section will become.
 
-Two steps are already settled and are here so they are not forgotten, because both are awkward to
-retrofit:
+Four things are already settled and are here so they are not forgotten, because each is awkward or
+impossible to retrofit:
+
+* **Decide first: https or http. You do not get to change your mind.** The install runs in one of two
+  modes (`D_cert`), and the choice is recorded on the box:
+  * **https** — one wildcard `*.mydomain.me` certificate, the bullet below. This is what a real box runs.
+  * **http** — plain http on port 80, no certificate, no lego, no DNS credentials. For a VM you are
+    testing in, or any box where a wildcard certificate is not worth the trouble.
+
+  Nothing in Dokku forbids switching, but Shepherd2 does not support it and the reason is not
+  squeamishness: nginx sends HSTS by default with a **182-day** max-age and `includeSubdomains`, so once
+  a browser has loaded any app on the domain over https it will refuse plain http for half a year, and
+  no amount of work *on the box* undoes that. To change modes, reinstall.
+
+  **Testing an http box without wildcard DNS**: you need no DNS at all. Put the app names in the
+  `/etc/hosts` of the machine doing the browsing — one line per app, all pointing at the VM:
+
+  ```
+  192.168.122.10  app1.mydomain.me
+  192.168.122.10  app2.mydomain.me
+  ```
 
 * **Enlarge Docker's address pools before deploying anything.** Each project gets its own Docker network
   (`D_isolation` in [DECISIONS.md](DECISIONS.md)), and a stock daemon runs out of them at **~30 apps**.
@@ -78,10 +102,11 @@ retrofit:
   the install rather than in a fix.
 * **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`); do not install the Traefik
   plugin. Per-app tuning is `dokku nginx:set PROJECTID …`.
-* **One wildcard certificate for every app** (`D_cert`). `lego` from the Ubuntu repos issues
-  `*.mydomain.me` over DNS-01, a daily root cron line renews it, and its renew hook runs
+* **In https mode, one wildcard certificate for every app** (`D_cert`). `lego` from the Ubuntu repos
+  issues `*.mydomain.me` over DNS-01, a daily root cron line renews it, and its renew hook runs
   `dokku global-cert:set`, which pushes the new certificate into every app. New apps pick it up at
-  creation. Nothing is done per app; do not install `dokku-letsencrypt`.
+  creation. Nothing is done per app; do not install `dokku-letsencrypt`. In http mode none of this is
+  installed, and there is nothing to run instead.
 
 ## Adding your project
 
@@ -92,15 +117,21 @@ cache is isolated from every other's.
 
 ### What the repo needs
 
-1. A `Procfile` at the root, naming the `web` process.
-2. For a Maven project, a `system.properties` pinning `java.runtime.version`. The buildpack runs
+1. **A publicly cloneable git URL.** The box holds no git credentials in v1, so it must be able to
+   `git clone` the repo anonymously; private repos are a v2 feature.
+2. A `Procfile` at the root, naming the `web` process.
+3. For a Maven project, a `system.properties` pinning `java.runtime.version`. The buildpack runs
    `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
    say otherwise.
-3. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
+4. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
    Java project that commits a `package.json`, which Vaadin tells you to do, is detected as a *Node*
    app, because `nodejs` is tried before `java`.
-4. Optionally a `.env`, for build-time settings the project wants to carry itself — see *The `.env`
+5. Optionally a `.env`, for build-time settings the project wants to carry itself — see *The `.env`
    recipe* below.
+
+And one thing the box does not offer yet: **there is no managed database.** An app that needs Postgres
+cannot be hosted here in v1; the plugin that will provide it (`dokku-postgres`) is a v2 addition, and it
+attaches to an app that already exists, so nothing about onboarding changes when it lands.
 
 ### Naming the buildpack: in the repo, or at registration
 
@@ -126,30 +157,41 @@ builder image.
 ### The `.env` recipe
 
 A committed `.env` reaches the **build** environment, so a project can point its own caches at the
-per-app cache volume that Dokku mounts at `/cache`. That volume is yours alone, survives between
-builds, and is what stops the Maven tree being re-downloaded on every scheduled rebuild. Maven needs
-nothing — the buildpack already puts `.m2/repository` there. A **Vaadin** project wants two more
-lines, because its frontend build is driven by Maven and so is invisible to the buildpack that would
-otherwise cache it:
+per-app cache volume that Dokku mounts at `/cache`. That volume is yours alone and survives between
+builds, which is what stops the Maven tree being re-downloaded on every scheduled rebuild.
+
+**As this box actually runs, you need no `.env` at all** — not for Maven, and not for Vaadin. The
+buildpack already puts `.m2/repository` in the cache volume, and every Vaadin app here relies on
+Vaadin's **pre-compiled production bundle**, which skips npm and Vite entirely for an app with no
+frontend-customising add-ons and no custom JS/TS (Vaadin 24.1+). No frontend build means nothing to
+cache, and that is the recommendation rather than a happy accident: **stay on the default bundle.** If
+your app must customise the frontend, commit `src/main/bundles/` as Vaadin's own guidance says, so the
+compiled bundle travels in the repo instead of being rebuilt here every five minutes.
+
+**If you ever do need a real frontend build on the box, expect it to be slow — the fix is a v2 topic.**
+`vaadin-maven-plugin` downloads its own Node into `~/.vaadin` and installs `node_modules` into the
+source checkout, and both are discarded after every build, because during the Maven build `$HOME` *is*
+that checkout. The two lines below are the candidate fix. They are **unverified — never run on a real
+box** — and are tracked in `ideas/vaadin-build-under-herokuish.md`:
 
 ```dotenv
-# .env — build-time only; not your runtime config
+# .env — build-time only; not your runtime config. UNVERIFIED; see above.
 npm_config_cache=/cache/npm
 MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction -Duser.home=/cache/home
 ```
 
-- `npm_config_cache` keeps npm's downloads across rebuilds.
+- `npm_config_cache` keeps npm's downloads across rebuilds. It does not stop `npm install` running,
+  only its trips to the network.
 - `-Duser.home=/cache/home` moves `~/.vaadin` — where Vaadin installs its own Node — into the cache
-  volume too, so that download happens once rather than every build. Drop it if your build doesn't
-  like a relocated home.
+  volume, so that download happens once rather than every build. Vaadin has no setting for *where* that
+  directory lives, so relocating `user.home` is the only lever. Drop it if your build doesn't like a
+  relocated home.
 - `-Pproduction` is Vaadin's production profile; keep `-DskipTests`, which is the buildpack default
   you are replacing.
-
-Two things to know before leaning on this. **It is not yet verified on a real box** — the whole
-frontend-caching question is open, tracked in `ideas/vaadin-build-under-herokuish.md` — and if your
-app has no add-ons with frontend customisations and no custom JS/TS, Vaadin 24.1+ uses its
-pre-compiled production bundle and skips npm entirely, in which case none of this matters. Check that
-first.
+- **`/cache` exists only on this box**, which is the argument against carrying these lines in a repo at
+  all. Nothing on your own machine reads `.env` — not Maven, not npm — so they are inert locally; but
+  `dokku config:set` from the box side does the same job without putting a platform path in your source,
+  and is the likelier home for them.
 
 Prefer `.env` to `.npmrc` for the npm cache: recent pnpm no longer expands `${VAR}` in a
 repository-controlled `.npmrc`, and Vaadin's own recommended `.gitignore` excludes that file anyway.

@@ -265,7 +265,10 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - **`Q_cache`** — which of the five positions on `F_cache_isolation`? **Downgraded 2026-09-09**: the
   per-app `--cache-to` carries over, so this is no longer a regression to absorb but a pre-existing gap
   (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
-  pick. Cheap either way — the cache flags are two more `docker-options:add` lines `create-app` emits.
+  pick. **Reframed 2026-09-10, not decided — see `ideas/build-cache.md`**: the five positions collapse
+  to a two-way fork (convention vs. prune mounts between builds), and two things this file treats as
+  settled are open there too — whether the per-project `--cache-to` dirs are wanted at all, and the
+  poll interval every cadence answer hangs on.
 - ~~**`Q_isolation`**~~ — **answered 2026-09-10: one bridge network per project. See `D_isolation`.** The
   shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
   remains open is only the axis that was never this question's — app-to-host and egress, now

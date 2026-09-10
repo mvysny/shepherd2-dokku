@@ -1192,9 +1192,13 @@ first throwaway VPS:
     `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
     deploy and route? Only matters if `D_isolation` is ever revisited — it decides whether that entry's
     rejected shared-network-plus-firewall rung is reachable through Dokku at all. Lowest priority here.
-11. **What can an app reach on the host?** From inside a container, on both a shared and a per-app
-    network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header for another
-    app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish :3000" axis.
+11. **(v2, but cheap.) What can an app reach on the host?** From inside a container, on both a shared
+    and a per-app network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header
+    for another app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish
+    :3000" axis — and that rule is deferred to v2 (`ideas/harden-container-egress.md`), so this is
+    measured not to unblock v1 but to decide whether v2 should bother. Worth the ten minutes while
+    item 2 is being run anyway. Add `curl http://169.254.169.254/` to it: the metadata endpoint is the
+    one answer with a genuinely bad worst case.
 12. **Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
     network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Worth ten
     minutes on the same box as item 2, because it is the evidence under `D_proxy`'s strongest reason and

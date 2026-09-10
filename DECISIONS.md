@@ -358,9 +358,11 @@ properties of Dokku's version make the predecessor's price disappear:
   bridge gateway IP and ask for another app's vhost with a `Host:` header, which is harmless because
   that surface is public anyway. And **the host stays reachable**: every container keeps a route to its
   bridge gateway regardless of membership, so sshd and anything else bound on the box are reachable from
-  every app. That axis needs a `DOCKER-USER` rule and is deferred — see
-  `ideas/harden-container-egress.md`. It is also where the sibling's "app → admin plane" concern lands
-  here.
+  every app. That axis needs a `DOCKER-USER` rule and is **deferred to v2** (2026-09-10) — see
+  `ideas/harden-container-egress.md`, which also records the two things v1 must not do if that fix is to
+  stay cheap: no firewall state on the per-app path, and a deliberately chosen address pool, since the
+  pool subnet is probably what the rule matches on. It is also where the sibling's "app → admin plane"
+  concern lands here.
 - **Egress is unfiltered**, same note.
 
 ## D_dokku_is_truth — Dokku's own state is the source of truth; Shepherd2 supplements it, never fronts it (2026-09-10)

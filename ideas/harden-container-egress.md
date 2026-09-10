@@ -4,6 +4,19 @@ Split out of the app-network-isolation note when it graduated into `D_isolation`
 decision walls app off from app; **this note is the axis it left open**, and it is the one that still
 has no decision.
 
+**Deferred to v2 (2026-09-10).** So v1 ships with what the predecessors also shipped: **egress
+unfiltered, and the host reachable from every container.** That is a deliberate scope choice, not an
+oversight, and it holds up for three reasons — the box is single-operator (`D_single_operator`), so the
+only code hosted here is the operator's own demos; the whole shape below is *our* iptables
+configuration rather than anything Dokku provides, so nothing upstream is waiting on us; and the one
+item with a genuinely bad worst case, the cloud metadata endpoint, is a single rule that can be added
+to a running box at any time without touching an app.
+
+Two things v1 must therefore *not* do, so v2 stays cheap: don't let any per-app path acquire firewall
+state (`create-app` writes no rules — see the interface-match question below), and choose
+`default-address-pools` deliberately at install rather than letting Docker pick, because the pool subnet
+is probably what the eventual rule matches on.
+
 ## The problem
 
 Network membership does not hide the host. Every container keeps a route to its bridge gateway
@@ -58,14 +71,17 @@ Rough shape, to be argued with rather than copied:
   flagged and never resolved. Likely answer: drop per-port rather than per-host, or allow 53.
 - **Does it break `dokku-postgres` or any linked service?** Those are container-to-container, so they
   should not touch `DOCKER-USER` at all — but the `--link` residue in `postgres:link` is already
-  `[unverified]` (`RESEARCH.md` punch-list item 9) and this is a second reason to pin it down.
+  `[unverified]` (`RESEARCH.md` punch-list item 9) and this is a second reason to pin it down. Both
+  halves are v2 now: `F_postgres` was deferred the same day, so there is no linked service in v1 to
+  break.
 - **Where does the rule live so a reinstall reproduces it?** `iptables-save`/`iptables-restore` state is
   not in this repo. Options: a `shepherd2-install` step writing an `iptables-persistent` rules file, or
   a tiny systemd unit. Whichever — *"anything the box must survive a reinstall of belongs in this repo"*
   (`CLAUDE.md`), so it cannot stay a command someone typed once.
-- **Is it worth it at all**, given the threat model is "someone's demo app is compromised"? The honest
-  case for yes is the metadata endpoint: on a cloud VM that single address can hand out credentials for
-  the whole account, and it is one rule.
+- **Is it worth it at all**, given the threat model is "someone's demo app is compromised"? This is now
+  the question that decides whether v2 does any of this. The honest case for yes is the metadata
+  endpoint: on a cloud VM that single address can hand out credentials for the whole account, and it is
+  one rule — which is also the argument for doing *only* that rule and stopping.
 
 ## Punch list additions
 
@@ -78,6 +94,9 @@ Dokku, so several may belong nowhere near that file):
 - Does `bootstrap.sh` or Dokku install any `DOCKER-USER` rules of its own that ours must not clobber?
 
 ## Where this lands on graduation
+
+Not before v2, and possibly never — a decision *against* is a graduation too, and the last bullet under
+*Open questions* is the one that settles which it is.
 
 - The rule, its interface/subnet match and the reinstall mechanism → a **`D_egress`** entry, plus the
   step itself in **`README.md`** and in `shepherd2-install`'s comment header.

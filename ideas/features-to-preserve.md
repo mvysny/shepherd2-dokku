@@ -128,9 +128,10 @@ rejected rungs and the consequences are in that entry; the mechanics are in `RES
 - **It is contingent on `D_proxy`** — the Traefik plugin has no network-attachment logic, so under
   Traefik this feature costs either itself or a reconciler cron.
 - **What it does *not* cover** is app-to-host and egress, since every container keeps a route to its
-  bridge gateway no matter which network it is on. That axis is deferred to
-  `ideas/harden-container-egress.md` and is where the old `int_jenkins` / `int_shepherd` admin-plane
-  concern now lands.
+  bridge gateway no matter which network it is on. That axis is **deferred to v2** (2026-09-10) in
+  `ideas/harden-container-egress.md`, and is where the old `int_jenkins` / `int_shepherd` admin-plane
+  concern now lands. So v1 ships with unfiltered egress and a host reachable from every container —
+  the same as both predecessors, and defensible only because of `D_single_operator`.
 
 ## C. Publish
 
@@ -313,7 +314,7 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - ~~**`Q_isolation`**~~ — **answered 2026-09-10: one bridge network per project. See `D_isolation`.** The
   shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
   remains open is only the axis that was never this question's — app-to-host and egress, now
-  `ideas/harden-container-egress.md`.
+  `ideas/harden-container-egress.md` and **deferred to v2** with it.
 - **`Q_multi_user`** — **answered for v1 2026-09-10: single operator, see `D_single_operator`.** Stays
   open as the **v2** question: how does per-user project ownership come back? Really the question *who
   else gets an SSH key*, because in core Dokku a key is unrestricted: there is no ownership to scope it
@@ -412,7 +413,8 @@ not here: `logs -t`, `builds:list` / `builds:output`, `ps:restart`, `config:set`
 Worth noting what is *not* in the list: no network reconciler. The Dokploy sibling needs an eighth
 script on a short cron to re-attach its proxy to every per-app network after Dokploy re-creates the
 Traefik container; a host-side nginx dialling container IPs cannot have that failure mode, and
-`network:rebuild` covers the rest. See `ideas/app-network-isolation.md`.
+`network:rebuild` covers the rest. See `D_isolation`, which that note graduated into, and
+`RESEARCH.md` → *Networking and app isolation* for the mechanics.
 
 Where this sketch is weakest: `create-app` is a dozen flags, and a project whose creation fails halfway
 (the first build usually does) must be re-runnable without tripping over the non-idempotent commands —

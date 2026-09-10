@@ -5,6 +5,13 @@ menu nobody wants to pick from. **Nothing here is decided.** When it is, the pic
 (probably `D_build_cache`), the Dokku facts below that survive verification go to `RESEARCH.md` →
 *Build caching*, the operator recipe goes to `README.md`, and this file is deleted.
 
+**Everything below assumes the Dockerfile builder, and that assumption is now itself in question** —
+see `ideas/builder-choice.md`, which asks which of Dokku's seven builders we should standardise on.
+Two of its findings land directly here: per-project cache isolation is *enforceable* under
+herokuish/pack/nixpacks/railpack and only *conventional* under the Dockerfile, and position **B**
+below (empty mounts every build) is now ruled out because a warm dependency cache has been promoted
+to a hard requirement. Settle `builder-choice.md` first; if the Dockerfile survives it, resume here.
+
 Background that is *not* restated here: `D_no_shared_cache` in shepherd-traefik (the two hazards,
 corruption vs pollution, and why the `mvn install` path is the one that bites), and `RESEARCH.md` →
 *Build caching* / *`docker-options` and its sharp edges* (the allowlist, the buildpack builders'

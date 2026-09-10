@@ -172,6 +172,26 @@ dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git
 - **Its output is captured** like any other deploy — a build record plus a log file per run, no
   redirection needed in the crontab line. See *Build tracking*.
 
+**What `git:sync` persists** — it remembers more than the command's shape suggests, which matters for
+`D_dokku_is_truth`:
+
+- **The remote URL lands in `apps:report <app> --app-deploy-source-metadata`**, alongside
+  `--app-deploy-source` = `git-sync`. The flags are documented, the metadata described as "free-form
+  (commit sha, image ref, URL)". **[docs]** For `git:sync` the value is `<url>#<sha>` — the ref resolved
+  to a commit, not the branch name — written by the `deploy-source-set` trigger. **[src]**
+- **…but only after a build that got as far as `receive-app`.** The trigger fires *after* the build,
+  so a first `git:sync --build` whose build fails leaves the deploy source empty; the app has a cloned
+  repo and no recorded URL. **[src]** This is the edge that rules out deriving the poll list from it.
+- **The branch persists separately**, as `git:report --git-deploy-branch`: syncing a branch ref sets
+  `deploy-branch` to it unless `--skip-deploy-branch`. **[docs]** A later `git:sync` with no ref fetches
+  the deploy branch. **[src]** So a poll never needs to carry the ref, only the URL.
+- `--build-if-changes` compares the deploy branch's commit before and after the fetch and builds only if
+  it moved — so **a failed build is not retried until upstream has a new commit**, same as Jenkins
+  poll-SCM. **[src]**
+- The bare repo under `~dokku/<app>` also keeps `origin` (from the first clone) and a `remote` remote
+  (re-added on every fetch) pointing at the URL. **[src]** Readable with `git remote get-url`, but that
+  is reaching around Dokku; the report flag is the sanctioned reader.
+
 Related git commands: **[docs]**
 
 ```bash
@@ -537,7 +557,7 @@ mechanisms, and they have different futures:
 - **The app side is managed state.** `initial-network` is a persisted app property, not a one-shot
   `docker network connect`: Dokku re-applies it every time it creates a container, so it survives
   deploys, `ps:restart`, rebuilds and a host reboot. `network:rebuild` / `network:rebuildall` re-apply
-  it on demand. A converger re-asserting it is belt-and-braces, not the mechanism. **[docs]**
+  it on demand. Nothing outside Dokku has to re-assert it. **[docs]**
 - **The proxy side needs nothing at all — but only because the default proxy is not a container.**
   nginx is a host process dialling `IP:PORT` (see *nginx — and why it is architecturally different*), so
   there is no proxy membership to maintain, and `dokku-event-listener` rewrites the config when a
@@ -635,7 +655,7 @@ dokku apps:create <app>      dokku apps:destroy <app>     dokku apps:rename <old
 dokku apps:clone <old> <new> dokku apps:list [--format stdout|json]
 dokku apps:report [<app>] [<flag>]                dokku apps:exists <app>
 dokku apps:lock <app> | apps:unlock <app> | apps:locked <app>
-dokku apps:set [--global] <app> <key> (<value>)   # incl. disable-autocreation
+dokku apps:set [--global] <app> <key> (<value>)   # ONLY disable-autocreation, global-only — see below
 
 dokku domains:set-global <domain> [<domain> ...]
 dokku domains:add <app> <domain> [...]   dokku domains:set <app> <domain> [...]
@@ -650,6 +670,12 @@ dokku domains:report [<app>|--global] [<flag>]
   apex domain. **[docs]**
 - Whether a **wildcard** app domain (`domains:add app '*.example.com'`) is accepted is not documented.
   **[unverified]**
+- **There is no user-settable per-app metadata slot.** `apps:set` accepts exactly one key,
+  `disable-autocreation`, and only globally; every other `apps:report` field (`deploy-source`,
+  `deploy-source-metadata`, `created-at`, …) is read-only and system-written. **[docs + src]** Anything
+  of ours that must live *in* Dokku per app therefore goes through `config:set` — with the price that a
+  config var is injected into the container's environment (`--no-restart` avoids the restart on write).
+  This is what `D_dokku_is_truth` relies on.
 - `apps:set --global disable-autocreation` requires an explicit `apps:create` before a deploy can land —
   worth having on a box that hosts other people's repos. **[docs]**
 
@@ -780,8 +806,19 @@ dokku builds:output myapp "$(dokku builds:list myapp --status failed --format js
   against the public internet (offline support by enquiry). No open-source version. **[docs]**
 - **Third-party web UIs have a demonstrated death rate.** `palfrey/wharf` (262★, AGPL-3.0, active
   2026-09-03) is the one live option and is single-maintainer; `ledokku` (642★, MIT — and the one Dokku
-  itself endorsed in 2021) died 2023-10, `cywio/atlas` 2022-01, `HarborJS` 2018-05. Pruvon advertises
-  AGPLv3 but no public repo was locatable on 2026-09-09. **[repo metadata]**
+  itself endorsed in 2021) died 2023-10, `cywio/atlas` 2022-01, `HarborJS` 2018-05, `intercity-next`
+  2019-04. Pruvon advertises AGPLv3 but no public repo was locatable on 2026-09-09. **[repo metadata]**
+- **wharf's scope is day-to-day, not provisioning.** Its README claims "most features you'll need
+  day-to-day": apps, env vars, domains, Postgres/Redis links, deploy and sync, runtime logs, build
+  output. Nothing for resource limits, `docker-options` or networks. It is a pure client — talks to
+  Dokku over SSH with a key of its own (optionally the `dokku-daemon` socket) and authenticates its own
+  users with a single `ADMIN_PASSWORD` — so adopting it costs nothing if it dies: no server-side state
+  lives in it. **[docs]** (its README, read 2026-09-10)
+- **Other clients Dokku lists** (*Community contributions* on the clients page): `dokku-toolbelt`
+  (Node), `dokku-cli` (Ruby gem, 184★, updated 2026-04, "makes your Dokku even more Heroku") and
+  `Dockland` (Ruby). All are sugar over the SSH commands. **No Dokku TUI was found** on the GitHub topic
+  page or the clients page. **[repo metadata]** (web search was unavailable on 2026-09-10; the topic
+  page and Dokku's clients page were read directly)
 
 ## Users and access control
 
@@ -876,7 +913,8 @@ The honest gap list, for the feature discussion:
 | **Any isolation primitive finer than membership** | No per-port ACLs, no egress policy. And `network:create` passes no driver options, so `enable_icc=false` / `--internal` / an explicit subnet are not reachable through Dokku at all. |
 | **Wildcard-cert-once-for-all-apps** | Every route has a caveat; see *TLS* above. |
 | **Metrics** | Explicitly out of scope for the project. |
-| **A single declarative project descriptor** | Project state is spread over `apps`/`config`/`resource`/`domains`/`ports`/`network`/`git`/`builder-dockerfile` properties. |
+| **A single declarative project descriptor** | Project state is spread over `apps`/`config`/`resource`/`domains`/`ports`/`network`/`git`/`builder-dockerfile` properties — but it is all *there*, reportable as `--format json`, and `git:sync` even records its URL (*`git:sync`* above). The genuinely missing pieces are a per-app **metadata slot** (`apps:set` takes one global key) and a URL that survives a failed first build; `config:set` stands in for both. |
+| **A one-shot "create a project" command** | `apps:create` makes an empty app. Limits, ports, network, build options, database and the first `git:sync` are each their own command; `apps:create`, `network:create` and `postgres:create` are not idempotent. |
 | **Open-source web UI** | Pro is paid; third-party is a graveyard with one survivor. |
 | **HTTP API** | None. SSH is the transport. |
 | **App ownership / per-user access** | An authorised key may do anything to any app. Buildable on the `user-auth` trigger; `dokku-acl` is the stale community attempt, teams are a Pro feature. |
@@ -948,6 +986,8 @@ Dokku documentation (dokku.com, read 2026-09-09):
 [Domains](https://dokku.com/docs/configuration/domains/) ·
 [Environment variables](https://dokku.com/docs/configuration/environment-variables/) ·
 [Repository management](https://dokku.com/docs/advanced-usage/repository-management/) ·
+[Application management](https://dokku.com/docs/deployment/application-management/) (`apps:report` flags, `apps:set` keys) ·
+[Community clients](https://dokku.com/docs/community/clients/) ·
 [Log management](https://dokku.com/docs/deployment/logs/) ·
 [Build tracking](https://dokku.com/docs/advanced-usage/builds/) ·
 [Event logs](https://dokku.com/docs/advanced-usage/event-logs/) ·
@@ -981,7 +1021,11 @@ the per-app buildpack cache volume, and build tracking):
 [`plugins/builds/builds.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/builds.go) (retention, record schema, pruning) ·
 [`plugins/builds/subcommands.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/subcommands.go) (the `builds:output` deploy-lock resolution) ·
 [`plugins/common/functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/common/functions) (`dokku_setup_build_capture`) ·
-[`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it) ·
+[`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it; re-read 2026-09-10 for `cmd-git-sync`, `fn-git-clone`, `fn-git-fetch` — what the sync persists) ·
+[`plugins/git/deploy-source-set`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/deploy-source-set) and
+[`plugins/apps/triggers.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/apps/triggers.go) (`TriggerDeploySourceSet` writes `deploy-source` / `deploy-source-metadata`) ·
+[`plugins/apps/subcommands.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/apps/subcommands.go) (`CommandSet`: `disable-autocreation` is the only key) ·
+[`plugins/git/subcommands/set`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/subcommands/set) (`git:set` valid keys) ·
 [`plugins/network/subcommands.go`](https://github.com/dokku/dokku/blob/master/plugins/network/subcommands.go)
 (read on 2026-09-10: `network:create` takes a name and nothing else) ·
 [`plugins/traefik-vhosts/internal-functions`](https://github.com/dokku/dokku/blob/master/plugins/traefik-vhosts/internal-functions)

@@ -19,7 +19,7 @@ were:
 |---|---|---|
 | [Vaadin Shepherd](https://github.com/mvysny/shepherd) | Kubernetes | `D_kubernetes` in shepherd-traefik |
 | [shepherd-traefik](https://github.com/mvysny/shepherd-traefik) + [shepherd-java-client](https://github.com/mvysny/shepherd-java-client) | Docker + Traefik + Jenkins + a Vaadin web admin | `D_docker_traefik`, `D_network_per_project`, `D_poll_scm`, `D_no_shared_cache` in shepherd-traefik |
-| **Shepherd2** (this repo) | Dokku on plain Docker | `D_dokku`, `D_retire_shepherd_java` here |
+| **Shepherd2** (this repo) | Dokku on plain Docker | `D_dokku`, `D_retire_shepherd_java`, `D_dokku_is_truth` here |
 
 Both predecessors stay readable on GitHub, so **nothing is copied out of them**. Cite an inherited
 decision by slug *with the repo named* — "see `D_no_shared_cache` in shepherd-traefik". A `D_` heading
@@ -30,7 +30,8 @@ and is not restated here either; `D_dokku` links to it.
 
 **What is deliberately gone** (don't reintroduce): Jenkins, Traefik-as-ours, the
 `shepherd_PROJECTID` / `shepherd/PROJECTID` / `PROJECTID.shepherd` naming contract, `docker-compose.yaml`,
-`/etc/shepherd/java/config.json`, and every JVM component. See `D_dokku` and `D_retire_shepherd_java`.
+`/etc/shepherd/java/config.json`, the per-project JSON descriptor and its converger, and every JVM
+component. See `D_dokku`, `D_retire_shepherd_java` and `D_dokku_is_truth`.
 
 ## Documentation targets
 
@@ -111,6 +112,15 @@ knobs and prerequisites. Put new technical truth *there*, not here.
   is persisted app state that Dokku re-applies at container creation, so there is no successor to
   `shepherd-traefik-connect-networks` — if you find yourself writing one, something else is wrong. See
   `D_isolation`.
+- **Dokku's state is the only source of truth, and there is no project descriptor.** No per-project
+  file anywhere, no converger, nothing that re-applies configuration. The only per-project data of ours
+  are the `SHEPHERD_GIT_URL` / `SHEPHERD_OWNER` config vars, written once by `create-app`. If you need a
+  project fact, read `dokku *:report --format json`; if you need to store one, it is a `SHEPHERD_*`
+  config var or it does not exist. See `D_dokku_is_truth`.
+- **Shepherd2 never wraps a command Dokku already has.** `create-app` / `destroy-app` / `poll` /
+  `rebuild` exist because Dokku has no single command for them; `dokku logs`, `ps:restart`,
+  `config:set`, `domains:add` are used as they are and documented in the `README.md` cheat sheet. A
+  `shepherd2 logs` is `shepherd-cli` reincarnated — don't.
 - **Prefer a Dokku command to a `docker` command.** `dokku ps:restart` over `docker restart`; the
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.

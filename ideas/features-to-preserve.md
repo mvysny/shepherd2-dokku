@@ -149,32 +149,31 @@ orders (2) — and 1 is what we do today. That is the whole of `Q_cert` now.
 
 | `F_` | Feature | Today | Dokku answer | |
 |---|---|---|---|---|
-| `F_project_descriptor` ⁿᵉʷ | **One JSON file per project is the source of truth**; create / update / delete a project from it | `/etc/shepherd/java/projects/<id>.json` + `shepherd-cli create/update/delete` | **Nothing.** State is spread over `apps`, `config`, `resource`, `domains`, `ports`, `network`, `git`, `builder-dockerfile` properties | 🕳️ |
-| `F_smart_update` ⁿᵉʷ | An update rebuilds only when *build* inputs changed; otherwise just re-applies config | `SimpleJenkinsClient.needsProjectRebuild` — rebuild iff `buildArgs`/`dockerFile` changed | Partly: `git:sync --build-if-changes` covers *source* changes; a changed build-arg is ours to notice | 🔧 |
-| `F_memory_quota` ⁿᵉʷ | **Box-wide** memory quota — refuse to create a project whose runtime + build memory overflows what the box has | `memoryQuotaMb` + `ShepherdClient.validate` | **Nothing.** `resource:limit` is per app; nothing sums them or refuses an over-commit | 🕳️ |
+| `F_project_descriptor` ⁿᵉʷ | **One JSON file per project is the source of truth**; create / update / delete a project from it | `/etc/shepherd/java/projects/<id>.json` + `shepherd-cli create/update/delete` | **Dokku's own state is the truth instead** — `D_dokku_is_truth`. Every fact is reportable as `--format json`; the two Dokku has no slot for (`SHEPHERD_GIT_URL`, `SHEPHERD_OWNER`) are config vars. Creation is `shepherd2 create-app`, everything after is `dokku` | ✂️ |
+| `F_smart_update` ⁿᵉʷ | An update rebuilds only when *build* inputs changed; otherwise just re-applies config | `SimpleJenkinsClient.needsProjectRebuild` — rebuild iff `buildArgs`/`dockerFile` changed | With no descriptor there is no "update": a build-arg change is `docker-options:remove` + `add` + `ps:rebuild`, a runbook line. Source changes are `git:sync --build-if-changes` | ✂️ |
+| `F_memory_quota` ⁿᵉʷ | **Box-wide** memory quota — refuse to create a project whose runtime + build memory overflows what the box has | `memoryQuotaMb` + `ShepherdClient.validate` | `create-app` sums `resource:report --format json` over `apps:list` and refuses. **Creation-time only** — a later hand `resource:limit` is unchecked | 🔧 |
 | `F_reserved_ids` ⁿᵉʷ | Refuse project ids that collide with the admin plane (`admin`, `*-admin`) | `validate()` | Moot as written — there is no admin plane to collide with. Dokku 0.38 restricts app names for its own security reasons | ✂️ |
-| `F_project_owner` ⁿᵉʷ | Record who owns each project (name, email) | `owner` in the project JSON | No metadata concept; would be a `config:set` var or a field in our own descriptor | 🔧 |
+| `F_project_owner` ⁿᵉʷ | Record who owns each project (name, email) | `owner` in the project JSON | `config:set --no-restart <app> SHEPHERD_OWNER=…`, set by `create-app`. Leaks into the container env; not a secret | 🔧 |
 
-**`F_project_descriptor` is the design fork of the whole project**, more than the proxy or the cert. Two
-shapes, and everything else follows from which we pick:
+**`F_project_descriptor` — decided 2026-09-10, see `D_dokku_is_truth`.** It was the design fork of the
+whole project and it went the way the ideas file's own instinct did *not*: no descriptor, no converger,
+Dokku's state is the truth. The argument, the five rejected shapes and the consequences are in the entry;
+the three things worth knowing from here:
 
-- **Declarative.** Keep a per-project file (`projects/PROJECTID.json` or `.yaml`) as the source of truth,
-  and write **one converger script** that reads it and issues the `dokku` commands to make the box match:
-  `apps:create`, `config:set`, `resource:limit`, `domains:set`, `ports:set`, `network:set`,
-  `builder-dockerfile:set`, `docker-options:add … build`, and the crontab entry. Onboarding a project is
-  "add a file, run the converger". This is what shepherd-java does today, minus the JVM, and it is where
-  `F_memory_quota`, `F_smart_update`, `F_project_owner` and per-project cache ids all naturally live —
-  they are cheap once there's a file to read and expensive otherwise.
-- **Imperative.** No descriptor. `README.md` carries a runbook: "to add a project, run these eight
-  `dokku` commands". Dokku's own state *is* the state. Smallest possible repo — arguably no repo at all,
-  just a guide. Costs: the four 🕳️ features above stay dropped, re-creating a project after a reinstall
-  is retyping eight commands per app rather than replaying files, and the box's configuration is not in
-  git.
+- **The fork was never "software or guide".** Creation is ~ten commands, three non-idempotent, and earns a
+  script either way; every day-N action is one `dokku` command and earns nothing. So the repo is
+  `create-app` / `destroy-app` / `poll` / `rebuild` plus the box crons, and a `README.md` cheat sheet from
+  `F_` row to `dokku` command for everything else. **Shepherd2 never wraps a command Dokku already has.**
+- **What killed the descriptor was not size but conflict.** An authoritative file makes every other edit
+  path (a hand `dokku config:set`, wharf) into drift needing a policy; with Dokku as truth there is no
+  drift to police. The descriptor was shepherd-java's answer to plain Docker having no per-app state store,
+  and Dokku *is* one.
+- **The config vars beat inferring from Dokku's records on one edge.** `git:sync` does record its URL
+  (`apps:report --app-deploy-source-metadata`) but only after a build that succeeded — and first builds
+  usually fail a couple of times. An app with no recorded URL would be invisible to a derived poll and
+  never healed by the upstream fix. `SHEPHERD_GIT_URL` is written before the first build.
 
-The declarative shape is a *much* smaller thing here than it was in shepherd-java, because Dokku's
-commands are idempotent and its reports are `--format json` — so the converger is a loop, not a control
-plane. My instinct is declarative for exactly that reason, but it is the call that decides whether this
-repo is software or a guide. See `Q_descriptor`.
+What remains in this section is only confirming the `F_reserved_ids` drop.
 
 ## E. Observability and administration
 
@@ -208,8 +207,8 @@ has the detail.
 1. **Single-operator box.** Only the operator holds a key. User management evaporates; `F_project_owner`
    becomes a contact field in the descriptor, not an ACL. Cheapest, and the honest reading of "no web
    admin". The question this turns on is simply *who else gets a key*.
-2. **Our own `user-auth` hook.** If `Q_descriptor` goes declarative, the descriptor already names an
-   owner, so the check is "is `$SSH_NAME` the `owner` of `$APP`" — a small Bash hook, no third-party
+2. **Our own `user-auth` hook.** `SHEPHERD_OWNER` already names an owner per app (`D_dokku_is_truth`),
+   so the check is "is `$SSH_NAME` the app's owner" — one `config:get`, a small Bash hook, no third-party
    dependency, and squarely "the answer is a wrapper script". Buys per-user push / restart / logs;
    still no self-service and no SSO, and we would own a security-critical hook.
 3. **`dokku-acl`.** More features than we'd write, but: last commit 2024-01, written against 0.32 (six
@@ -252,9 +251,11 @@ Say so if any of these is wrong:
 
 Roughly in the order they need answering; each becomes a `D_` entry once settled.
 
-- **`Q_descriptor`** — declarative per-project file + a converger script, or an imperative runbook of
-  `dokku` commands? Decides whether this repo is software or a guide, and whether `F_memory_quota`,
-  `F_smart_update`, `F_project_owner` and per-project cache ids are cheap or impossible. *(Section D.)*
+- ~~**`Q_descriptor`**~~ — **answered 2026-09-10: no descriptor; Dokku's state is the truth. See
+  `D_dokku_is_truth`.** The two facts Dokku cannot hold are `SHEPHERD_GIT_URL` / `SHEPHERD_OWNER` config
+  vars; Shepherd2 is `create-app` / `destroy-app` / `poll` / `rebuild` and the box crons, and wraps
+  nothing Dokku already has. `F_smart_update` is dropped with it; `F_memory_quota` survives at creation
+  time only. *(Section D.)*
 - ~~**`Q_proxy`**~~ — **answered 2026-09-10: nginx, Dokku's default. See `D_proxy`.** It was not close in
   the end: Traefik is global-only for ingress properties (costing `F_ingress_tuning`), ignores the
   `certs` plugin (costing `Q_cert` routes 1 and 2), and has no network-attachment logic at all (costing
@@ -265,8 +266,7 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - **`Q_cache`** — which of the five positions on `F_cache_isolation`? **Downgraded 2026-09-09**: the
   per-app `--cache-to` carries over, so this is no longer a regression to absorb but a pre-existing gap
   (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
-  pick. Cheap either way if `Q_descriptor` goes declarative — the cache flags are two more lines the
-  converger emits.
+  pick. Cheap either way — the cache flags are two more `docker-options:add` lines `create-app` emits.
 - ~~**`Q_isolation`**~~ — **answered 2026-09-10: one bridge network per project. See `D_isolation`.** The
   shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
   remains open is only the axis that was never this question's — app-to-host and egress, now
@@ -275,60 +275,84 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   Really the question *who else gets an SSH key*, because in core Dokku a key is unrestricted: there is
   no ownership to scope it with. Answering "only me" deletes `F_multi_user` and `F_user_login` outright
   and makes `F_project_owner` a contact field; answering "the team" costs a `user-auth` hook of our own
-  (cheap only if `Q_descriptor` goes declarative) or an unmaintained plugin in the authorization path.
+  (cheap — `SHEPHERD_OWNER` exists per `D_dokku_is_truth`) or an unmaintained plugin in the authorization
+  path.
   *(Section E.)*
 - **`Q_web_admin`** — confirm the drop, or is "no browser UI at all" the thing that makes this not worth
-  doing? A middle option exists and is not obviously silly: a read-only status page generated by cron
-  from `dokku *:report --format json`, served as static files. No auth to get wrong, no framework, and
-  it covers "is everything up" without covering "administer the box".
+  doing? Three options short of a new UI, none decided:
+  1. **A read-only status page** generated by cron from `dokku *:report --format json`, served as static
+     files. No auth to get wrong, no framework, and it covers "is everything up" without covering
+     "administer the box".
+  2. **wharf**, adopted as a pure client — day-N edits and logs in a browser, nothing to lose if it dies
+     (`D_dokku_is_truth` *Consequences*). Single admin password, so single-operator only.
+  3. **Teach shepherd-java-client to emit the `dokku` commands**, once `create-app`'s command set has
+     solidified, so the existing Vaadin Web Admin drives a shepherd2-dokku box. This is the first
+     road-not-taken in `D_retire_shepherd_java` reopened, and it comes in two flavours that differ on
+     exactly the axis `D_dokku_is_truth` decided: as shipped, the admin *is* Shepherd-JSON-as-truth
+     (`/etc/shepherd/java/projects/*.json` plus a converger), which reintroduces the descriptor through
+     the back door; rewritten as a Dokku *client* — reading `*:report --format json`, editing by issuing
+     `dokku` commands, holding no files — it stays compatible, and it is the only option of the three
+     that gives back `F_multi_user` and `F_user_login` (Google SSO, per-owner project lists) without
+     Dokku Pro. Parked: not before the command set is stable, and not in the JSON-as-truth flavour.
 - ~~**`Q_build_history`**~~ — **closed 2026-09-09, not answered**: Dokku's `builds` plugin already does
   it (see section A). The tee-to-`/var/log/shepherd2` sketch this question proposed is dead — writing it
   would duplicate `/var/lib/dokku/data/builds/` with a worse retention story. The only thing left to
   decide is whether the default retention of 20 is right for a weekly poll, which is one
   `builds:set --global retention N` in the installer, not a fork in the design.
 - **`Q_quota`** — keep `F_memory_quota`? It has never been Dokku's job and never will be. Summing
-  `resource:report --format json` across apps and refusing an over-commit is maybe 20 lines *if*
-  `Q_descriptor` goes declarative, and impossible if it doesn't.
+  `resource:report --format json` across apps and refusing an over-commit is maybe 20 lines in
+  `create-app` — but only *there*: under `D_dokku_is_truth` a later hand `resource:limit` bypasses it.
+  Is creation-time-only enforcement worth the 20 lines?
 - **`Q_credentials`** — `git:auth` is per *host*, not per project, so one GitHub token would cover the
   whole box. Is per-project git credentials still a requirement, or was it an artifact of Jenkins having
   a credentials store? (Deploy keys per project may still work; `[unverified]`.)
 - **`Q_language`** — what is the glue written in? Bash matches both predecessors and adds no runtime.
-  Anything richer buys real argument parsing and JSON handling for `Q_descriptor`'s converger. Depends
-  on `Q_descriptor`; not worth deciding before it.
+  Its main input is gone: with `D_dokku_is_truth` there is no descriptor to parse, only `--format json`
+  reports to read, which is `jq`. Bash + `jq` is the default; the remaining case for anything richer is
+  `create-app`'s argument list (a dozen flags) — decide when writing it.
 
 ## A concrete sketch, to argue against
 
-Assuming the declarative answer to `Q_descriptor` and `dokku-global-cert` for `Q_cert` — i.e. the most
-feature-preserving reading — with nginx now settled by `D_proxy` and per-project networks by
-`D_isolation`, the whole repo is roughly:
+Assuming `dokku-global-cert` for `Q_cert`, with nginx settled by `D_proxy`, per-project networks by
+`D_isolation` and no descriptor by `D_dokku_is_truth`, the whole repo is roughly:
 
 ```
-projects/PROJECTID.json      # per-project descriptor, in git, the source of truth
-shepherd2-apply PROJECTID    # converge one project: apps:create, config:set, resource:limit,
-                             #   domains:set, ports:set, network:create + network:set,
-                             #   postgres:create -N if the project wants a DB, builder-dockerfile:set,
+shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --owner EMAIL
+                             #   --build-arg K=V… --dockerfile PATH --domain D…]
+                             #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
+                             #   (--no-restart), resource:limit, ports:set, network:create + network:set,
+                             #   postgres:create -N + link if asked, builder-dockerfile:set,
                              #   docker-options build args + per-project --cache-to/--cache-from,
-                             #   then git:sync --build-if-changes
-shepherd2-poll               # weekly-ish cron: shepherd2-apply for every project, serially,
-                             #   under a lock file (Dokku records the build logs itself)
+                             #   then git:sync --build
+shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, postgres:destroy, network:destroy
+shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
+                             #   and the retry after a failed build
+shepherd2 poll               # cron: for every app with SHEPHERD_GIT_URL, git:sync --build-if-changes,
+                             #   serially under a lock file (Dokku records the build logs itself)
 shepherd2-renew-cert         # lego/certbot DNS-01 → dokku global-cert:set
 shepherd2-clearcache         # weekly: docker buildx prune + docker system prune
 shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons
 shepherd2-uninstall
 ```
 
-Seven Bash scripts and a directory of JSON, against today's Jenkins + Traefik + compose + five scripts +
-a Kotlin/Vaadin repo. **`shepherd2-poll` is the whole of Jenkins**, and `F_safe_reboot` is `flock` on the
-lock file it already holds.
+One CLI with four verbs plus four box scripts, and no data directory, against today's Jenkins + Traefik +
+compose + five scripts + a Kotlin/Vaadin repo. **`shepherd2 poll` is the whole of Jenkins**, and
+`F_safe_reboot` is `flock` on the lock file it already holds. Whether the four verbs are one script or
+four is `Q_language`'s leftover.
+
+Everything else the `F_` tables preserve is a `dokku` command and belongs in a `README.md` cheat sheet,
+not here: `logs -t`, `builds:list` / `builds:output`, `ps:restart`, `config:set`, `domains:add`,
+`nginx:set`, `resource:limit`, and the three-command build-arg change.
 
 Worth noting what is *not* in the list: no network reconciler. The Dokploy sibling needs an eighth
 script on a short cron to re-attach its proxy to every per-app network after Dokploy re-creates the
 Traefik container; a host-side nginx dialling container IPs cannot have that failure mode, and
 `network:rebuild` covers the rest. See `ideas/app-network-isolation.md`.
 
-Where this sketch is weakest: `shepherd2-apply` has to know which changes need a rebuild versus a
-re-apply, which is `F_smart_update` and is where shepherd-java's non-obvious logic lived. `Q_cache` is
-*mostly* handled by it — the converger emits `docker-options:add … build '--cache-to …'` per project, so
-the layer cache is enforced the way `shepherd-build` enforces it today; what the sketch still cannot do
-is scope an app's own `RUN --mount=type=cache`, which stays convention (`--build-arg CACHE_ID=PROJECTID`
-plus a documented `id=`, cooperation rather than enforcement).
+Where this sketch is weakest: `create-app` is a dozen flags, and a project whose creation fails halfway
+(the first build usually does) must be re-runnable without tripping over the three non-idempotent
+commands — `apps:exists` / `network:exists` / `postgres:exists` guards, or a `destroy-app` first.
+`Q_cache` is *mostly* handled — `create-app` emits `docker-options:add … build '--cache-to …'` per
+project, so the layer cache is enforced the way `shepherd-build` enforces it today; what the sketch
+still cannot do is scope an app's own `RUN --mount=type=cache`, which stays convention
+(`--build-arg CACHE_ID=PROJECTID` plus a documented `id=`, cooperation rather than enforcement).

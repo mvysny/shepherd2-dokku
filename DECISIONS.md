@@ -127,8 +127,9 @@ of why the verdict landed on Dokku:
 
 ## D_retire_shepherd_java — No web admin, no Java; Dokku's CLI is the interface (2026-09-09)
 
-**Status:** Accepted 2026-09-09 in principle; **the shape of the replacement is still open** — see
-`ideas/features-to-preserve.md`. What is decided is that shepherd-java-client is not carried forward.
+**Status:** Accepted 2026-09-09 in principle. The shape of the CLI replacement is settled by
+`D_dokku_is_truth` (2026-09-10); whether any browser UI returns is still `Q_web_admin` in
+`ideas/features-to-preserve.md`. What is decided here is that shepherd-java-client is not carried forward.
 
 **Context.** [shepherd-java-client](https://github.com/mvysny/shepherd-java-client) supplies today's
 Vaadin web admin, the `shepherd-cli` command-line client, and the `ShepherdClient` library on Maven
@@ -167,8 +168,9 @@ box.
   whether we want it at all.
 - **Five behaviours lose their only home** and must each be re-provided, re-scoped or consciously
   dropped: the project descriptor, the box-wide memory quota, reserved ids, the smart-update logic, and
-  the graceful "safe to reboot" wait. They are itemised as `F_` entries in
-  `ideas/features-to-preserve.md`; none of them has a Dokku counterpart.
+  the graceful "safe to reboot" wait. None has a Dokku counterpart. `D_dokku_is_truth` settles the first,
+  second and fourth (descriptor and smart-update dropped, quota enforced at creation time); reserved ids
+  and the safe-reboot wait are still `F_` entries in `ideas/features-to-preserve.md`.
 - **The Maven Central artifact `com.github.mvysny.shepherd:shepherd-java-api` stops gaining versions.**
   Already-published versions stay published; nothing here replaces the library.
 
@@ -304,8 +306,8 @@ properties of Dokku's version make the predecessor's price disappear:
 
 - **Membership is managed state, not a live attachment.** `initial-network` is a persisted app property
   re-applied every time Dokku creates a container, so it survives deploys, `ps:restart`, rebuilds and
-  reboots; `network:rebuild` / `network:rebuildall` re-assert on demand. A converger re-asserting it is
-  belt-and-braces rather than the mechanism.
+  reboots; `network:rebuild` / `network:rebuildall` re-assert on demand. Nothing of ours needs to
+  re-assert it — which `D_dokku_is_truth` later made a requirement rather than a convenience.
 - **The proxy needs no membership at all** — `D_proxy`. Between them, **`shepherd-traefik-connect-networks`
   has no successor in this repo.** That is the whole reason this decision is cheap here and was not
   cheap before.
@@ -356,3 +358,101 @@ properties of Dokku's version make the predecessor's price disappear:
   `ideas/harden-container-egress.md`. It is also where the sibling's "app → admin plane" concern lands
   here.
 - **Egress is unfiltered**, same note.
+
+## D_dokku_is_truth — Dokku's own state is the source of truth; Shepherd2 supplements it, never fronts it (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Not yet implemented — there is no code yet. The two source-level facts
+it leans on (what `git:sync` persists; `apps:set` having no metadata slot) are `[src]`-verified at
+v0.38.27 but not yet seen on a box.
+
+**Context.** shepherd-java's per-project JSON file was the source of truth, and a control plane converged
+Docker onto it, because there was nothing else to converge onto: plain Docker has no persisted per-app
+configuration. `F_project_descriptor` asked whether to carry that shape forward — a descriptor per
+project plus a converger script — or to run the box from a runbook. Dokku changes the premise: it *is* a
+persisted, idempotent, per-app state store with `--format json` reports on every plugin. The question
+became whether to keep a second one on top of it.
+
+**Decision.**
+
+- **Dokku's state is the single source of truth for every project.** No descriptor file, no converger,
+  no per-project file of ours anywhere on the box or in this repo.
+- **The two facts Dokku has no slot for live in Dokku anyway, as config vars**, set by `create-app` with
+  `config:set --no-restart`: `SHEPHERD_GIT_URL` (what the poll fetches) and `SHEPHERD_OWNER` (a contact).
+  These are the *only* per-project data Shepherd2 owns, and the `SHEPHERD_` prefix is the only naming
+  contract it keeps.
+- **Shepherd2 provides exactly what Dokku has no single command for**: `create-app` and `destroy-app`
+  (the multi-command, partly non-idempotent sequences), `poll` (serial, under a lock, iterating
+  `apps:list` and calling `git:sync --build-if-changes` with each app's URL), `rebuild` (the forced
+  variant, `--build`), and the box-level crons and installer. **Everything else is `dokku` itself** —
+  logs, build output, restart, config, domains, ingress tuning, limits — listed in `README.md` as a
+  cheat sheet from feature to command.
+- **Shepherd2 never wraps a command Dokku already has.**
+
+**Why.**
+
+- **A reconstruction test almost passes.** Every project fact comes back from `*:report --format json`
+  except two: the owner, which Dokku has no concept of, and the poll URL after a first build that
+  failed (below). A descriptor would be a copy of everything else.
+- **An authoritative file conflicts with every other edit path.** If the descriptor is truth, then a
+  hand `dokku config:set`, or an edit in wharf, is drift the converger must revert, ignore or fail on —
+  so every UI becomes read-only in practice for the fields the file owns. If Dokku is truth there is no
+  converger and no drift policy to get wrong. Since this box is used only through Shepherd2 and `dokku`,
+  there is no third thing to reconcile.
+- **Creation is the error-prone part; operation is not.** Onboarding a project is roughly ten commands,
+  three of them (`apps:create`, `network:create`, `postgres:create`) not idempotent, plus the cache flags
+  and the first sync. That earns a script. Every day-N action is one well-named `dokku` command, and
+  re-exposing those one-to-one is `shepherd-cli` again — the component class `D_retire_shepherd_java`
+  retired.
+- **Config var over inference, because of one edge.** `git:sync` does record its URL (`apps:report
+  --app-deploy-source-metadata`), but only after a build that succeeded far enough to fire
+  `deploy-source-set`. Many first builds fail — the Dockerfile usually needs a couple of iterations — and
+  an app with no recorded URL is invisible to a poll derived from Dokku's records, so the developer's fix
+  upstream is never picked up. A config var written *before* the first build puts the app in the poll
+  from the moment it exists, and the next upstream commit heals it. `RESEARCH.md` → *`git:sync`* has
+  the source reading.
+
+**Alternatives rejected.**
+
+- *Declarative descriptor + converger* — shepherd-java's shape, and the ideas file's original instinct.
+  Rejected on the conflict above and on the third-copy argument: Dokku's property store is already the
+  descriptor, spread across plugins. It would have bought `F_smart_update` and a git-reviewable project
+  set; see *Consequences* for what that costs.
+- *Derive the poll list from `deploy-source-metadata`.* Zero convention, pure Dokku. Rejected on the
+  failed-first-build edge; also "where the last deploy came from" is history, not intent.
+- *A projects table of ours* (`id url ref owner`, one line per project). The same two facts, held in a
+  file outside Dokku and outside Dokku's backup — a second truth for exactly the thing the poll runs on.
+  The config vars are that table, inside Dokku.
+- *`app.json` in the app's own repo* — Dokku's native, Heroku-shaped descriptor. Wrong owner (we host
+  repos we don't control) and wrong scope (no limits, domains or build options).
+- *A checked-in shell script of `dokku` commands per project.* Persisted and replayable, but the "how"
+  is duplicated across every file and the non-idempotent commands need guards in each.
+- *Wrapping day-N commands* (`shepherd2 logs`, `shepherd2 restart`, …). Rejected as `shepherd-cli`
+  reincarnated: it would have to track Dokku's command surface forever for no gain.
+
+**Consequences.**
+
+- **`F_project_descriptor` and `F_smart_update` are dropped.** Changing a build arg is
+  `docker-options:remove`, `docker-options:add`, `ps:rebuild` — three commands, once a year for a key
+  rotation, a runbook line in `README.md`. **`F_memory_quota` survives at creation time only**:
+  `create-app` sums `resource:report --format json` across apps and refuses an over-commit; a later
+  hand `resource:limit` is not checked. **`F_project_owner`** is `SHEPHERD_OWNER`. Per-project cache
+  flags are set once by `create-app`.
+- **Both config vars are injected into the container's environment.** Acceptable because neither is a
+  secret: a git URL never carries a token here (credentials go through `git:auth`), and the owner is a
+  contact address.
+- **Every deploy on this box goes through `git:sync`** — `poll` or `rebuild`. Pushing to the box as a
+  git remote and `git:from-image` are not supported paths. `deploy-source-metadata` is a free
+  cross-check: an app whose last deploy did not come from its `SHEPHERD_GIT_URL` is drift worth
+  reporting, and its `#<sha>` answers "which commit is running".
+- **A failed build is not retried until upstream moves** — `--build-if-changes` semantics, same as
+  Jenkins poll-SCM. `rebuild` is the manual override, and this is its second reason to exist.
+- **The per-project configuration is not in git.** The reinstall story is this repo plus Dokku's own
+  state (`~dokku` and `/var/lib/dokku`; that this is the complete set is `[unverified]`), or re-running
+  `create-app` per project. A read-only export of the reports into git would mitigate it; not decided.
+- **The `Q_multi_user` hook stays cheap** regardless of which way that question goes: "is `$SSH_NAME`
+  the app's `SHEPHERD_OWNER`" is one `config:get`.
+- **`Q_language` loses its main input** — there is no descriptor to parse, only reports to read.
+- **A third-party client such as wharf may be adopted, never depended on.** It is a pure SSH client
+  holding no server-side state, so its death costs nothing; that is the property `D_retire_shepherd_java`
+  found missing in the class. Whether any browser UI returns is still `Q_web_admin`.
+- **`D_retire_shepherd_java`'s open "shape of the replacement" is closed for the CLI half** by this entry.

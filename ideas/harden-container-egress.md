@@ -48,7 +48,8 @@ Rough shape, to be argued with rather than copied:
 - **What is the interface match**, given `D_isolation` creates a bridge per project? `-i br-*` is not a
   thing iptables understands as a glob in every version; the alternatives are matching on the *source*
   subnet (which the enlarged `default-address-pools` makes predictable) or generating one rule per
-  network in the converger (which puts firewall state on the per-project path — unattractive).
+  network in `create-app` (which puts firewall state on the per-project path — unattractive, and under
+  `D_dokku_is_truth` there is nothing that would ever re-apply it).
   **Probably the pool subnet, which is an argument for choosing that pool deliberately** rather than
   letting Docker pick.
 - **Does dropping traffic to the gateway IP break anything Dokku needs?** DNS is the obvious risk: if

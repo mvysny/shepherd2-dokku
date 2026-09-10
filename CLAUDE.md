@@ -14,8 +14,8 @@ to be built** — the box's inventory, the install order, the CLI surface and th
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
 throwaway VPS. The feature survey that decided *what* the rebuilt thing does has graduated and is gone
-(`D_no_feature_list`); everything left in `ideas/` is v2 — four open questions carrying `Q_` slugs, and
-two pieces of deferred work.
+(`D_no_feature_list`); what is left in `ideas/` is five open questions carrying `Q_` slugs and two
+pieces of deferred work — all v2 except `Q_poll_churn`, which is a v1 gap in the poll's build-log story.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:

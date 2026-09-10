@@ -167,12 +167,16 @@ to that ref, and every later sync can then omit it.
 1. **`flock -n` on `/run/lock/shepherd2-poll.lock`.** Non-blocking: a tick that lands on a running build
    exits quietly rather than queueing, which at 288 ticks a day is the difference between skipping and
    accumulating. The whole poll is inside one lock, so **builds are serial box-wide** — which is the
-   other half of the cache story, since concurrent writers are what corrupt one.
+   other half of the cache story, since concurrent writers are what corrupt one. Whether `rebuild`
+   takes the same lock is an implementation choice; if it does not, the backstop is Dokku's own per-app
+   deploy lock, which is *non-waiting* — a collision on the same app fails fast and tells the operator
+   to retry, it does not queue (`RESEARCH.md` → *`git:sync`*).
 2. For each app in `apps:list` that has a `SHEPHERD_GIT_URL`, in turn:
    `dokku git:sync --build-if-changes <app> <url>` — no ref needed, Dokku remembers the deploy branch.
-3. **Dokku fetches. If the ref did not move, nothing happens** — so 288 ticks produce a build only on a
+3. **Dokku fetches. If the ref did not move, nothing is built** — so 288 ticks produce a build only on a
    real change, and a failed build is not retried until upstream commits again. `shepherd2 rebuild` is
-   the override.
+   the override. *Nothing built is not nothing done:* the tick still writes a build record and a log
+   file, which is `Q_poll_churn` in step 6.
 4. **If it moved:** herokuish builds in a container with the app's own `cache-$APP` volume mounted at
    `/cache`, where the Heroku Java buildpack keeps `maven.repo.local`. Another project's artifacts are
    unreachable by construction — Dokku names the volume and the app has no Dockerfile in which to name
@@ -186,7 +190,15 @@ to that ref, and every later sync can then omit it.
    and writes no log of its own. The record carries no git SHA, but
    `apps:report --app-deploy-source-metadata` holds `<url>#<sha>` after a successful build — which is
    also the free drift check: a last deploy that did not come from the app's `SHEPHERD_GIT_URL` is
-   worth noticing.
+   worth noticing. (`config:get <app> GIT_REV` is the other half: the last commit Dokku *started*
+   building, so it survives a failure the metadata never records.)
+
+   **The "20 per app" comes with a caveat that is ours to fix.** A no-change tick writes a record too,
+   so at 288 ticks a day the retention window is about 95 minutes of poll noise, real build logs are
+   pruned out from under it, and reaped ticks land on disk as `failed` (`RESEARCH.md` → *Build
+   tracking*). Whether `poll` pre-checks the remote ref itself so that a no-op tick never enters
+   `git:sync` is `Q_poll_churn` in `ideas/poll-build-record-churn.md` — undecided, and the only open
+   question inside this flow. `wait-idle` is not affected either way.
 
 ## Flow — certificate renewal (https mode only)
 

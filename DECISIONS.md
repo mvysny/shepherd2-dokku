@@ -108,6 +108,13 @@ of why the verdict landed on Dokku:
   today have a direct upstream counterpart in `builds:list` / `builds:output`. What is genuinely lost is
   the *browser* view of them (`D_retire_shepherd_java`) and the git SHA per build, which Dokku's record
   does not carry.
+  - **Amended 2026-09-10, and this one is a real dent:** "20 per app" is 20 *records*, and a
+    `--build-if-changes` tick that finds nothing writes one too — so under the five-minute poll the
+    window holds ~95 minutes of no-op ticks and prunes real build logs out from under itself
+    (`RESEARCH.md`, *Build tracking*). The upstream counterpart is therefore only as good as our poll
+    is quiet, which is `Q_poll_churn` in `ideas/poll-build-record-churn.md`. It does not change the
+    choice — a guard in `poll` is a dozen lines and Jenkins is not coming back — but the sentence above
+    over-promised, so read it with this attached.
 - **Build cache isolation is *not* a regression, which is a large part of why Dokku won.** The
   Dockerfile builder allowlists `--cache-to`/`--cache-from` and appends them to `docker image build`, so
   today's per-project `type=local` cache directory migrates as one `docker-options:add` per app —

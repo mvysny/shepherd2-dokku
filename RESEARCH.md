@@ -412,8 +412,21 @@ dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git
 - `--build` always builds; **`--build-if-changes` builds only when the fetch moved the ref** — exactly
   the poll-SCM semantics.
 - The app must already exist (`apps:create`).
+- **It is fully synchronous, and its exit code is the build's.** `cmd-git-sync` ends in
+  `plugn trigger receive-app`, and `plugn trigger` runs each hook as an ordinary child and waits
+  **[src]** — so that one call covers build, release *and* deploy: `receive-app` → `git_receive_app` →
+  `git_build` → `dokku_receive` → `release_and_deploy`, which prints `Application deployed:` last.
+  `git:sync` returns only once the new container is up and the old one is gone. The status propagates
+  the whole way out — `release_and_deploy` returns the build's exit code, `plugn`'s bash environment
+  runs under `set -eo pipefail`, so does `plugins/git/subcommands/sync`, and the `dokku` entrypoint
+  invokes the subcommand directly under its own. **[src]** So a caller branches on `$?` and needs no
+  other progress signal.
+- **The app's deploy lock is taken `exclusive`, meaning non-waiting.** A second deploy of the same app
+  while one is in flight does not queue — it fails immediately with *"currently has a deploy lock in
+  place. Exiting…"* and points at `apps:unlock`. **[src]** Deploys of *different* apps don't contend.
 - **Its output is captured** like any other deploy — a build record plus a log file per run, no
-  redirection needed in the crontab line. See *Build tracking*.
+  redirection needed in the crontab line. See *Build tracking* — including the sharp edge that the
+  capture starts *before* the change check, so a no-op tick leaves a record behind too.
 
 **What `git:sync` persists** — it remembers more than the command's shape suggests, which matters for
 `D_dokku_is_truth`:
@@ -428,6 +441,12 @@ dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git
 - **The branch persists separately**, as `git:report --git-deploy-branch`: syncing a branch ref sets
   `deploy-branch` to it unless `--skip-deploy-branch`. **[docs]** A later `git:sync` with no ref fetches
   the deploy branch. **[src]** So a poll never needs to carry the ref, only the URL.
+- **The built commit also lands in a config var.** Before building, `git_build` writes the resolved sha
+  to the app's `rev-env-var` — `GIT_REV` unless `git:set <app> rev-env-var` changes it — via
+  `config_set --no-restart`. **[src]** So `dokku config:get <app> GIT_REV` answers "which commit did
+  Dokku last start building" without touching the bare repo, and unlike `deploy-source-metadata` it
+  survives a failed build, because it is written *before* the build rather than after. The flip side of
+  the same ordering: it is the last *attempted* commit, not the running one.
 - `--build-if-changes` compares the deploy branch's commit before and after the fetch and builds only if
   it moved — so **a failed build is not retried until upstream has a new commit**, same as Jenkins
   poll-SCM. **[src]**
@@ -1076,7 +1095,36 @@ exec &> >(tee -a "$LOG" >(logger -i -t "dokku-${DOKKU_BUILD_ID}"))
 ```
 
 `plugins/git/internal-functions` calls it with source `git:sync`, so **the rebuild cron gets its build
-log for free**: no redirection of our own in the crontab line, and no glue to write.
+log for free**: no redirection of our own in the crontab line, and no glue to write. What it does *not*
+get for free is a usable record set — see the next edge.
+
+**Sharp edge, and it is the one that bites a periodic poll: a `--build-if-changes` tick that finds
+nothing still writes a record.** `cmd-git-sync` calls `dokku_setup_build_capture` *before* it fetches
+and before it compares refs, then `return`s on the no-change path without ever reaching
+`builds-record-finalize`. **[src]** So every no-op tick leaves a `running` record — dead PID, so
+display status `abandoned` — plus its log file, holding the fetch chatter. Three consequences, in the
+order they arrive: **[src]**
+
+1. **Nothing prunes them in the meantime.** `PruneAppBuilds` runs *only* from
+   `builds-record-finalize`, so they accumulate at one per tick per app, unboundedly, for as long as
+   the app is not deployed.
+2. **The next real deploy rewrites them as failures.** `PruneAppBuilds` begins with
+   `ReapAbandonedBuilds`, which finalizes every dead-PID `running` record as **`status=failed`,
+   `exit_code=-1`**. `abandoned` is computed for display and never stored, so what lands on disk is
+   indistinguishable from a build that really failed.
+3. **Then retention evicts the real history.** The `retention` survivors are the newest by
+   `started_at`: the build that just finished plus the most recent no-op ticks. At a 5-minute poll and
+   the default 20, that window is **~95 minutes**, and every older build's record *and* log file is
+   deleted.
+
+For anything reading these records that means `builds:list <app>` is mostly poll noise, `--status
+failed` no longer selects failures (`--status succeeded` is the one filter that still means what it
+says), and a build log is reliably present only until 19 further ticks have passed — so "go and read
+why last night's build failed" does not work. Raising `builds:set retention` buys minutes, not
+fidelity. **`builds:list` with no app is unaffected**, and so is anything built on it:
+it goes through `FetchRunningBuilds`, which requires a live PID, so a dead record can never make a
+box-wide "is anything building?" check block. **[src]** The fix is on the caller's side — don't enter
+`git:sync` at all unless the ref moved; that is `Q_poll_churn` in `ideas/poll-build-record-churn.md`.
 
 **Sharp edge: bare `builds:output <app>` does not mean "the last build".** Given no build id (or the
 literal `current`) it resolves one from the app's `.deploy.lock`, so on an idle app it prints
@@ -1086,6 +1134,14 @@ newest-first and emits `id`, so the two-step scripts: **[src]**
 ```bash
 dokku builds:output myapp "$(dokku builds:list myapp --status failed --format json | jq -r '.[0].id')"
 ```
+
+That recipe assumes `--status failed` means something, which under a periodic poll it does not — the
+newest "failed" record will be a reaped no-op tick (previous edge). **`exit_code` is what separates
+them**: a reaped record always carries `-1`, a build that really failed carries the builder's own
+positive code, and `kind` does not help because `git:sync` maps to `build` either way. **[src]** So
+`… --status failed --format json | jq -r '[.[] | select(.exit_code != -1)][0].id'` while `Q_poll_churn`
+is open. The one case it mislabels is a real build the box killed (reboot mid-build), which is reaped
+as `-1` too.
 
 ## Admin interface
 
@@ -1308,6 +1364,13 @@ first throwaway VPS:
     `[unverified]` inferences from the nginx template (see *nginx*), and the second is the one that
     would make the mode useless if wrong. While there: check that `nginx:set <app> hsts` is genuinely
     inert without a certificate, since that is why the mode is one-way.
+19. **The no-op-tick record drill** — cheap, and it decides `Q_poll_churn`. On a deployed app, run
+    `git:sync --build-if-changes` three times with no upstream commit and check
+    `builds:list <app> --format json`: three extra records, `status` `running` / display `abandoned`,
+    one `.log` each. Then deploy for real and re-list: the three should have become `failed` with
+    `exit_code: -1`, and the *previous* real build's record should be gone once enough ticks have
+    accumulated. All three claims are `[src]`-derived (*Build tracking*), so this is a confirmation,
+    not an open question — worth the five minutes because a whole design choice hangs off it.
 
 ## Sources
 

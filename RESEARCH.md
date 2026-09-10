@@ -20,6 +20,31 @@ unless noted; re-check before relying on a version-sensitive claim.
 
 - **Current line: v0.38.x**, latest v0.38.27 (2026-08-12). MIT licence, ~32.1k GitHub stars. **[docs]**
 - **Supported OS:** Ubuntu 22.04 / 24.04, or Debian 11+, on amd64 or arm64. **[docs]**
+- **Ubuntu 26.04 is not usable yet** (checked 2026-09-10). Four separate findings, because only the
+  first is the one people expect:
+  - `bootstrap.sh` sources `/etc/os-release` and hard-exits unless `VERSION_ID` is in
+    `22.04 24.04 10 11 12 13`: *"Unsupported Linux distribution. Only the following versions are
+    supported: …"*. **[src]**
+  - **packagecloud builds no `dokku` package for the `resolute` dist.** It carries the satellite
+    packages there — herokuish 0.11.17, plugn, sshcommand, gliderlabs-sigil, procfile-util, netrc,
+    lambda-builder, docker-container-healthchecker, docker-image-labeler, `dokku-update`,
+    `dokku-event-listener` — but `dokku` itself stops at `noble` (0.38.27). **[verified against the
+    dist package indexes]**
+  - …**which the installer would paper over**: for any unrecognised Ubuntu codename it falls back to
+    `OS_ID=noble`, so a whitelist patch alone installs the *noble* deb on 26.04. Its dependencies do all
+    resolve there — the distro ones (`apache2-utils`, `netcat`, `parallel`, `man-db`, `cron`,
+    `net-tools`, `rsync`, `dos2unix`, `unzip`) are in 26.04, and the packagecloud ones are published for
+    `resolute` at or above the required versions. Docker is not a blocker either — 26.04 carries the
+    same `docker.io` 29.1.3 as 24.04 does, and `download.docker.com` publishes a `resolute` dist for
+    anyone taking the other route. **[src + verified]**
+  - **bash 5.3, which 26.04 ships, is the substantive risk.** It turned a tolerated pattern into a
+    *hard error* in four builder plugins' `core-post-extract` (dokku/dokku #8566, fixed by #8578, which
+    is an ancestor of v0.38.27). Dokku is largely bash and its CI runs 22.04/24.04, so that class of
+    bug surfaces through users. **[src]**
+  - Upstream tracking: issue #8768 (2026-06-23) and PR #8791 (2026-07-03, a one-line whitelist change),
+    both open and untouched, no maintainer response. **Watch for both the PR merging and a `dokku` deb
+    appearing in the `resolute` dist** — the first without the second only unlocks the noble package.
+    We run 24.04 until then; see `D_host_os`.
 - **Minimum memory:** 1 GB for the Docker scheduler (2 GB per node for the k3s scheduler, which we do
   not use). No documented disk minimum. **[docs]**
 - **Install is two commands**, as root: **[docs]**
@@ -30,7 +55,53 @@ unless noted; re-check before relying on a version-sensitive claim.
   ```
 
   Takes 5–10 minutes. It installs Docker itself if missing. **The version is pinned in two places** —
-  the URL path and `DOKKU_TAG` — so an upgrade means editing both. **[docs]**
+  the URL path and `DOKKU_TAG` — so an upgrade means editing both. **[docs]** (Shepherd2 does not use
+  this path; see the breakdown below and `D_install_apt`.)
+- **What `bootstrap.sh` actually does** — read at v0.38.27, because it decides whether the script is
+  worth running at all (`D_install_apt`). **It builds nothing**: it is a wrapper that adds an apt
+  repository and installs a package. On the Ubuntu + `DOKKU_TAG` path, in order: **[src]**
+  1. reads `ID` and `VERSION_ID` from `/etc/os-release`; exits unless the version is in
+     `22.04 24.04 10 11 12 13`;
+  2. requires `hostname -f` to resolve (hard failure), warns if `MemTotal` is under ~1 GB;
+  3. installs `gpg-agent` and `software-properties-common`, runs `add-apt-repository -y universe`;
+  4. if `dokku` is not already installed, prints that the install **empties nginx's `sites-enabled`**
+     and sleeps 10 seconds;
+  5. installs Docker via `wget -O- https://get.docker.com | sh` **only if `docker` is absent**;
+  6. resolves the apt codename from `lsb_release -cs`, **falling back to `noble`** for any Ubuntu
+     codename that is not `jammy` or `noble` (`bookworm` for Debian/Raspbian);
+  7. writes packagecloud's key to `/etc/apt/trusted.gpg.d/dokku.asc` — trusted for *every* repository
+     on the box, not scoped with `signed-by=` — and adds
+     `deb https://packagecloud.io/dokku/dokku/<distro>/ <codename> main`;
+  8. preseeds five debconf answers *if* the matching environment variables are set:
+     `dokku/vhost_enable`, `dokku/hostname`, `dokku/skip_key_file`, `dokku/key_file`,
+     `dokku/nginx_enable`;
+  9. `apt-get install dokku=<version>`, then `dokku plugin:install-dependencies --core`;
+  10. runs `/etc/update-motd.d/99-dokku` if present.
+
+  Everything else in the file is other distributions, the `make install` source path, and version
+  branches back to 0.3.13. **[src]**
+- **What the `dokku` deb depends on, and how Ubuntu satisfies it** (0.38.27, checked 2026-09-10 —
+  it decides whether Docker has to come from Docker's own repository, and it does not):
+  **[src — the package's `Depends`; versions from the Ubuntu archive]**
+
+  | Dokku's alternation | Ubuntu 24.04 provides |
+  |---|---|
+  | `docker-engine-cs \| docker-engine \| docker-io \| docker.io (>= 19.03.0) \| docker-ce \| docker-ee \| moby-engine` | **`docker.io` 29.1.3** (`noble-updates`; the release pocket is older) |
+  | `docker-buildx-plugin \| moby-buildx \| docker-buildx` | **`docker-buildx` 0.30.1** |
+  | `docker-compose-plugin \| moby-compose \| docker-compose` | **`docker-compose-v2` 2.40.3**, which declares `Provides: docker-compose` |
+
+  The trap is in the third row: **`docker-compose` is also a real package** in Ubuntu — the obsolete
+  Python v1, 1.29.2 — so apt resolving that alternation on its own installs the legacy tool rather than
+  the v2 package that merely provides the name. Install `docker-compose-v2` explicitly first. Note also
+  that 24.04's *release* pocket ships `docker-compose-v2` 2.24.6 **without** the `Provides`; the
+  declaration arrived with 2.40.3 in `noble-updates`.
+
+  The rest of `Depends` is ordinary distro fare — `apache2-utils`, `locales`, `git`, `cpio`,
+  `cron | cron-daemon`, `curl`, `logrotate`, `man-db`, `netcat`, `net-tools`, `parallel`, `rsync`,
+  `dos2unix`, `unzip`, `util-linux` — plus the packagecloud satellites `sshcommand`, `netrc`,
+  `procfile-util`, `docker-container-healthchecker`, `docker-image-labeler`, `lambda-builder`.
+  `herokuish`, `dokku-update`, `dokku-event-listener` and `bash-completion` are **Recommends**, not
+  Depends — so an install with `--no-install-recommends` would omit the builder image's package. **[src]**
 - **Post-install, two steps:** authorise an admin SSH key and set the global domain. **[docs]**
 
   ```bash
@@ -1160,8 +1231,9 @@ first throwaway VPS:
    host-nginx routing intact? Concretely, from inside app A's container: can it reach app B's
    unpublished port by container IP before the change, and not after; and does `curl` through nginx
    still work for both apps after it.
-3. Does `bootstrap.sh` write `/etc/docker/daemon.json`, and does it survive our enlarged
-   `default-address-pools`?
+3. Does anything in the install write `/etc/docker/daemon.json` before we do — Docker's own package
+   being the candidate, since `bootstrap.sh` never runs (`D_install_apt`) — and does what it writes
+   survive our enlarged `default-address-pools`?
    - And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch for
      the allocation failure, so we know the real number rather than the arithmetic.
 4. **The `D_cert` chain, end to end:** `lego run --dns godaddy` succeeds with the current GoDaddy key

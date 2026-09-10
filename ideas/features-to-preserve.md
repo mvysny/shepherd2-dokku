@@ -1,10 +1,17 @@
 # Which features must Shepherd2 preserve?
 
-**This is the agreement document.** `D_dokku` decided *that* we rebuild on Dokku; nothing else about
-Shepherd2 is decided until this list is agreed. Nothing here is a decision — argue with it, cut from it,
-add to it. Once it's settled, the surviving `F_` set graduates into `README.md` (what the box does),
-`DECISIONS.md` (the forks we resolved along the way) and whatever code it implies, and this file is
-deleted.
+**This was the agreement document, and as of 2026-09-10 it is agreed.** `D_dokku` decided *that* we
+rebuild on Dokku; this list decided *what the rebuilt thing does*, and every open fork in it has now
+been answered by a `D_` entry or explicitly deferred to v2. Nothing here is itself a decision — the
+`D_` entries are.
+
+**So this file is now a ledger awaiting graduation, not a live debate.** What it still holds that
+nowhere else does is the *migration* view — feature by feature, what Shepherd used to do, what Dokku
+answers with, and which verdict it got — which is worth keeping only until someone confirms it has no
+readers left. The v1 box itself is described in **`SOLUTION.md`**; the arguments are in
+`DECISIONS.md`; the operator's recipes are in `README.md`. When this graduates, the `F_` slugs move to
+whichever of those cites them and the file is deleted — except `Q_multi_user` and `Q_web_admin`, which
+are live v2 questions and need notes of their own.
 
 **Where the inventory came from.** `COMPARISON.md`'s `R_` boxes in shepherd-traefik were the starting
 point, but they are *requirements for choosing a product*, not a feature list — they were written to
@@ -170,8 +177,8 @@ knowing from here:
 |---|---|---|---|---|
 | `F_project_descriptor` ⁿᵉʷ | **One JSON file per project is the source of truth**; create / update / delete a project from it | `/etc/shepherd/java/projects/<id>.json` + `shepherd-cli create/update/delete` | **Dokku's own state is the truth instead** — `D_dokku_is_truth`. Every fact is reportable as `--format json`; the two Dokku has no slot for (`SHEPHERD_GIT_URL`, `SHEPHERD_OWNER`) are config vars. Creation is `shepherd2 create-app`, everything after is `dokku` | ✂️ |
 | `F_smart_update` ⁿᵉʷ | An update rebuilds only when *build* inputs changed; otherwise just re-applies config | `SimpleJenkinsClient.needsProjectRebuild` — rebuild iff `buildArgs`/`dockerFile` changed | With no descriptor there is no "update": a build-arg change is `docker-options:remove` + `add` + `ps:rebuild`, a runbook line. Source changes are `git:sync --build-if-changes` | ✂️ |
-| `F_memory_quota` ⁿᵉʷ | **Box-wide** memory quota — refuse to create a project whose runtime + build memory overflows what the box has | `memoryQuotaMb` + `ShepherdClient.validate` | `create-app` sums `resource:report --format json` over `apps:list` and refuses. **Creation-time only** — a later hand `resource:limit` is unchecked | 🔧 |
-| `F_reserved_ids` ⁿᵉʷ | Refuse project ids that collide with the admin plane (`admin`, `*-admin`) | `validate()` | Moot as written — there is no admin plane to collide with. Dokku 0.38 restricts app names for its own security reasons | ✂️ |
+| `F_memory_quota` ⁿᵉʷ | **Box-wide** memory quota — refuse to create a project whose runtime + build memory overflows what the box has | `memoryQuotaMb` + `ShepherdClient.validate` | **Deferred to v2** (2026-09-10). The only enforcement point available is `create-app`, which a later hand `resource:limit` bypasses; `Q_quota` stays open | ✂️ |
+| `F_reserved_ids` ⁿᵉʷ | Refuse project ids that collide with the admin plane (`admin`, `*-admin`) | `validate()` | **Preserved, broadened — `D_admin_namespace`.** Not because an admin plane exists (it doesn't) but because every `Q_web_admin` candidate will need a hostname, and hostnames are first-come: `create-app` refuses the whole `admin*` prefix | 🔧 |
 | `F_project_owner` ⁿᵉʷ | Record who owns each project (name, email) | `owner` in the project JSON | `config:set --no-restart <app> SHEPHERD_OWNER=…`, set by `create-app`. Leaks into the container env; not a secret | 🔧 |
 
 **`F_project_descriptor` — decided 2026-09-10, see `D_dokku_is_truth`.** It was the design fork of the
@@ -192,7 +199,10 @@ the three things worth knowing from here:
   usually fail a couple of times. An app with no recorded URL would be invisible to a derived poll and
   never healed by the upstream fix. `SHEPHERD_GIT_URL` is written before the first build.
 
-What remains in this section is only confirming the `F_reserved_ids` drop.
+Section D is settled as of 2026-09-10. `F_reserved_ids` was **not** dropped in the end: `create-app`
+reserves the whole `admin*` prefix (`D_admin_namespace`), for a reason the original rule did not have —
+a future admin surface needs a hostname, and the wildcard certificate already covers one.
+`F_memory_quota` went the other way and is now v2 (`Q_quota`).
 
 ## E. Observability and administration
 
@@ -262,7 +272,10 @@ any of these is wrong:
 - **`F_user_login`** — password and Google SSO login, and the email-domain allowlist. Nothing outside
   Dokku Pro can provide it, and with the UI gone there is nothing to log in to. (`F_multi_user` is *not*
   on this list — it is an open fork, see `Q_multi_user`.)
-- **`F_reserved_ids`** — there is no admin plane left to collide with.
+- ~~**`F_reserved_ids`**~~ — proposed for drop, then **kept and broadened** on 2026-09-10:
+  `D_admin_namespace` reserves the `admin*` prefix. Struck rather than deleted because the reasoning
+  that nearly dropped it — "there is no admin plane to collide with" — is true and still not the point.
+- **`F_memory_quota`** — *deferred to v2* (2026-09-10), see `Q_quota`.
 - **`F_custom_domains` and `F_apex_domain`** — *deferred to v2*, not dropped (`D_cert`). Neither was ever
   used: every app has been a demo at `PROJECTID.<domain>`, and there is nothing to publish on the apex
   when a visitor cannot ask for an app. v2 is `dokku-letsencrypt` on the affected apps only, which
@@ -355,71 +368,34 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   pinned at 5 minutes**: `--build-if-changes` only builds when the ref moved, so 20 records are the last
   20 *changes* to a project rather than a window of clock time, and the default needs no
   `builds:set --global retention N` in the installer at all.
-- **`Q_quota`** — keep `F_memory_quota`? It has never been Dokku's job and never will be. Summing
+- **`Q_quota`** — **deferred for v1 2026-09-10: no quota; `F_memory_quota` is a v2 question.** Summing
   `resource:report --format json` across apps and refusing an over-commit is maybe 20 lines in
-  `create-app` — but only *there*: under `D_dokku_is_truth` a later hand `resource:limit` bypasses it.
-  Is creation-time-only enforcement worth the 20 lines?
+  `create-app` — but only *there*: under `D_dokku_is_truth` a later hand `resource:limit` bypasses it,
+  and a guard that holds only on the path the single operator already controls did not earn its lines
+  before the box exists. The v2 form of the question is the interesting one: **is there any enforcement
+  point that Dokku's own state does not undermine?** — an `app-create`-time check is ours to write, but
+  `resource:limit` is Dokku's command and we do not wrap it.
 - **`Q_credentials`** — **deferred, not answered, 2026-09-10: `F_private_repos` is v2, so v1 needs no git
   credentials at all** and every hosted repo must be publicly cloneable. The question it defers is still
   the interesting one, and it is the *shape* rather than the requirement: `git:auth` is per *host*, so one
   GitHub token would cover the whole box and any app could then be pointed at any private repo the token
   can read. Whether per-project credentials are a real requirement or an artifact of Jenkins having a
   credentials store is a v2 question; per-project deploy keys may work and are `[unverified]`.
-- **`Q_language`** — what is the glue written in? Bash matches both predecessors and adds no runtime.
-  Its main input is gone: with `D_dokku_is_truth` there is no descriptor to parse, only `--format json`
-  reports to read, which is `jq`. Bash + `jq` is the default; the remaining case for anything richer is
-  `create-app`'s argument list (a dozen flags) — decide when writing it.
+- ~~**`Q_language`**~~ — **answered 2026-09-10: Ruby for the `shepherd2` dispatcher, Bash for
+  `install` / `uninstall`. See `D_ruby`.** `create-app`'s flag list decided it, as this question
+  predicted it might; Bash + `jq` is recorded there as the road not taken, and stays the fallback.
 
-## A concrete sketch, to argue against
+## The sketch graduated — see `SOLUTION.md`
 
-With nginx settled by `D_proxy`, per-project networks by `D_isolation`, no descriptor by
-`D_dokku_is_truth`, one wildcard cert (or none — `F_http_only`) by `D_cert`, and neither Postgres nor
-private repos in v1, the whole repo is roughly:
+The concrete sketch this file used to carry (the verb list, the install steps, the crons, and the
+"where this is weakest" notes) **graduated into `SOLUTION.md` on 2026-09-10**, which now owns the
+assembled picture: the box's inventory, the install order, the CLI surface and the flows. It is not
+repeated here. What stayed behind, because it is an argument rather than a description, is in the
+`D_` entries it cites — `D_ruby` for the language and the verb set, `D_admin_namespace` for the
+reserved prefix, and `D_dokku_is_truth` for why there are so few verbs.
 
-```
-shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --owner EMAIL
-                             #   --buildpack BP --build-dir PATH --domain D…]
-                             #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
-                             #   + any build-time vars (--no-restart), resource:limit,
-                             #   network:create + network:set,
-                             #   buildpacks:set if --buildpack given (else the repo's own
-                             #   .buildpacks names it — D_builder), then git:sync --build
-                             #   (no --postgres: F_postgres is v2)
-shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, network:destroy
-shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
-                             #   and the retry after a failed build
-shepherd2 poll               # */5 cron: for every app with SHEPHERD_GIT_URL, git:sync
-                             #   --build-if-changes, serially under flock -n so a tick that lands
-                             #   on a running build skips (Dokku records the build logs itself)
-shepherd2-clearcache         # weekly: docker system prune. NOT a blanket volume prune — under
-                             #   D_builder the per-app cache-$APP volumes are the build cache;
-                             #   the per-app lever is dokku repo:purge-cache ID
-shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons,
-                             #   and in https mode lego + global-cert + first issuance (D_cert);
-                             #   in http mode those three are simply skipped (F_http_only)
-shepherd2-uninstall
-```
-
-Plus one root cron line that is not a script: `lego renew --days 30 --renew-hook '<two lines calling
-dokku global-cert:set>'` (`D_cert`). One CLI with four verbs plus three box scripts, and no data
-directory, against today's Jenkins + Traefik + compose + five scripts + a Kotlin/Vaadin repo. **`shepherd2 poll` is the whole of Jenkins**, and
-`F_safe_reboot` is `flock` on the lock file it already holds. Whether the four verbs are one script or
-four is `Q_language`'s leftover.
-
-Everything else the `F_` tables preserve is a `dokku` command and belongs in a `README.md` cheat sheet,
-not here: `logs -t`, `builds:list` / `builds:output`, `ps:restart`, `config:set`, `domains:add`,
-`nginx:set`, `resource:limit`, and the three-command build-arg change.
-
-Worth noting what is *not* in the list: no network reconciler. The Dokploy sibling needs an eighth
-script on a short cron to re-attach its proxy to every per-app network after Dokploy re-creates the
-Traefik container; a host-side nginx dialling container IPs cannot have that failure mode, and
-`network:rebuild` covers the rest. See `D_isolation`, which that note graduated into, and
-`RESEARCH.md` → *Networking and app isolation* for the mechanics.
-
-Where this sketch is weakest: `create-app` is a dozen flags, and a project whose creation fails halfway
-(the first build usually does) must be re-runnable without tripping over the non-idempotent commands —
-`apps:exists` / `network:exists` guards, or a `destroy-app` first. Caching is no longer a weak spot at
-all: with `D_builder` there is nothing for `create-app` to pass, because the cache is the `cache-$APP`
-volume Dokku mounts and an app with no Dockerfile has no syntax in which to name another. The two
-remaining soft edges are the install-time `F_http_only` choice, which is a mode the *uninstaller* has to
-know about too, and `F_memory_quota` being enforced only where `create-app` can see it.
+Two of the sketch's soft edges were closed on the way: `create-app` is **guarded and re-runnable**
+rather than needing a `destroy-app` first (a failed first build is the normal case), and the
+install-time `F_http_only` choice is **recorded as `SHEPHERD_TLS_MODE`**, a global config var the
+uninstaller reads (`D_cert`). The third — `F_memory_quota` being enforceable only where `create-app`
+can see it — was not closed but deferred; see `Q_quota`.

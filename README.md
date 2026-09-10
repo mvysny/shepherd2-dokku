@@ -2,8 +2,9 @@
 
 > **DESIGN PHASE — there is nothing to install yet.**
 >
-> This repo currently holds documentation only. The feature set is being agreed in
-> [`ideas/features-to-preserve.md`](ideas/features-to-preserve.md); code follows after that.
+> This repo currently holds documentation only. The v1 design is settled and written up in
+> [SOLUTION.md](SOLUTION.md) — what gets installed, what the CLI is, and how a build flows through the
+> box. Code follows that file.
 
 Builds given git repos periodically and automatically deploys them to a Linux box running
 [Dokku](https://dokku.com). Serves as a homebrew "replacement" for Heroku, to publish your own pet
@@ -39,6 +40,7 @@ fork out.
 | If you want to… | Read |
 |---|---|
 | run, install or troubleshoot this box | this file (once there is something to run) |
+| see the whole box at once — what is installed, and how a build flows through it | [SOLUTION.md](SOLUTION.md) |
 | know what **Dokku** does — a command, a flag, a plugin, a gap | [RESEARCH.md](RESEARCH.md) |
 | know *why* it's built this way, and what was rejected | [DECISIONS.md](DECISIONS.md) (`D_` entries) |
 | see what's still being figured out | [`ideas/`](ideas/) — `ls` is the index |
@@ -53,8 +55,11 @@ real box.
 
 * A VM with 8–16 GB of RAM; x86-64 or arm64. Ideally with a public IPv4 address.
   * Dokku's own documented minimum is 1 GB, but that is for Dokku, not for building JVM apps on the box.
-* **Ubuntu 22.04 / 24.04, or Debian 11+** — Dokku supports these and nothing else. Ubuntu latest LTS is
-  the target.
+* **Ubuntu 24.04 LTS.** That is what the box and the development VM both run, and the only thing this
+  is tested on ([`D_host_os`](DECISIONS.md)). Dokku also supports 22.04 and Debian 11+, which would
+  probably work and are not tested here.
+  * **Not 26.04, yet.** Dokku's installer refuses to run on it, and no `dokku` package is built for
+    it — see [`D_host_os`](DECISIONS.md) for what has to change upstream first. Do not work around it.
 * A DNS domain with the IPv4 "A" record pointing at the VM. **Two records** are needed, `@` and `*`, so
   that wildcard subdomains work.
 * **API access to that domain's DNS**, at a provider [lego](https://go-acme.github.io/lego/dns/) supports.
@@ -64,17 +69,37 @@ real box.
   * **Both DNS points apply only to an https box.** A box installed in **http mode** needs no zone, no
     `*` record and no API token — see *Installation*. That mode exists for a test VM, where resolution
     comes from `/etc/hosts` on whatever machine browses it.
-* Docker 24+ is wanted so BuildKit is the default. (The build cache itself is a per-app Docker volume,
-  not a BuildKit cache — see [`D_builder`](DECISIONS.md).)
+* **Docker comes from Ubuntu** — `docker.io`, `docker-buildx`, `docker-compose-v2`, installed by
+  `shepherd2-install` ([`D_install_apt`](DECISIONS.md)). 24.04 carries 29.1.3, well above the 19.03
+  Dokku asks for. No BuildKit requirement applies here: nothing on this box runs `docker build` at all
+  (see [`D_builder`](DECISIONS.md) — the build cache is a per-app Docker volume, not a BuildKit cache).
+* **Ruby**, from the distro archive — the `shepherd2` CLI is a Ruby script using nothing but the
+  standard library. The installer runs `apt install ruby`; there is no gem to install and no version
+  manager. See [`D_ruby`](DECISIONS.md).
 
 ## Installation
 
-Not written yet. Dokku's own install is two commands and is documented in
-[RESEARCH.md](RESEARCH.md#versions-platform-install); everything Shepherd2 adds on top of it is what
-this section will become.
+Not written yet — it will be one script, `shepherd2-install`, and
+[SOLUTION.md](SOLUTION.md) lists what it does in order.
 
-Four things are already settled and are here so they are not forgotten, because each is awkward or
+**Dokku is installed as its authors' deb package, with apt** — no `curl | bash`, and Dokku's own
+`bootstrap.sh` is never run ([`D_install_apt`](DECISIONS.md)). That script is itself only a wrapper
+that adds packagecloud's apt repository and installs the same package, so this costs nothing and gains
+a readable install: the version is pinned once, as the apt version, and held with `apt-mark hold`.
+**Upgrading Dokku is therefore deliberate**, and is four commands rather than an `apt upgrade`:
+
+```bash
+sudo apt-mark unhold dokku
+sudo apt-get install dokku=0.38.NN        # the new pinned version
+sudo dokku plugin:install-dependencies --core
+sudo apt-mark hold dokku
+```
+
+Five more things are already settled and are here so they are not forgotten, because each is awkward or
 impossible to retrofit:
+
+* **Installing Dokku empties `/etc/nginx/sites-enabled`.** If that box was ever an nginx host, move
+  anything you care about out of the way first. This is Dokku's behaviour, not ours.
 
 * **Decide first: https or http. You do not get to change your mind.** The install runs in one of two
   modes (`D_cert`), and the choice is recorded on the box:

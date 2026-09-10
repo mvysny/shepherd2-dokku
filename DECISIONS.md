@@ -343,7 +343,8 @@ properties of Dokku's version make the predecessor's price disappear:
 - **`/etc/docker/daemon.json` needs enlarged `default-address-pools`, at install time.** A stock daemon
   walls at ~30 bridge networks, i.e. ~30 apps. This is precedent, not a new cost — shepherd-traefik
   already does it — but it needs a daemon restart, so it belongs in the installer and cannot be
-  retrofitted cheaply. Whether Dokku's `bootstrap.sh` writes that file is `[unverified]`.
+  retrofitted cheaply. Whether anything in the install writes that file already — Docker's own package
+  is the candidate, now that `D_install_apt` means `bootstrap.sh` never runs — is `[unverified]`.
 - **A project's database must be created with `--initial-network` — a v2 obligation this entry records
   in advance.** `F_postgres` is deferred to v2 (2026-09-10), so v1 creates no services and this costs
   nothing yet; it is written down because the flag is *creation-time only*. A service created without it
@@ -389,7 +390,8 @@ became whether to keep a second one on top of it.
 - **Shepherd2 provides exactly what Dokku has no single command for**: `create-app` and `destroy-app`
   (the multi-command, partly non-idempotent sequences), `poll` (serial, under a lock, iterating
   `apps:list` and calling `git:sync --build-if-changes` with each app's URL), `rebuild` (the forced
-  variant, `--build`), and the box-level crons and installer. **Everything else is `dokku` itself** —
+  variant, `--build`), `wait-idle` (block until no build is running — `F_safe_reboot`), `clearcache`
+  (the weekly prune), and the box-level crons and installer. **Everything else is `dokku` itself** —
   logs, build output, restart, config, domains, ingress tuning, limits — listed in `README.md` as a
   cheat sheet from feature to command.
 - **Shepherd2 never wraps a command Dokku already has.**
@@ -439,10 +441,12 @@ became whether to keep a second one on top of it.
 
 - **`F_project_descriptor` and `F_smart_update` are dropped.** Changing a build arg is
   `docker-options:remove`, `docker-options:add`, `ps:rebuild` — three commands, once a year for a key
-  rotation, a runbook line in `README.md`. **`F_memory_quota` survives at creation time only**:
-  `create-app` sums `resource:report --format json` across apps and refuses an over-commit; a later
-  hand `resource:limit` is not checked. **`F_project_owner`** is `SHEPHERD_OWNER`. Per-project cache
-  flags are set once by `create-app`.
+  rotation, a runbook line in `README.md`. **`F_memory_quota` is deferred to v2** (operator, 2026-09-10):
+  the only enforcement point this design leaves is `create-app`, where a later hand `resource:limit`
+  bypasses it, and a guard that holds only on the path the operator already controls was not worth
+  writing before the box exists. `Q_quota` stays open as the v2 question — the interesting half of which
+  is whether *any* enforcement point exists that Dokku's own state does not undermine.
+  **`F_project_owner`** is `SHEPHERD_OWNER`. Per-project cache flags are set once by `create-app`.
 - **Both config vars are injected into the container's environment.** Acceptable because neither is a
   secret: a git URL never carries a token here (credentials go through `git:auth`), and the owner is a
   contact address.
@@ -498,10 +502,11 @@ per app; `D_dokku_is_truth` already does.
 - **`F_multi_user` and `F_user_login` are deferred, not dropped.** They stay in the ideas file as the v2
   fork. The only v2 route to `F_user_login` (Google SSO) is the reworked Vaadin admin, option 3 of
   `Q_web_admin`.
-- **Store `SHEPHERD_OWNER` in a form v2 can match against a key name.** The `user-auth` trigger sees the
-  key's `$SSH_NAME`, so if v1 records an email, v2 either names keys by email (`ssh-keys:add
-  alice@example.com …`) or adds a mapping. Naming keys by email is the cheap answer; note it in
-  `create-app`'s header when it is written.
+- **`SHEPHERD_OWNER` is an email address** (operator, 2026-09-10), which is what shepherd-java's `owner`
+  held and what a contact field is for. The `user-auth` trigger sees the key's `$SSH_NAME`, so v2 closes
+  the gap from the other end: **name SSH keys by email** (`ssh-keys:add alice@example.com …`) and the
+  hook is a string comparison with no mapping table. Note that in `create-app`'s header when it is
+  written, because it is the one v1 field a v2 decision depends on.
 - **Nothing in v1 may assume more than one keyholder** — no per-user paths, no owner checks in
   `shepherd2` — so that v2 adds the hook without unpicking anything.
 
@@ -621,6 +626,14 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   Two implications for the code: `install` records the mode where `uninstall` can find it (so the
   teardown is symmetric — `F_uninstall`), and nothing in http mode may pre-set `nginx:set … hsts`, which
   is inert without a certificate but would go live the instant one appeared.
+- **The mode is recorded as `dokku config:set --global SHEPHERD_TLS_MODE=https|http`** (2026-09-10) —
+  the box-level counterpart of `D_dokku_is_truth`'s rule that a fact of ours is a `SHEPHERD_*` config
+  var or it does not exist. `install` writes it last, once the mode's steps have succeeded; `uninstall`
+  reads it to decide whether lego, the plugin and the renewal cron are there to remove. A file under
+  `/etc/shepherd2/` was the alternative and was rejected for the same reason the project descriptor was:
+  it is state of ours outside Dokku, needing its own backup and its own drift story. Like every global
+  var it is injected into each app's build and runtime environment, which is harmless — it is not a
+  secret, and an app that reads it learns only what its own scheme already tells it.
 - **http mode makes the DNS requirements conditional, not the domain.** `domains:set-global mydomain.me`
   is still set and apps are still `PROJECTID.mydomain.me`; what http mode drops is the zone, the `*`
   record and the API token. Resolution can then come from the client's `/etc/hosts`, one line per app —
@@ -848,3 +861,306 @@ whole decision in one sentence.
   `F_poll_rebuild` in the feature survey.
 - **`D_dokku_is_truth` is unaffected and slightly strengthened** — the builder choice is `builder:report`
   state, not a file of ours, and the cache is a Docker volume Dokku names. Still no descriptor.
+
+## D_ruby — The `shepherd2` CLI is Ruby; `install` and `uninstall` stay Bash (2026-09-10)
+
+**Status:** Accepted 2026-09-10, answering `Q_language`. Not yet implemented — it decides what the first
+file written into this repo is.
+
+**Context.** Both predecessors wrote their glue in Bash, and `CLAUDE.md` carried "scripts are Bash with
+`set -euo pipefail`" as a convention inherited from them. `D_dokku_is_truth` then removed that
+convention's main input: there is no descriptor to parse, only `dokku *:report --format json` to read.
+What is left for the CLI to do is argument handling (`create-app` carries about eight flags), reading
+JSON, running a partly non-idempotent sequence behind guards, and holding a lock.
+
+**Decision.**
+
+- **One `shepherd2` dispatcher, written in Ruby**, holding every verb: `create-app`, `destroy-app`,
+  `poll`, `rebuild`, `wait-idle`, `clearcache`. One file on `PATH`, one place to look.
+- **Ruby standard library only.** `json` and `optparse` are in it. No `Gemfile`, no bundler, no gem to
+  pin, and nothing to re-install after a distro upgrade.
+- **`shepherd2-install` and `shepherd2-uninstall` stay Bash** with `set -euo pipefail`. They run on a
+  box where Ruby is not yet guaranteed to exist and after it may have been removed, and they are a
+  linear sequence of root commands — which is the thing Bash is actually good at.
+
+**Why.**
+
+- **The dispatcher is a program; the installer is a sequence.** `create-app` parses flags, validates an
+  id *before* mutating anything, reads two JSON reports, and runs eight commands with an existence guard
+  on each of the non-idempotent ones. Bash does all of that, at a cost that starts compounding around
+  the fifth flag; the installer does none of it.
+- **`jq` in Bash is already a second language**, and a worse one for this shape — `--format json` output
+  has to be threaded through subshells and re-quoted at every step, where Ruby parses it once into a
+  hash. The Bash case rested on "no new runtime", and that is the only thing it wins.
+- **Ruby is on this operator's shelf.** `Q_web_admin`'s cheapest v2 candidate is a TUI on
+  [Tuile](https://github.com/mvysny/tuile), and the prior art for the shape is the Ruby `dokku-cli` gem.
+  Writing v1's CLI in Ruby means that TUI shells out to — or eventually requires — the same code rather
+  than reimplementing a model of the box in a second language.
+- **The runtime cost is one `apt install ruby`** from the distro archive, no third-party repository and
+  no version manager. It is a smaller addition than the JVM this project just deleted, and unlike the
+  JVM nothing long-running hosts it: every invocation is a short-lived process started by cron or by the
+  operator.
+- **Keeping the installer in Bash keeps the bootstrap honest.** The install has to work on a machine
+  with nothing on it; it is the one part of Shepherd2 that must not depend on anything Shepherd2
+  installs. That is also why it, and not the dispatcher, is what `apt install ruby` lives in.
+
+**Alternatives rejected.**
+
+- *Bash + `jq` throughout.* Matches both predecessors, adds no runtime, and would be right if
+  `create-app` were three commands. It is the fallback if Ruby ever becomes awkward to have on the box,
+  and the port is mechanical for every verb except `create-app`.
+- *Ruby for `install` too.* Chicken-and-egg — the installer would have to install its own interpreter
+  and then re-exec — for no gain on a script that is a list of `apt`, `dokku` and `cron` lines.
+- *Something compiled — Go, matching Dokku's own plugins.* The repo is deployed to the box by
+  `git pull`, so a compiled artifact adds a build-and-ship step to a project whose entire deployment
+  story is "the guide is the deliverable". Go's other draw, single-binary distribution, buys nothing
+  when there is exactly one box.
+- *Python.* The same class of answer as Ruby with no advantage here; Ruby wins purely on the operator's
+  own toolchain and on Tuile.
+
+**Consequences.**
+
+- **`CLAUDE.md`'s Bash convention is amended, not dropped** — Bash with `set -euo pipefail` remains the
+  rule for `install`, `uninstall` and any future box script; Ruby is the rule for the CLI. A new script
+  picks by which of the two it is.
+- **The box gains a language runtime**, so `README.md`'s requirements grow `ruby`, and `install`
+  installs it. `uninstall` does **not** remove it: it is an archive package that other things may share,
+  and removing shared packages is not symmetry, it is collateral damage.
+- **Target Ruby 3.2**, which is what the box runs — Ubuntu 24.04, fixed by `D_host_os`. (26.04's 3.3
+  would have been fine too; it is not available for reasons that have nothing to do with Ruby.) Don't
+  reach for syntax newer than 3.2 for the sake of it: the floor moves when the box does, not before.
+- **Nothing on the box parses `shepherd2` output.** The verbs are for a human and for cron; keeping them
+  free of a machine-readable contract is what stops the CLI growing into the `shepherd-cli` that
+  `D_dokku_is_truth` refused.
+- **The Ruby half still shells out to `dokku`**, never to `docker` and never to `/var/lib/dokku`
+  directly — `CLAUDE.md`'s *Conventions* are unchanged by the language. Ruby makes reaching around Dokku
+  easier, which is the one risk this decision introduces.
+
+## D_admin_namespace — App ids beginning with `admin` are reserved (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Reverses the proposed drop of `F_reserved_ids`, in a different shape
+from the rule it replaces.
+
+**Context.** shepherd-java refused project ids that collided with the admin plane — `admin` and
+`*-admin` — and the feature survey proposed dropping the rule outright, on the correct observation that
+there is no admin plane left to collide with. True today; likely false later. Every candidate in
+`Q_web_admin` — a cron-generated status page, wharf, a reworked Vaadin admin, even a plain nginx vhost
+serving build logs — is reached over http and therefore needs a hostname on this box's wildcard domain.
+Hostnames here are first-come: the app *is* the subdomain (`F_subdomain`).
+
+**Decision.** `create-app` refuses any id matching `admin*` — the whole prefix, so `admin`,
+`admin-status` and `admintools` are all reserved. Nothing else is reserved by Shepherd2; Dokku's own
+app-name restrictions (tightened in 0.38.2 against command injection) apply underneath and are Dokku's
+business, not ours to restate.
+
+**Why.**
+
+- **A namespace is far cheaper to reserve than to reclaim.** Reclaiming one means renaming a live app,
+  which changes its URL, breaks whatever links to it, and — because the app name is the Dokku app — is
+  a destroy-and-recreate, losing the build cache with it. The cost of reserving is one regex, paid once.
+- **The wildcard certificate already covers it.** `admin.mydomain.me` falls under `*.mydomain.me`
+  (`D_cert`), so a v2 admin surface needs no certificate work at all, only a name that is still free.
+- **A prefix beats an exact list.** shepherd-java's `admin` + `*-admin` protected two spellings and
+  needed extending every time a new name was wanted. A prefix protects the whole namespace and never
+  needs maintenance — which matters precisely because we do not yet know what the admin surface is
+  called.
+- **It costs one check in the one place ids are minted.** `create-app` is the only creation path
+  Shepherd2 offers, and the check runs before anything is mutated (see `D_ruby`).
+
+**Alternatives rejected.**
+
+- *Reserve nothing* — the feature survey's proposal, on the grounds that the collision target is gone.
+  Rejected because the collision target's absence is a v1 property, not a permanent one, and the rule is
+  unaffordable to add later: by then someone owns the name.
+- *Reserve shepherd-java's exact list* (`admin`, `*-admin`). The suffix half protects names nobody will
+  choose; the prefix is where an admin surface actually lands.
+- *Put the admin surface on the apex domain instead, and reserve nothing.* `F_apex_domain` is deferred
+  (`D_cert`) and the apex is **not** covered by the wildcard certificate, so that route costs a second
+  certificate before it costs anything else. A reserved subdomain costs nothing.
+- *Enforce it in Dokku rather than in `create-app`* — an `app-create` plugin trigger of ours. Rejected
+  by `CLAUDE.md`'s standing rule against maintaining a plugin, and unnecessary under `D_single_operator`:
+  the one person who could bypass the rule by typing `dokku apps:create admin-foo` is the person the
+  rule is for.
+
+**Consequences.**
+
+- **`F_reserved_ids` is preserved, not dropped** — the feature survey's drop list is wrong on that row,
+  and the rule it preserves is broader than the original.
+- **v2's admin surface has a name waiting for it**, on https from the day it exists, with no
+  certificate step and no rename of anything.
+- **`destroy-app` needs no counterpart** — nothing was allocated, only refused.
+- **A hand-typed `dokku apps:create admin-foo` is not blocked**, by design. Shepherd2 validates its own
+  entry point and does not police Dokku's.
+
+## D_host_os — The box is Ubuntu 24.04; 26.04 waits on upstream (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Applies to the reference box *and* to the VM this is developed in —
+deliberately the same, so a bug is never "the dev machine is a different distro". Revisit when the two
+upstream items in *Why* both clear; this entry is edited in place when they do, which is why its slug
+names the subject and not the version.
+
+**Context.** Ubuntu 26.04 LTS is out and is the obvious default for a new box; the operator asked
+whether to use it. Dokku is the whole of this product's runtime (`D_dokku`), so the question is
+entirely about what Dokku supports, not about what the distro offers us.
+
+**Decision.** **Ubuntu 24.04 LTS, on the box and on the development VM.** Dokku pinned as already
+decided, everything else from the distro archive. 22.04 and Debian 11+ are Dokku-supported and would
+probably work, but they are not what we run and not what we test.
+
+**Why — the state of 26.04, checked 2026-09-10.**
+
+- **Dokku's installer refuses to run.** `bootstrap.sh` reads `VERSION_ID` from `/etc/os-release` and
+  exits unless it is one of `22.04 24.04 10 11 12 13` **[src]**. The documented two-command install is
+  therefore not available at all; the docs list the same two Ubuntu releases **[docs]**.
+- **No `dokku` package is built for `resolute`.** packagecloud carries the whole satellite set for that
+  dist — herokuish, plugn, sshcommand, sigil, procfile-util, netrc, lambda-builder, the two docker
+  helpers, `dokku-update`, `dokku-event-listener` — but not Dokku itself, which stops at `noble`
+  **[verified against the dist indexes]**.
+- **Upstream is aware and stalled.** Issue #8768 (opened 2026-06-23) and PR #8791 (opened 2026-07-03),
+  the latter a one-line addition to the version whitelist, with no maintainer response and no movement
+  in two months.
+- **bash 5.3 is the real risk, not the whitelist.** 26.04 ships bash 5.3, which already turned a
+  tolerated pattern into a **hard error** in four of Dokku's builder plugins (#8566, fixed by #8578 and
+  present in v0.38.27). Dokku is mostly bash, its CI runs 22.04/24.04, and that bug reached a user
+  rather than a test. `core-post-extract` — the plugin that broke — is on every build's path here.
+
+**Why not the workaround.** It exists and it is small: patch the downloaded `bootstrap.sh`'s whitelist,
+and the script's own codename fallback (any unrecognised Ubuntu codename → `noble`) installs the noble
+deb. Every dependency resolves — the distro ones are all in 26.04, the packagecloud ones are published
+for `resolute` at the required versions, and Docker publishes a `resolute` dist so `get.docker.com`
+works. Rejected anyway: it puts the one component we deliberately do not maintain onto a platform its
+maintainers do not test, and turns every future oddity into "us, Dokku, or bash 5.3?" — which is the
+debugging tax `D_dokku` exists to stop paying. Being one merged line away from supported is a reason to
+wait, not a reason to hack.
+
+**Alternatives rejected.**
+
+- *26.04 now, with the patched bootstrap and the noble package channel.* Above. It is what to do if
+  something ever forces 26.04 before upstream is ready — a hardware or kernel requirement, say — and it
+  would need this entry rewritten, not a quiet `sed` in the installer.
+- *A 26.04 development VM against a 24.04 box.* Cheap-looking and the worst of the options: it puts a
+  bash-version difference between where a script is written and where it runs, on a product that is
+  almost entirely shell and cron.
+- *22.04, the older LTS.* Supported by Dokku, but older for no benefit; 24.04 is the newest thing Dokku
+  actually tests.
+
+**Consequences.**
+
+- **Ruby 3.2 is the floor** — what 24.04 ships — which supersedes the 3.0 floor `D_ruby` set for 22.04.
+- **`install` should refuse 26.04 with a real message** rather than letting `bootstrap.sh` fail with a
+  distro error the operator has to decode. The preflight is the place; see `SOLUTION.md`.
+- **26.04 costs us nothing else.** lego is the same 4.9.1 there as on 24.04, so `D_cert` is unaffected
+  either way, and Ruby 3.3 would have been welcome but is not needed.
+- **What to watch:** dokku/dokku #8791 merging *and* a `dokku` deb appearing in packagecloud's
+  `resolute` dist. Both, not either — the whitelist alone only unlocks installing the noble package.
+
+## D_install_apt — Install Dokku from the authors' deb with apt, not by running `bootstrap.sh` (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Lands as the first half of `shepherd2-install`. It changes *how*
+Dokku is installed, not *what* is installed: the package is upstream's own, at the pinned version.
+
+**Context.** Dokku's documented install is two commands — fetch `bootstrap.sh`, run it as root with
+`DOKKU_TAG` set. The operator does not want to run a shell script fetched from the internet as root,
+and prefers a distribution package from the authors. Both halves of that are available here, because
+**the deb *is* the authors' artifact**: `bootstrap.sh` does not build anything, it adds
+packagecloud's `dokku/dokku` apt repository and runs `apt-get install dokku=<version>`.
+
+Read at v0.38.27, its ten steps on our path are enumerated in `RESEARCH.md` → *Versions, platform,
+install*; the short version is that nine of them are apt plumbing and the tenth is
+`plugin:install-dependencies --core`. Everything else in the file is other distributions, the source
+path, and version branches back to 0.3.13.
+
+**Decision.** `shepherd2-install` performs those steps itself, with apt, and **never runs
+`bootstrap.sh`**. Concretely, and in this order:
+
+- **Docker first, from Ubuntu's own archive** — `docker.io`, `docker-buildx` and `docker-compose-v2`,
+  installed explicitly, before Dokku. Not `get.docker.com`, and not Docker's apt repository: one fewer
+  third-party key and source, and upgrades come from the distro like everything else. **The staleness
+  worry does not apply to 24.04** — `noble-updates` carries `docker.io` 29.1.3, `docker-buildx` 0.30.1
+  and `docker-compose-v2` 2.40.3 (checked 2026-09-10), and Dokku requires only >= 19.03.
+- **Prerequisites:** `gpg-agent`, `software-properties-common`, `add-apt-repository universe` — which
+  `D_cert` needs anyway, since lego lives in universe.
+- **Dokku's repository, key-scoped:** packagecloud's key into
+  `/usr/share/keyrings/dokku-archive-keyring.asc`, checked against a fingerprint pinned in the
+  installer, and referenced with `signed-by=` on the sources line.
+- **The debconf answers, preseeded deliberately** (`dokku/hostname`, `dokku/vhost_enable`,
+  `dokku/key_file` or `dokku/skip_key_file`, `dokku/nginx_enable`) rather than left to the package's
+  defaults.
+- **`apt-get install dokku=0.38.27`** — the version pin, in one place.
+- **`dokku plugin:install-dependencies --core`** afterwards.
+- **`apt-mark hold dokku`**, so no unattended upgrade moves it. Upgrading is a deliberate runbook
+  sequence in `README.md`.
+
+**Why.**
+
+- **It is the same package from the same authors.** There is no second, more official deb; this is
+  upstream's distribution channel, and the pin is the same version string bootstrap would have passed.
+  `CLAUDE.md`'s "Dokku stays upstream and unforked" is untouched — we are declining a *convenience
+  script*, not the product.
+- **We are writing an installer anyway** (`F_install`), and its stated job is that the box is
+  reproducible from this repo. A dozen apt lines we can read and re-run beats a 300-line script that
+  branches across five distros, two install methods and versions back to 0.3.13, of which our box
+  exercises exactly one path.
+- **The pin stops being double.** Today the version has to match in the `bootstrap.sh` URL *and* in
+  `DOKKU_TAG`; as an apt version it is written once, and a mismatch becomes impossible rather than
+  merely documented.
+- **Ubuntu's Docker satisfies Dokku's packaging on its own terms.** `docker.io` is one of the seven
+  alternatives Dokku's deb accepts for the engine, `docker-buildx` one of three for buildx, and
+  `docker-compose-v2` declares `Provides: docker-compose`, which is the third compose alternative. So
+  nothing is being forced: apt resolves the dependency the way the package author allowed for.
+- **Three concrete security improvements, none of them theatre:** no root shell pipeline from the
+  internet (neither Dokku's nor Docker's), a key scoped with `signed-by=` instead of
+  `/etc/apt/trusted.gpg.d/dokku.asc` — which bootstrap installs, and which trusts that key for *every*
+  repository on the box — and a fingerprint we check rather than assume.
+- **We know our debconf answers.** Preseeding them explicitly is how the install stays non-interactive
+  *and* intentional; bootstrap only forwards them when the caller sets five environment variables.
+
+**Alternatives rejected.**
+
+- *Run `bootstrap.sh` as documented.* The upstream-blessed path, and the thing our steps must stay
+  faithful to — it remains the reference and the fallback. Rejected for the reasons above; the
+  ten-second sleep, the `get.docker.com` pipe and the multi-distro detection are all cost we pay for
+  nothing on a single known box.
+- *Install from source (`make install`), the "advanced installation" route.* Rejected: it builds on
+  the box, has no apt upgrade path, and is *further* from what upstream tests, not closer.
+- *Docker CE from `download.docker.com`* — what `get.docker.com` installs, and what this entry
+  originally specified. Rejected on 2026-09-10 once the versions were checked: it buys a marginally
+  faster upstream cadence at the cost of a second third-party key and apt source, on a box whose whole
+  install story is "readable and from the distro". It stays the documented fallback for the day
+  Ubuntu's engine lags something Dokku needs — swapping back is three lines in `install` and touches
+  nothing else in this repo.
+- *`docker.io` alone, letting apt pull the rest as dependencies.* Rejected on a sharp edge, recorded in
+  *Consequences*: `docker-compose` is a **real** package in Ubuntu (the obsolete Python v1, 1.29.2), so
+  apt resolving Dokku's alternation unaided installs that rather than the v2 provider.
+- *Vendor the `.deb` into this repo.* A third-party binary in git, no upgrade path, and one more thing
+  to re-verify by hand at every bump.
+
+**Consequences.**
+
+- **`install` must not silently drift from `bootstrap.sh`.** When the Dokku pin is bumped, re-read
+  upstream's `bootstrap.sh` at that tag and diff it against our steps — this is the maintenance cost
+  this decision buys, and the script's comment header carries the list of steps it mirrors so the diff
+  is cheap.
+- **Two preflight checks come from bootstrap and must survive:** `hostname -f` has to resolve, and the
+  operator has to be told that installing Dokku empties `/etc/nginx/sites-enabled`.
+- **Install `docker-compose-v2` by name, before Dokku.** Dokku's compose alternative is
+  `docker-compose-plugin | moby-compose | docker-compose`; Ubuntu has no plugin package, and
+  `docker-compose` **is a real package** — the obsolete Python v1 (1.29.2) — so apt left to itself
+  installs *that* rather than the v2 package that merely `Provides` the name. Installing v2 first
+  satisfies the dependency and the legacy package is never considered. The same ordering argument is
+  why `docker.io` goes in before Dokku at all.
+- **`docker-compose-v2` must come from `noble-updates`, not the release pocket.** 24.04 shipped 2.24.6,
+  which does **not** declare `Provides: docker-compose`; 2.40.3 in updates does. Updates are enabled by
+  default, so this is a fact to know when something looks wrong, not a step.
+- **Install Dokku *with* recommends — never `--no-install-recommends`.** `herokuish` is a **Recommends**
+  of the `dokku` package, not a Depends, and herokuish is the builder this whole box is built around
+  (`D_builder`). So are `dokku-update` and `dokku-event-listener`. Suppressing recommends produces an
+  installation that looks fine until the first build.
+- **Docker now lives in `universe`.** That is where `docker.io` and friends are, so security updates
+  come through Ubuntu's universe pockets (they do — 24.04's 29.1.3 arrived that way) and the long-tail
+  guarantee is Ubuntu Pro's. `add-apt-repository universe` is already a step for lego's sake.
+- **Upgrading Dokku becomes explicit** — `apt-mark unhold`, install the new pinned version, re-run
+  `plugin:install-dependencies --core`, `apt-mark hold`. A `README.md` runbook line, not a script:
+  it is `apt`, not something Dokku lacks a command for.
+- **If packagecloud is ever unavailable**, the fallbacks are upstream's `bootstrap.sh` or the source
+  install, in that order. Recorded, not planned for.

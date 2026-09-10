@@ -9,8 +9,11 @@ and deploys them as Docker containers at `https://PROJECTID.<domain>` on a singl
 the building, running, routing and TLS; this repo is the **glue** — host setup, per-project
 convergence, the periodic-rebuild trigger, the wildcard-certificate story, and housekeeping.
 
-**Status: design phase.** There is no code yet. The current work is agreeing the feature set
-(`ideas/features-to-preserve.md`) before anything is written. Don't add scripts ahead of that.
+**Status: design phase, and the v1 design is agreed.** There is no code yet. **`SOLUTION.md` is what is
+to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
+that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
+underneath it) first. Two things still gate a *finished* v1: the punch list in `RESEARCH.md` needs a
+throwaway VPS, and `ideas/features-to-preserve.md` has not yet graduated.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:
@@ -37,23 +40,32 @@ it `build.dockerFile`, `build.buildArgs` as build args, and the per-project buil
 
 ## Documentation targets
 
-This repo's prose lives in five places, each with a distinct audience and *what it is allowed to own*.
+This repo's prose lives in six places, each with a distinct audience and *what it is allowed to own*.
 Match the target before writing a line — the failure mode is a fact explained twice, which then drifts.
 
 | Target | Audience | Scope & length | Owns |
 |---|---|---|---|
 | **README.md** | the operator at the front door | thin: positioning, requirements, install, troubleshooting, how to onboard a project | *how to run this box* — and routing the reader onward |
+| **SOLUTION.md** | someone asking "what *is* this box, end to end?" | the assembled picture: an inventory and a handful of flows | *how the pieces are wired together* — the install inventory, and the sequences that cross several decisions |
 | **CLAUDE.md** (this file) | a contributor / coding agent | invariant-focused; pointers, not reference | what you must not break *from a distance*, the doc map, and the index of whatever code appears |
 | **DECISIONS.md** | someone asking "why is it like this?" | one coherent, mutable entry per live decision *already made* (`D_` slugs) | the *why-we-chose*, including the roads not taken |
 | **RESEARCH.md** | someone asking "what does Dokku actually do?" | a reference on the upstream product, claim-by-claim | verified Dokku behaviour, each claim marked `[docs]` / `[src]` / `[unverified]` |
 | **`ideas/*.md`** | us, mid-thought | a scratchpad per idea; deleted on graduation | nothing durably — see *Ideas & their graduation* |
 
-Once there is code, a sixth target opens: **each script's comment header**, dense and standalone, owning
-that script's arguments, env knobs and prerequisites. `shepherd-traefik-connect-networks` in the old
-repo is the model for what one should look like. A script header may defer *motivation* ("see
+Once there is code, a seventh target opens: **each script's comment header**, dense and standalone,
+owning that script's arguments, env knobs and prerequisites. `shepherd-traefik-connect-networks` in the
+old repo is the model for what one should look like. A script header may defer *motivation* ("see
 `D_dokku`"), never *usage*.
 
-Rules that make five targets survivable:
+**`SOLUTION.md` is the newest and the easiest to get wrong**, because everything it describes is
+decided somewhere else. It owns *composition* and nothing else: the box's inventory, and the flows —
+registration, a poll tick, a renewal, a teardown — that no single `D_` entry can own because each spans
+four or five of them. It argues nothing, so a paragraph there that explains *why* has drifted into
+`DECISIONS.md`'s territory and a paragraph that explains *what Dokku does* into `RESEARCH.md`'s. The
+test when adding to it: if this fact stopped being true, which file would be wrong? If the answer is
+another file, link instead.
+
+Rules that make six targets survivable:
 
 - **Single source of truth per fact.** Each fact has one home and the others link to it. When tempted to
   explain something twice, link instead — the failure mode to watch for is compressing a `D_` entry into
@@ -86,6 +98,8 @@ section is the authority on where nuggets land in Shepherd2**:
 - the choice made + the alternatives rejected → **DECISIONS.md** (a `D_` entry)
 - work deferred *as a consequence of a logged decision* → that entry's *Consequences*
 - an operator-facing setup step, requirement or troubleshooting recipe → **README.md**
+- where a piece sits in the assembled box — an install step in sequence, a flow that crosses several
+  decisions, a fact about what the box holds → **SOLUTION.md**
 - a cross-cutting invariant ("never reintroduce a naming contract") → **CLAUDE.md**
 - the precise truth of one script — arguments, env knobs, prerequisites → **that script's comment header**
 
@@ -98,9 +112,12 @@ finding is `RESEARCH.md`, not the bin. Scan `ls ideas/<name>/` at graduation, no
 
 ## Script index
 
-Nothing yet. When scripts land, this table becomes a map — not a reference: each entry a pointer plus
-what the thing is for, with **every script's own comment header the authority** on its arguments, env
-knobs and prerequisites. Put new technical truth *there*, not here.
+Nothing yet — but the shape is decided, and `SOLUTION.md` describes what each piece does:
+`shepherd2` (Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`,
+`clearcache`), plus `shepherd2-install` and `shepherd2-uninstall` (Bash). When they land, this table
+becomes a map — not a reference: each entry a pointer plus what the thing is for, with **every script's
+own comment header the authority** on its arguments, env knobs and prerequisites. Put new technical
+truth *there*, not here.
 
 ## Conventions when editing
 
@@ -134,7 +151,8 @@ knobs and prerequisites. Put new technical truth *there*, not here.
   `D_isolation`.
 - **Dokku's state is the only source of truth, and there is no project descriptor.** No per-project
   file anywhere, no converger, nothing that re-applies configuration. The only per-project data of ours
-  are the `SHEPHERD_GIT_URL` / `SHEPHERD_OWNER` config vars, written once by `create-app`. If you need a
+  are the `SHEPHERD_GIT_URL` / `SHEPHERD_OWNER` config vars, written once by `create-app`, plus one
+  box-level `SHEPHERD_TLS_MODE` written by `install`. If you need a
   project fact, read `dokku *:report --format json`; if you need to store one, it is a `SHEPHERD_*`
   config var or it does not exist. See `D_dokku_is_truth`.
 - **Shepherd2 never wraps a command Dokku already has.** `create-app` / `destroy-app` / `poll` /
@@ -144,12 +162,20 @@ knobs and prerequisites. Put new technical truth *there*, not here.
 - **Prefer a Dokku command to a `docker` command.** `dokku ps:restart` over `docker restart`; the
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.
-- **Scripts are Bash with `set -euo pipefail`.** Same as the predecessor.
+- **The CLI is Ruby; the installers are Bash.** `shepherd2` is one Ruby dispatcher holding every verb,
+  standard library only — no `Gemfile`, no gems — and written against Ruby 3.0, which is what the
+  oldest supported distro ships. `shepherd2-install` and `shepherd2-uninstall` stay Bash with
+  `set -euo pipefail`, as does any future box script: they run before Ruby is guaranteed to exist and
+  after it may be gone. A new file picks by which of the two it is. See `D_ruby`.
+- **Project ids beginning with `admin` are reserved** — `create-app` refuses them, so a future admin
+  surface has a hostname waiting under the wildcard certificate. See `D_admin_namespace`.
 - **Anything the box must survive a reinstall of belongs in this repo**, not in a command someone once
   typed. The install is reproducible *from the guide* — that is the whole deliverable.
 - `mydomain.me` is the placeholder DNS domain throughout; the operator replaces it (or adds
   `/etc/hosts` entries for a toy setup).
-- **Pin Dokku's version, and remember it is pinned twice** — the `bootstrap.sh` URL path *and*
-  `DOKKU_TAG`. Never below v0.38.2, which carries security fixes. See `RESEARCH.md`.
+- **Pin Dokku's version.** Never below v0.38.2, which carries security fixes. See `RESEARCH.md`.
+- **The box is Ubuntu 24.04, and so is the VM this is developed in.** Not 26.04: Dokku's installer
+  refuses it and no `dokku` package is built for it. Don't work around that — see `D_host_os`, which
+  names the two upstream things that must change first.
 - **`[unverified]` in `RESEARCH.md` means exactly that.** Don't build a design on an unverified claim
   without saying so; the file's *Questions only a box can answer* is the punch list.

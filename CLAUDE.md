@@ -108,6 +108,11 @@ knobs and prerequisites. Put new technical truth *there*, not here.
 - **The proxy is Dokku's default host nginx, and it is not a container.** Don't install the Traefik
   plugin or set `proxy:type` on an app; per-app ingress tuning is `nginx:set`. See `D_proxy` — and note
   that `D_isolation` *depends* on this, so switching proxies is not a local change.
+- **TLS is one wildcard certificate, and nothing per app.** lego issues and renews it on the host, and
+  `dokku-global-cert` pushes it into every app; that plugin is the one third-party plugin we depend on.
+  Don't install `dokku-letsencrypt` or `letsencrypt:enable` an app in v1, and don't make `create-app`
+  touch certificates — the plugin covers new apps at creation. The DNS API token is root-only and must
+  stay unreadable to the `dokku` user. See `D_cert`.
 - **Each project gets its own Docker network, and nothing has to re-attach anything.** `initial-network`
   is persisted app state that Dokku re-applies at container creation, so there is no successor to
   `shepherd-traefik-connect-networks` — if you find yourself writing one, something else is wrong. See

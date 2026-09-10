@@ -54,6 +54,10 @@ real box.
   the target.
 * A DNS domain with the IPv4 "A" record pointing at the VM. **Two records** are needed, `@` and `*`, so
   that wildcard subdomains work.
+* **API access to that domain's DNS**, at a provider [lego](https://go-acme.github.io/lego/dns/) supports.
+  The one wildcard certificate is issued over the DNS-01 challenge, so the box holds an API token that
+  can edit the zone (root-only). GoDaddy is what the reference box uses; note that GoDaddy restricts its
+  DNS API to accounts with 10+ domains or a Discount Domain Club plan.
 * Docker 24+ is wanted so BuildKit — and therefore build caching — is the default.
 
 ## Installation
@@ -72,6 +76,10 @@ retrofit:
   the install rather than in a fix.
 * **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`); do not install the Traefik
   plugin. Per-app tuning is `dokku nginx:set PROJECTID …`.
+* **One wildcard certificate for every app** (`D_cert`). `lego` from the Ubuntu repos issues
+  `*.mydomain.me` over DNS-01, a daily root cron line renews it, and its renew hook runs
+  `dokku global-cert:set`, which pushes the new certificate into every app. New apps pick it up at
+  creation. Nothing is done per app; do not install `dokku-letsencrypt`.
 
 ## Adding your project
 

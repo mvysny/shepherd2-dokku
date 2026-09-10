@@ -266,7 +266,7 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 - **`Q_cert` narrows to two routes, not three.** `dokku-global-cert` (one wildcard cert we renew) and
   `dokku-letsencrypt` (per-app ACME, renewal solved upstream) both stay available; the Traefik DNS-01
   route is gone. That is the intended direction — the requirement as written asks for one wildcard cert
-  — but it is now foreclosed rather than merely unchosen.
+  — but it is now foreclosed rather than merely unchosen. `D_cert` has since taken the first of the two.
 - **`F_ingress_tuning` is preserved** as `nginx:set <app> client-max-body-size` / `proxy-read-timeout`.
 - **nginx is an apt package on the host**, so it is part of what a box reinstall must reproduce, and
   Dokku's own bootstrap installs it. Nothing for us to configure beyond `nginx:set`.
@@ -498,3 +498,102 @@ per app; `D_dokku_is_truth` already does.
   `create-app`'s header when it is written.
 - **Nothing in v1 may assume more than one keyholder** — no per-user paths, no owner checks in
   `shepherd2` — so that v2 adds the hook without unpicking anything.
+
+## D_cert — One wildcard certificate: lego DNS-01 on the host, propagated by `dokku-global-cert` (2026-09-10)
+
+**Status:** Accepted 2026-09-10, awaiting implementation — it lands as `install` steps (lego, the plugin,
+the first issuance, one root cron line) and nothing per app. Depends on `D_proxy`: the `certs` plugin
+this rides on is ignored under the Traefik plugin.
+
+**Context.** `F_wildcard_https` asks for **one** `*.mydomain.me` certificate, so that a new app is on
+https the moment it exists and nobody performs a per-app ACME order, ever. shepherd-traefik does this
+today with Traefik's DNS-01 challenge against GoDaddy. Dokku's nginx cannot: nginx has no ACME client,
+so under `D_proxy` something else has to issue and renew. Two routes survived `D_proxy` — the official
+`dokku-letsencrypt` plugin (per-app orders, renewal solved upstream) and the community
+`dokku-global-cert` plugin (one cert, renewal ours) — and which one is right turned entirely on whether
+"one cert" is still the requirement or merely how it happened to be built.
+
+It is the requirement. Every app this product has ever hosted was a demo at `PROJECTID.<domain>` under a
+wildcard DNS record; the production use with foreign domains that the predecessors allowed for never
+materialised. Once `F_custom_domains` and `F_apex_domain` are deferred (see *Consequences*), per-app
+issuance buys nothing and the wildcard is the whole story. And a wildcard is DNS-01 by definition —
+Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*).
+
+**Decision.**
+
+- **One certificate, `*.mydomain.me`, issued and renewed on the host by [lego](https://go-acme.github.io/lego/)**
+  with its `godaddy` DNS provider. Renewal is a daily root cron line running `lego renew --days 30` with
+  a `--renew-hook` that calls `dokku global-cert:set` on the new files; lego runs the hook only when a
+  renewal actually happened.
+- **Propagation is `dokku-global-cert`**, installed by `install`. It imports the cert into every new app
+  at creation, re-applies it to every app using it on `global-cert:set`, and leaves apps with their own
+  certificate alone. It is the one third-party plugin Shepherd2 depends on, and this entry is the `D_`
+  that `CLAUDE.md`'s *Conventions* require for that.
+- **No per-app ACME in v1.** `dokku-letsencrypt` is not installed; no app runs `letsencrypt:enable`.
+
+**Why.**
+
+- **Under nginx, "automatic" is either a plugin or a cron; there is no third thing.** `dokku-letsencrypt`
+  automates renewal but issues per app, which is the half of the requirement that matters. The wildcard
+  route is the only one where creating an app involves zero certificate work, and it is what we run today.
+- **lego is Traefik's ACME engine.** Traefik "relies internally on Lego for ACME", so `lego --dns godaddy`
+  with the same API key and secret is the code path renewing our certificate right now, on an account
+  already known to clear GoDaddy's API-access restriction. Zero new provider risk, and the credentials
+  carry over unchanged.
+- **certbot would have been the first choice and is not available for this provider.** certbot ships a
+  renewal timer with its Ubuntu package, so it would have cost us no cron of our own; but its thirteen
+  first-party DNS plugins do not include GoDaddy, and the third-party `certbot-dns-godaddy` is a pip
+  install outside the distro — the non-standard path the whole choice is trying to avoid. lego's price
+  for being in the distro *with* GoDaddy is one cron line.
+- **The plugin over a `certs:add` loop of our own** because it hooks app creation: an app created by a
+  hand-typed `apps:create` still gets https, where our loop would cover it only at the next renewal, up
+  to two months later. And its leave-own-certs-alone rule is exactly what lets v2 add per-app
+  certificates for foreign domains without touching this design.
+
+**Alternatives rejected.**
+
+- *`dokku-letsencrypt`, per-app orders, HTTP-01 or DNS-01.* Would have been the answer had
+  `F_custom_domains` stayed, because a wildcard covers no foreign domain and every app would have needed
+  its own cert anyway; with that feature deferred it only adds an ACME order per app. Two further costs:
+  the app "needs to already be deployed and reachable on the public internet over HTTP before a
+  certificate can be issued", so an app whose first builds fail — the normal case — has no https until
+  someone re-runs `enable`; and its wildcard support is "not officially supported" (issue #189). It
+  stays the v2 tool for `F_custom_domains`, on those apps only, and coexists with the global cert.
+- *The Traefik plugin with `challenge-mode dns`.* Foreclosed by `D_proxy`, and it was per-app orders too,
+  since nothing in it declares a wildcard SAN.
+- *certbot with a DNS plugin.* No GoDaddy in the distro; see *Why*. It becomes the right tool the day the
+  domain moves to a provider certbot ships a plugin for (Cloudflare, Route53, …) — and nothing else in
+  this entry changes when it does, only the two lines that issue and renew.
+- *Our own propagation: `create-app` runs `certs:add`, the renew hook loops over `apps:list`.* Five lines
+  and no dependency, but misses hand-created apps, and the plugin already writes through `certs:add`,
+  so if `dokku-global-cert` ever dies the migration to this shape is trivial. Kept as the fallback.
+- *The raw variant — `server.crt` / `server.key` in `/home/dokku/tls`.* Documented, but whether it
+  covers app vhosts or only the default server was not investigated, because the plugin does the job.
+- *Move the domain to Cloudflare to unlock certbot's stock plugin.* Not needed while GoDaddy's API works
+  for this account. Kept as the fallback if GoDaddy's 2024 access restriction (10+ domains or a Discount
+  Domain Club plan) ever bites.
+
+**Consequences.**
+
+- **`F_custom_domains` and `F_apex_domain` are deferred, not dropped.** A `*.mydomain.me` cert matches
+  neither `foo.example.org` nor `mydomain.me` itself. Custom domains are v2 via `dokku-letsencrypt` on
+  the affected apps only. The apex is one more `-d mydomain.me` on the lego command plus a Dokku app
+  named as the FQDN — cheap, but there is nothing to run there in v1, since a visitor cannot ask for an
+  app to be published.
+- **A DNS API token lives on the box, readable by root only.** It can rewrite the whole zone, which makes
+  it a bigger secret than any certificate and one more reason `D_single_operator` holds: whatever v2 does
+  about keyholders, lego runs from root's crontab and the `dokku` user must never be able to read that
+  file.
+- **`shepherd2-renew-cert` in the ideas sketch is not a script.** It is the cron line plus a two-line
+  hook. `install` owns: `apt install lego`, `plugin:install … global-cert`, the first `lego run`, the
+  first `global-cert:set`, and the cron line; `uninstall` is the inverse. `create-app` does nothing for
+  TLS.
+- **Ubuntu's lego lags upstream by a major version** (4.9.1 on 24.04 against 5.x upstream), so pass
+  `--days 30` explicitly rather than relying on v5's dynamic default, and if the packaged `godaddy`
+  provider ever misbehaves, the fallback is upstream's static binary, pinned the way Dokku is.
+- **Rate limits stop mattering.** One certificate renewed roughly every sixty days is far below every
+  Let's Encrypt limit, where a per-app route would have had to batch a farm migration.
+- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*):
+  that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
+  re-applies to every app and reloads nginx without dropping connections; and that an app created and
+  never yet deployed serves the global cert on its first successful deploy.

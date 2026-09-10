@@ -118,32 +118,23 @@ rejected rungs and the consequences are in that entry; the mechanics are in `RES
 |---|---|---|---|---|
 | `F_subdomain` | App reachable at `PROJECTID.<domain>` | Traefik host rule from a label | `domains:set-global <domain>` and the app name becomes the subdomain | ✅ |
 | `F_port_contract` | `EXPOSE 8080` is the whole app contract | Traefik routes to 8080 | `EXPOSE 8080` makes Dokku publish on **:8080**; needs `ports:set <app> http:80:8080 https:443:8080` per app | 🔧 |
-| `F_wildcard_https` | **One** wildcard Let's Encrypt cert via DNS-01 — a new app is on https immediately, with no per-app ACME round-trip | Traefik, DNS challenge, one wildcard cert | Three routes, all with caveats — see below | 🔧 |
-| `F_custom_domains` ⁿᵉʷ | Extra domains per project, with https on them | `publication.additionalDomains` | `domains:add <app> …` | ✅ |
-| `F_apex_domain` ⁿᵉʷ | One project can own the apex domain | `publication.publishOnMainDomain` | Name the app as an FQDN and the global vhost is ignored; or `domains:set` | ✅ |
+| `F_wildcard_https` | **One** wildcard Let's Encrypt cert via DNS-01 — a new app is on https immediately, with no per-app ACME round-trip | Traefik, DNS challenge, one wildcard cert | lego (`--dns godaddy`) on the host + a root cron line, pushed into every app by `dokku-global-cert`. **Decided — `D_cert`** | 🔧 |
+| `F_custom_domains` ⁿᵉʷ | Extra domains per project, with https on them | `publication.additionalDomains` | `domains:add <app> …` — but the wildcard cert covers no foreign domain, so https on one needs `dokku-letsencrypt` on that app. **Deferred to v2** (`D_cert`); never used in practice | ✂️ |
+| `F_apex_domain` ⁿᵉʷ | One project can own the apex domain | `publication.publishOnMainDomain` | Name the app as an FQDN and the global vhost is ignored; or `domains:set`. The wildcard cert does not cover the apex, so it is one more `-d` on the lego command. **Deferred to v2** (`D_cert`) — nothing to run there | ✂️ |
 | `F_ingress_tuning` ⁿᵉʷ | Per-project max body size and proxy read timeout | `publication.ingressConfig` | `nginx:set <app> client-max-body-size` / `proxy-read-timeout`, app-scoped, first-class | ✅ |
 
-**`F_wildcard_https` is the largest chapter**, and the *"no per-app round-trip"* half is what's hard —
-"https works" is easy on any route. The three routes, and what each costs:
+**`F_wildcard_https` — decided 2026-09-10, see `D_cert`.** One `*.mydomain.me` cert, issued and renewed
+on the host by lego against GoDaddy (the same library and credentials Traefik uses today), pushed into
+every app by `dokku-global-cert` from a `--renew-hook`. The argument, the five rejected routes and the
+consequences are in that entry; the mechanics are in `RESEARCH.md` (*TLS*). The three things worth
+knowing from here:
 
-1. **nginx + `dokku-global-cert`** — the exact current model: one cert, imported for every new app,
-   re-applied to every app that has no cert of its own, re-applied on update so a renewal propagates.
-   ✅ on the requirement. Costs: **we own the renewal cron** (lego/certbot DNS-01 → `global-cert:set`),
-   and the plugin is thin (20★, and its README still advertises Dokku 0.7 / Docker 1.12).
-2. **nginx + `dokku-letsencrypt`** (official, 1118★) — renewal is solved (`letsencrypt:cron-job --add`,
-   daily, 30-day grace), DNS-01 providers are configurable globally. Costs: **issuance is per app**, so
-   every new app does its own ACME order; and wildcard support is muddier than the README implies —
-   issue #189 still carries *"wildcard support is not officially supported by this plugin"*.
-3. ~~**Traefik plugin + `challenge-mode dns`**~~ — **foreclosed 2026-09-10 by `D_proxy`.** It kept our
-   existing Traefik knowledge and made renewal Traefik's problem as it is today. What killed it: it
-   ignores the `certs` plugin entirely, so routes 1 and 2 are off the table under it; nothing declares a
-   wildcard SAN, so per-app orders remain unless we add `tls.domains` labels by hand; every
-   `traefik:set` property is **global-only**, so `F_ingress_tuning` degrades to hand-written labels; and
-   the plugin has no network-attachment logic, so it costs `F_network_isolation` too. Retained here only
-   because it is the reason `Q_cert` now has two routes rather than three.
-
-Rough read: **1 and 2 differ only in which cron we own** — our own renewal (1) versus per-app ACME
-orders (2) — and 1 is what we do today. That is the whole of `Q_cert` now.
+- **It turned on the requirement, not on the tooling.** Per-app ACME (`dokku-letsencrypt`) would have won
+  had `F_custom_domains` stayed, because a wildcard covers no foreign domain. Every app ever hosted was a
+  demo under the wildcard record, so the two rows above are deferred and "one cert" is the whole story.
+- **Nothing per app.** `create-app` does no TLS work at all; the plugin imports the cert at app creation.
+  The requirement's *"no per-app round-trip"* half is met literally.
+- **The DNS API token lives on the box, root-only**, which is one more reason `D_single_operator` holds.
 
 ## D. Project lifecycle and configuration
 
@@ -242,6 +233,10 @@ Say so if any of these is wrong:
   Dokku Pro can provide it, and with the UI gone there is nothing to log in to. (`F_multi_user` is *not*
   on this list — it is an open fork, see `Q_multi_user`.)
 - **`F_reserved_ids`** — there is no admin plane left to collide with.
+- **`F_custom_domains` and `F_apex_domain`** — *deferred to v2*, not dropped (`D_cert`). Neither was ever
+  used: every app has been a demo at `PROJECTID.<domain>`, and there is nothing to publish on the apex
+  when a visitor cannot ask for an app. v2 is `dokku-letsencrypt` on the affected apps only, which
+  coexists with the global cert.
 - **The naming contract** — `shepherd_PROJECTID` / `shepherd/PROJECTID` / `PROJECTID.shepherd`. It
   existed because there was no scheduler or registry, so the name *was* the lookup. Dokku owns naming.
 - **`shepherd-java-api` on Maven Central** — no successor library; published versions stay published.
@@ -263,9 +258,10 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   the end: Traefik is global-only for ingress properties (costing `F_ingress_tuning`), ignores the
   `certs` plugin (costing `Q_cert` routes 1 and 2), and has no network-attachment logic at all (costing
   `F_network_isolation`, or a reconciler cron). Familiarity was its whole case.
-- **`Q_cert`** — one cert we renew ourselves (`dokku-global-cert`), or per-app ACME with renewal solved
-  (`dokku-letsencrypt`)? The requirement as written says the former; the requirement may be worth
-  relaxing now that a new app appearing is a `dokku` command rather than a JSON file edit.
+- ~~**`Q_cert`**~~ — **answered 2026-09-10: one wildcard cert, lego DNS-01 against GoDaddy on the host,
+  `dokku-global-cert` for propagation. See `D_cert`.** Relaxing the requirement to per-app ACME was
+  argued and lost: it only paid off with custom domains, which no app has ever used, so
+  `F_custom_domains` and `F_apex_domain` are deferred to v2 instead. *(Section C.)*
 - **`Q_cache`** — which of the five positions on `F_cache_isolation`? **Downgraded 2026-09-09**: the
   per-app `--cache-to` carries over, so this is no longer a regression to absorb but a pre-existing gap
   (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
@@ -326,8 +322,8 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 
 ## A concrete sketch, to argue against
 
-Assuming `dokku-global-cert` for `Q_cert`, with nginx settled by `D_proxy`, per-project networks by
-`D_isolation` and no descriptor by `D_dokku_is_truth`, the whole repo is roughly:
+With nginx settled by `D_proxy`, per-project networks by `D_isolation`, no descriptor by
+`D_dokku_is_truth` and one wildcard cert by `D_cert`, the whole repo is roughly:
 
 ```
 shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --owner EMAIL
@@ -342,14 +338,15 @@ shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL 
                              #   and the retry after a failed build
 shepherd2 poll               # cron: for every app with SHEPHERD_GIT_URL, git:sync --build-if-changes,
                              #   serially under a lock file (Dokku records the build logs itself)
-shepherd2-renew-cert         # lego/certbot DNS-01 → dokku global-cert:set
 shepherd2-clearcache         # weekly: docker buildx prune + docker system prune
-shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons
+shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons,
+                             #   lego + global-cert + first issuance (D_cert)
 shepherd2-uninstall
 ```
 
-One CLI with four verbs plus four box scripts, and no data directory, against today's Jenkins + Traefik +
-compose + five scripts + a Kotlin/Vaadin repo. **`shepherd2 poll` is the whole of Jenkins**, and
+Plus one root cron line that is not a script: `lego renew --days 30 --renew-hook '<two lines calling
+dokku global-cert:set>'` (`D_cert`). One CLI with four verbs plus three box scripts, and no data
+directory, against today's Jenkins + Traefik + compose + five scripts + a Kotlin/Vaadin repo. **`shepherd2 poll` is the whole of Jenkins**, and
 `F_safe_reboot` is `flock` on the lock file it already holds. Whether the four verbs are one script or
 four is `Q_language`'s leftover.
 

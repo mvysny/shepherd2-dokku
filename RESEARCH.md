@@ -367,6 +367,11 @@ workaround]**
 
 ## TLS: three routes to a wildcard certificate
 
+`D_cert` takes route 1. Two facts about Let's Encrypt itself frame all three routes: **a wildcard
+certificate can only be issued over the DNS-01 challenge** — HTTP-01 and TLS-ALPN-01 "cannot be used to
+issue wildcard certificates" **[docs]** — and a `*.example.com` certificate does **not** cover the apex
+`example.com`, which has to be requested as a second name on the same certificate. **[docs]**
+
 ### Route 1 — nginx + `dokku-global-cert` (community)
 
 The exact model shepherd-traefik uses: **one** cert for the whole box. **[docs]**
@@ -383,17 +388,44 @@ global-cert:report [<app>|--global] [<flag>]
 ```
 
 "Allows setting a global certificate, which is imported for all new applications and applied to every
-existing application that does not already have its own certificate." On update it re-applies to every
-app currently using it, so a renewal propagates. Apps with their own cert are left alone unless
-`--force`. **[docs]**
+existing application that does not already have its own certificate." On update: "re-applies it to every
+application that currently uses it, so renewals (for example a rotated wildcard certificate) propagate to
+existing applications and are served immediately." Apps with their own cert are "left untouched unless
+`--force` is passed". **[docs]**
 
 Caveats: the README declares support for **Dokku 0.7.0+ / Docker 1.12.x** and the install URL still
 points at `josegonzalez/`, while the live repo is `dokku-community/dokku-global-cert` (20★, MIT, last
-active 2026-07-20) — a low-profile plugin, genuinely maintained but thin. **We would own the renewal
-cron** (lego/certbot DNS-01 → `global-cert:set`). **[docs + repo metadata]**
+active 2026-07-20) — a low-profile plugin, genuinely maintained but thin. **We own issuance and renewal**
+(an ACME client on the host → `global-cert:set`). **[docs + repo metadata]**
 
 There is also a rawer official variant: drop `server.crt` / `server.key` into `/home/dokku/tls` and
-uncomment the `ssl_certificate` lines in `/etc/nginx/conf.d/dokku.conf`. **[docs]**
+uncomment the `ssl_certificate` lines in `/etc/nginx/conf.d/dokku.conf`. **[docs]** Whether that covers
+app vhosts or only the default server was not investigated.
+
+**The ACME client on the host — lego vs certbot.** Read 2026-09-10 for `D_cert`:
+
+- **Traefik "relies internally on Lego for ACME"**, and its DNS-provider list *is* lego's. So a `lego`
+  command on the host with the same provider credentials is the same code path that renews
+  shepherd-traefik's certificate today. **[docs — Traefik]**
+- **lego's `godaddy` provider** takes `GODADDY_API_KEY` / `GODADDY_API_SECRET`; the documented example is
+  literally our case: `lego run --dns godaddy -d '*.example.com' -d example.com`. Its page carries the
+  provider's own warning: "GoDaddy has recently (2024-04) updated the account requirements … Management
+  and DNS APIs: Limited to accounts with 10 or more domains and/or an active Discount Domain Club plan."
+  **[docs — lego]**
+- **`lego renew`** takes `--days N` (renew when fewer than N days remain) and `--renew-hook CMD`, and "the
+  hook is executed only when the certificates are effectively renewed"; the hook sees `LEGO_CERT_DOMAIN`,
+  `LEGO_CERT_PATH`, `LEGO_CERT_KEY_PATH` (and `LEGO_ISSUER_CERT_PATH`, `LEGO_CERT_PEM_PATH`,
+  `LEGO_CERT_PFX_PATH`). Certificates land under `.lego/certificates/`, a wildcard as `_.example.com.crt`
+  / `.key`. A `--dynamic` renewal window (⅓ of lifetime) exists in 4.x and is the default from v5.
+  **[src — `cmd/cmd_run_renew.go`, `cmd/hook.go`; docs for the file layout]**
+- **lego ships no timer**; the daily `lego renew` is the operator's cron line. **[docs]**
+- **Ubuntu packages lego in universe: 4.1.3 on 22.04, 4.9.1 on 24.04**, against upstream **v5.4.1** — a
+  major version behind. **[docs — packages.ubuntu.com, GitHub releases, 2026-09-10]**
+- **certbot** ships a renewal timer with the distro package and a `--deploy-hook` (run after a successful
+  renewal, with `$RENEWED_LINEAGE`), but its **first-party DNS plugins are thirteen** — Cloudflare,
+  DigitalOcean, DNSimple, DNS Made Easy, Gehirn, Google, Linode, LuaDNS, NS1, OVH, RFC 2136, Route53,
+  Sakura Cloud — and **GoDaddy is not among them**; `certbot-dns-godaddy` is a third-party pip package.
+  **[docs — certbot]**
 
 ### Route 2 — nginx + `dokku-letsencrypt` (official plugin)
 
@@ -421,6 +453,12 @@ dokku letsencrypt:cron-job --add|--remove
   **[docs]**
 - **But issuance is per app** (`letsencrypt:enable <app>`), so every new app performs its own ACME
   order — the "https works" half of the requirement, not the "no per-app round-trip" half. **[docs]**
+- **And the app must exist on the wire first:** "The app needs to already be deployed and reachable on
+  the public internet over HTTP before a certificate can be issued." An app whose first builds fail has no
+  certificate until `enable` is re-run after a green build. **[docs]**
+- **The challenge type is per app.** `dns-provider` is settable globally or per app; a per-app value
+  overrides the global one, and `none` forces HTTP-01 for that app. This is what would let it coexist
+  with a global cert in v2: enabled only on apps carrying a foreign domain. **[docs]**
 - **Wildcard status is muddier than the README suggests.** The README says DNS-01 "is the only way to
   obtain wildcard certificates", while issue #189 carries the note: *"As of 0.12.0, dokku-letsencrypt
   will be in a position to add dns-01 challenge support. That said, it'll still need work to enable the
@@ -911,7 +949,7 @@ The honest gap list, for the feature discussion:
 | **Box-wide resource quota** | `resource:limit` is per app. Nothing sums them or refuses an over-committing app. |
 | **App isolation by default** | Default bridge is shared; isolation is opt-in per app, via `initial-network`. |
 | **Any isolation primitive finer than membership** | No per-port ACLs, no egress policy. And `network:create` passes no driver options, so `enable_icc=false` / `--internal` / an explicit subnet are not reachable through Dokku at all. |
-| **Wildcard-cert-once-for-all-apps** | Every route has a caveat; see *TLS* above. |
+| **Wildcard-cert-once-for-all-apps** | Not in core. `dokku-global-cert` does the *propagation*; issuance and renewal need an ACME client on the host and a cron line of ours (`D_cert`). See *TLS* above. |
 | **Metrics** | Explicitly out of scope for the project. |
 | **A single declarative project descriptor** | Project state is spread over `apps`/`config`/`resource`/`domains`/`ports`/`network`/`git`/`builder-dockerfile` properties — but it is all *there*, reportable as `--format json`, and `git:sync` even records its URL (*`git:sync`* above). The genuinely missing pieces are a per-app **metadata slot** (`apps:set` takes one global key) and a URL that survives a failed first build; `config:set` stands in for both. |
 | **A one-shot "create a project" command** | `apps:create` makes an empty app. Limits, ports, network, build options, database and the first `git:sync` are each their own command; `apps:create`, `network:create` and `postgres:create` are not idempotent. |
@@ -938,8 +976,12 @@ first throwaway VPS:
    `default-address-pools`?
    - And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch for
      the allocation failure, so we know the real number rather than the arithmetic.
-4. Can `dokku-letsencrypt` on a current version issue a `*.domain` cert, and can that one cert serve
-   every app — or is `dokku-global-cert` + our own renewal cron the only way?
+4. **The `D_cert` chain, end to end:** `lego run --dns godaddy` succeeds with the current GoDaddy key
+   and secret on Ubuntu's packaged 4.9.1; `global-cert:set` with the result serves https on an existing
+   app; a *renewal* (`lego renew --days 3650 --renew-hook …` to force one) re-applies to every app and
+   reloads nginx without dropped connections; and an app created but never deployed serves the global
+   cert on its first successful deploy. (The earlier question here — whether `dokku-letsencrypt` can
+   issue and share a wildcard — is moot for v1 and only matters if `F_custom_domains` returns.)
 5. Are cache mounts, and a per-app `type=local` cache directory, actually preserved across
    `git:sync --build` runs, and for how long, given buildkitd's own GC (reported to evict unused
    entries after ~48 h)?
@@ -1001,9 +1043,20 @@ Dokku documentation (dokku.com, read 2026-09-09):
 [0.38.0 release notes](https://dokku.com/blog/2026/dokku-0.38.0/).
 
 Plugins: [dokku-letsencrypt](https://github.com/dokku/dokku-letsencrypt) (and
-[issue #189](https://github.com/dokku/dokku-letsencrypt/issues/189)) ·
-[dokku-global-cert](https://github.com/dokku-community/dokku-global-cert) ·
+[issue #189](https://github.com/dokku/dokku-letsencrypt/issues/189); README re-read 2026-09-10 for the
+deployed-first requirement and per-app `dns-provider`) ·
+[dokku-global-cert](https://github.com/dokku-community/dokku-global-cert) (README re-read 2026-09-10) ·
 [dokku-postgres](https://github.com/dokku/dokku-postgres).
+
+TLS tooling, read 2026-09-10 for `D_cert`:
+[Let's Encrypt challenge types](https://letsencrypt.org/docs/challenge-types/) ·
+[Traefik ACME reference](https://doc.traefik.io/traefik/reference/install-configuration/tls/certificate-resolvers/acme/) ("relies internally on Lego") ·
+[lego GoDaddy provider](https://go-acme.github.io/lego/dns/godaddy/) ·
+[lego — obtain a certificate](https://go-acme.github.io/lego/obtain/) (file layout) ·
+[`cmd/cmd_run_renew.go`](https://github.com/go-acme/lego/blob/master/cmd/cmd_run_renew.go) and
+[`cmd/hook.go`](https://github.com/go-acme/lego/blob/master/cmd/hook.go) (renew flags, hook semantics, hook env) ·
+[lego on packages.ubuntu.com](https://packages.ubuntu.com/search?keywords=lego&searchon=names&exact=1&suite=all&section=all) ·
+[certbot user guide](https://eff-certbot.readthedocs.io/en/stable/using.html) (DNS plugin table, `--deploy-hook`, timers).
 
 Gaps and third parties: [deploy history — discussion #5114](https://github.com/dokku/dokku/discussions/5114),
 **superseded by the `builds` plugin in 0.38.0 except for its git-SHA half** ·

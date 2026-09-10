@@ -332,6 +332,14 @@ Three restrictions, quoted: **[docs]**
   and the `certs` plugin entirely under Traefik.**
 - Only `http:80` and `https:443` port mappings are supported.
 
+A fourth restriction, not quoted because the docs never mention it: **the plugin does nothing about
+Docker networks.** `plugins/traefik-vhosts/internal-functions` templates a compose file and reads global
+properties; there is no `docker network connect`, no `--network`, and no read of the app's
+`initial-network` / `attach-*` properties (read 2026-09-10). Since Traefik here *is* a container, an app
+isolated on its own network is plausibly unreachable by it. See *Nobody has to re-attach anything* under
+*Networking and app isolation* — this is the one place where `Q_proxy` and `Q_isolation` are not
+independent. **[src for the absence; unverified for the 502]**
+
 DNS-01 mode is documented as being "for wildcard certificates or when port 443 is not accessible" —
 but nothing in the plugin declares a wildcard SAN, so per-app ACME *orders* remain unless `tls.domains`
 labels are added by hand with `traefik:labels:add`. **[docs for the mode; unverified for the wildcard
@@ -504,16 +512,45 @@ Load-bearing for the isolation design, and it is Docker's behaviour rather than 
   no dashboard container and no control-plane database to move off the wire. **[inference from the
   bridge model; unverified on a box]**
 
-**The address-pool tax is real here, and this is the one place Dokku is worse than the Swarm sibling.**
-Per-app networks are *bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16
-plus `192.168.0.0/16` at size 20, so ~31 networks total, minus `docker0` — call it **~30 apps** before
-allocation fails. `/etc/docker/daemon.json` needs enlarged `default-address-pools` and a daemon
-restart, exactly as in shepherd-traefik. (Swarm's *global*-scope overlay pool, which is what
-shepherd2-dokploy draws on, defaults to `10.0.0.0/8` at mask 24 — 65 536 subnets — which is why the
-same tax is a non-issue over there. The `~29` figure that used to sit in this file was this same local
-pool, minus a `docker_gwbridge` that a non-Swarm box does not have.) Dokku's bootstrap is not documented
-as writing `daemon.json`. **[docs for the pools; unverified — whether bootstrap.sh touches daemon.json
-needs reading or a box]**
+**The address-pool ceiling is an install-time line, not a design constraint.** Per-app networks are
+*bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16 plus `192.168.0.0/16`
+at size 20, so ~31 networks total, minus `docker0` — call it **~30 apps** on a stock daemon before
+allocation fails. Enlarging `default-address-pools` in `/etc/docker/daemon.json` lifts it, and
+shepherd-traefik already does exactly this, so it is precedent rather than a new cost: one stanza in
+`shepherd2-install` and a `README.md` requirement. The only property worth remembering is *when* — it
+needs a daemon restart, so it belongs in the install, not in a later fix. Dokku's bootstrap is not
+documented as writing `daemon.json`. **[docs for the pools; unverified — whether bootstrap.sh touches
+daemon.json needs reading or a box]**
+
+(For the record, since the number moved twice: the `~29` that used to sit in this file was this same
+local pool, miscounted with a `docker_gwbridge` that a non-Swarm box does not have. Swarm's
+*global*-scope overlay pool, which shepherd2-dokploy draws on, is a different pool entirely —
+`10.0.0.0/8` at mask 24, 65 536 subnets — so that repo has no equivalent line to write.)
+
+### Nobody has to re-attach anything — and why that is two facts, not one
+
+The predecessor's `shepherd-traefik-connect-networks` existed for one reason (a *proxy container* had to
+join every app network and lost those attachments whenever it was re-created) and was made worse by
+another (nothing re-asserted the app side either). Both halves are answered here, but by different
+mechanisms, and they have different futures:
+
+- **The app side is managed state.** `initial-network` is a persisted app property, not a one-shot
+  `docker network connect`: Dokku re-applies it every time it creates a container, so it survives
+  deploys, `ps:restart`, rebuilds and a host reboot. `network:rebuild` / `network:rebuildall` re-apply
+  it on demand. A converger re-asserting it is belt-and-braces, not the mechanism. **[docs]**
+- **The proxy side needs nothing at all — but only because the default proxy is not a container.**
+  nginx is a host process dialling `IP:PORT` (see *nginx — and why it is architecturally different*), so
+  there is no proxy membership to maintain, and `dokku-event-listener` rewrites the config when a
+  container IP changes.
+
+**The second half is a property of `Q_proxy`, not of Dokku.** Under the Traefik plugin the proxy is a
+container again, and the plugin's code contains no network-attachment logic — no `docker network
+connect`, no read of the app's network properties (`plugins/traefik-vhosts/internal-functions`,
+read 2026-09-10) **[src]**. So a per-app `initial-network` plausibly leaves Traefik unable to reach the
+app at all, and repairing that is `shepherd-traefik-connect-networks` returning, this time as ours.
+**Choosing Traefik may therefore cost `F_network_isolation`, or cost the reconciler script** — an
+interaction between two open questions that neither one's own notes would surface.
+**[src for the absence; unverified — whether Traefik + `initial-network` actually 502s needs a box]**
 
 ## Resource limits
 
@@ -885,6 +922,10 @@ first throwaway VPS:
 11. **What can an app reach on the host?** From inside a container, on both a shared and a per-app
     network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header for another
     app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish :3000" axis.
+12. **Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
+    network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Only worth ten
+    minutes, but it is the difference between `Q_proxy` and `Q_isolation` being independent choices and
+    one foreclosing the other — and it is cheapest to answer on the same box as item 2.
 
 ## Sources
 
@@ -941,7 +982,9 @@ the per-app buildpack cache volume, and build tracking):
 [`plugins/common/functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/common/functions) (`dokku_setup_build_capture`) ·
 [`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it) ·
 [`plugins/network/subcommands.go`](https://github.com/dokku/dokku/blob/master/plugins/network/subcommands.go)
-(read on 2026-09-10: `network:create` takes a name and nothing else).
+(read on 2026-09-10: `network:create` takes a name and nothing else) ·
+[`plugins/traefik-vhosts/internal-functions`](https://github.com/dokku/dokku/blob/master/plugins/traefik-vhosts/internal-functions)
+(read on 2026-09-10: no network attachment logic anywhere in it).
 
 Networking, read 2026-09-10 (*Network management* above re-read the same day for the three attachment
 phases):

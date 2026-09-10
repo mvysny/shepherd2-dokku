@@ -117,14 +117,25 @@ now in `RESEARCH.md` (*Networking and app isolation*) and the remaining choice i
   `post-create-network` / `post-start-network`) puts the service container on the app's network, so a
   project's app and its own database are isolated *together*. This was the expensive unknown on the
   Dokploy side and it is simply a documented flag here.
-- **The address-pool tax is unchanged, and it is now the one axis where Dokku is worse than the Dokploy
-  sibling.** Per-app *bridge* networks draw on Docker's local pool and wall at ~30, so
-  `/etc/docker/daemon.json` still needs enlarged `default-address-pools`; Swarm overlays draw on 65 536
-  and pay nothing. Whether Dokku's `bootstrap.sh` writes that file is `[unverified]`.
+- **The address-pool ceiling is not a problem** — settled 2026-09-10. Per-app *bridge* networks draw on
+  Docker's local pool and wall at ~30 on a stock daemon, and enlarging `default-address-pools` in
+  `/etc/docker/daemon.json` lifts it exactly as shepherd-traefik already does. One stanza in
+  `shepherd2-install`, one `README.md` requirement, precedent in hand; the only thing to remember is
+  that it needs a daemon restart, so it is install-time work. Whether `bootstrap.sh` writes that file is
+  `[unverified]`.
+- **Dokku manages the membership for us, which is the real prize.** `initial-network` is a persisted app
+  property re-applied on every container creation — not a `docker network connect` that evaporates — and
+  `network:rebuild` re-asserts it on demand. Combined with a host-side nginx that needs no membership at
+  all, **`shepherd-traefik-connect-networks` has no successor**: the app side is Dokku's job and the
+  proxy side does not exist.
+- **But that second half is `Q_proxy`'s, not Dokku's.** The Traefik plugin has no network-attachment
+  logic at all `[src]`, so under Traefik an isolated app is plausibly unreachable and the repair script
+  comes back as ours. See `Q_proxy` below and punch-list item 12.
 - **A third rung exists that no Swarm-based sibling can have.** A Dokku app's bridge sits in the root
   network namespace, so the host firewall *can* see app↔app traffic — "one shared network with
-  `enable_icc=false`" is a real option, at the price of a network Dokku will not create for us. See the
-  note; the lean is still per-app networks.
+  `enable_icc=false`" is a real option, at the price of a network Dokku will not create for us. With the
+  pool objection withdrawn it has lost its only advantage, so the note now leans per-app networks
+  outright rather than merely leaning.
 
 ## C. Publish
 
@@ -271,7 +282,9 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - **`Q_proxy`** — nginx (Dokku's default) or the official Traefik plugin? nginx wins on per-app ingress
   tuning, on being a host process (no network gotcha), and on keeping both cert plugins available.
   Traefik wins on us already knowing it. They are not symmetric: choosing Traefik forecloses `Q_cert`
-  options 1 and 2.
+  options 1 and 2 — **and now `F_network_isolation` too**, since the Traefik plugin has no
+  network-attachment logic, so an app on its own network is plausibly unreachable by it. That makes
+  nginx the answer unless the box says otherwise (punch-list item 12).
 - **`Q_cert`** — one cert we renew ourselves (`dokku-global-cert`), or per-app ACME with renewal solved
   (`dokku-letsencrypt`)? The requirement as written says the former; the requirement may be worth
   relaxing now that a new app appearing is a `dokku` command rather than a JSON file edit.

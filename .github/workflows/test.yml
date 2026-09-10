@@ -28,4 +28,4 @@ jobs:
       - run: ruby test/run
 
       - name: Shellcheck the box scripts
-        run: shellcheck shepherd2-install
+        run: shellcheck shepherd2-install shepherd2-uninstall

@@ -1,8 +1,8 @@
 # SOLUTION.md — the v1 box, assembled
 
-> **This describes the box we intend to build, not one that has ever been run.** `shepherd2-install`
-> and the `shepherd2` CLI exist; `shepherd2-uninstall` does not, and no box has been installed from any
-> of it yet. Everything here is decided (each claim names the `D_` entry that decided it), but the parts
+> **This describes the box we intend to build, not one that has ever been run.** Every piece below is
+> now written — both installers and the CLI — and no box has been installed from any of it yet.
+> Everything here is decided (each claim names the `D_` entry that decided it), but the parts
 > that rest on Dokku behaviour nobody has run yet are marked `[unverified]` and point at
 > `RESEARCH.md` → *Questions only a box can answer*.
 
@@ -106,6 +106,13 @@ script does on this box's one code path, minus the parts that exist for other di
 reads `SHEPHERD_TLS_MODE` to know whether lego, the plugin and the renewal cron are there to remove,
 and must not trip over their absence in http mode. It does **not** remove `ruby` — an archive package
 other things may share.
+
+It destroys every project on the way, since the install's inverse cannot leave apps on a box with no
+Dokku, and it asks for the box's hostname before doing so. Three asymmetries are deliberate: the two
+steps that reach past Shepherd2's own layer are opt-out (`--keep-docker`, `--keep-pools`);
+`/etc/docker/daemon.json` is removed only when it is byte-for-byte what the install wrote; and
+`/home/dokku` — which `apt purge` leaves behind, holding the app repositories — is *reported*, not
+deleted. Installing Dokku emptied `/etc/nginx/sites-enabled`, and that is not undoable from here.
 
 ## The CLI surface
 

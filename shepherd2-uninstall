@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+#
+# shepherd2-uninstall — remove everything shepherd2-install put on this box.
+#
+# THIS DESTROYS EVERY HOSTED PROJECT. Apps, their containers, their build caches, their networks and
+# their logs all go, and none of it is recoverable from this box afterwards — the projects themselves
+# live in their git repositories, and nothing else here does.
+#
+# Staying symmetric with the install is this script's whole contract: it undoes those steps in reverse,
+# and it reads SHEPHERD_TLS_MODE to know whether lego, the certificate and the renewal cron are there
+# to remove at all, rather than tripping over their absence on an http box.
+#
+# USAGE
+#   shepherd2-uninstall [--yes] [--keep-docker] [--keep-pools]
+#
+# ARGUMENTS
+#   --yes           Skip the confirmation prompt. Required when there is no terminal to ask at.
+#   --keep-docker   Leave docker.io, docker-buildx and docker-compose-v2 installed. Use it when
+#                   something on this box other than Dokku uses Docker; the install assumed nothing
+#                   did, so the default is to remove what the install added.
+#   --keep-pools    Leave /etc/docker/daemon.json alone. The default removes the default-address-pools
+#                   stanza only if the file matches what the install wrote; a file that has been edited
+#                   since is always left alone and reported.
+#   -h, --help      This header, in short form.
+#
+# WHAT IT DELIBERATELY DOES NOT REMOVE
+#   - ruby, an archive package other things on the box may share. The CLI that needed it goes; the
+#     interpreter stays.
+#   - /etc/nginx/sites-enabled, which installing Dokku emptied. That was Dokku's doing on the way in
+#     and cannot be undone on the way out — whatever was there is gone and this script cannot know
+#     what it was.
+#   - Anything under /home/dokku that apt purge leaves behind is reported, not deleted, so an operator
+#     can look before losing it.
+#
+# PREREQUISITES
+#   root, on a box built by shepherd2-install.
+#
+# SEE ALSO
+#   shepherd2-install — the steps this reverses, and the authority on what the install creates.
+#   D_cert (why the mode is recorded on the box at all) · D_install_apt (how Dokku got here).
+
+set -euo pipefail
+
+readonly DOKKU_KEYRING='/usr/share/keyrings/dokku-archive-keyring.asc'
+readonly DOKKU_APT_LIST='/etc/apt/sources.list.d/dokku.list'
+readonly DOCKER_DAEMON_JSON='/etc/docker/daemon.json'
+readonly LEGO_PATH='/root/.lego'
+readonly DNS_CREDENTIALS_FILE='/root/.shepherd2-dns-credentials'
+readonly CRON_FILE='/etc/cron.d/shepherd2'
+readonly CLI_PATH='/usr/local/bin/shepherd2'
+readonly POLL_LOCK='/run/lock/shepherd2-poll.lock'
+
+ASSUME_YES='false'
+KEEP_DOCKER='false'
+KEEP_POOLS='false'
+TLS_MODE=''
+
+step()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+log()   { printf '    %s\n' "$*"; }
+skip()  { printf '    (not present) %s\n' "$*"; }
+warn()  { printf '\033[33mwarning: %s\033[0m\n' "$*" >&2; }
+die()   { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
+
+usage() {
+  sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y)     ASSUME_YES='true';  shift ;;
+      --keep-docker) KEEP_DOCKER='true'; shift ;;
+      --keep-pools)  KEEP_POOLS='true';  shift ;;
+      -h|--help)    usage 0 ;;
+      *)            die "unknown argument: $1 (try --help)" ;;
+    esac
+  done
+}
+
+preflight() {
+  step 'Preflight'
+  [[ "${EUID}" -eq 0 ]] || die 'must run as root'
+
+  if command -v dokku >/dev/null 2>&1; then
+    # Written last by the install, so its presence means that install completed. Its absence means a
+    # half-installed box, which is still worth cleaning up — just say so.
+    TLS_MODE="$(dokku config:get --global SHEPHERD_TLS_MODE 2>/dev/null || true)"
+    if [[ -n "$TLS_MODE" ]]; then
+      log "SHEPHERD_TLS_MODE=$TLS_MODE"
+    else
+      warn 'no SHEPHERD_TLS_MODE on this box: either the install did not finish, or this box was not
+       built by shepherd2-install. Continuing, and removing whatever is found.'
+    fi
+  else
+    warn 'dokku is not installed; removing whatever else is here'
+  fi
+
+  confirm
+}
+
+confirm() {
+  local apps=''
+  apps="$(app_names | tr '\n' ' ')"
+
+  step 'This will destroy every hosted project'
+  if [[ -n "${apps// /}" ]]; then
+    log "apps: $apps"
+    log 'their containers, build caches, networks and logs go with them'
+  else
+    log 'no apps are deployed on this box'
+  fi
+
+  [[ "$ASSUME_YES" == 'true' ]] && return 0
+  [[ -t 0 ]] || die 'no terminal to confirm at; pass --yes if you mean it'
+
+  local hostname answer=''
+  hostname="$(hostname -f)"
+  printf '\nType this box'"'"'s hostname (%s) to confirm: ' "$hostname"
+  read -r answer
+  [[ "$answer" == "$hostname" ]] || die 'aborted'
+}
+
+app_names() {
+  command -v dokku >/dev/null 2>&1 || return 0
+  dokku apps:list 2>/dev/null | grep -v '^=====>' || true
+}
+
+# --- Reverse of install step 11 and 10: the mode marker and the cron ------------------------------
+
+remove_crons() {
+  step 'Cron'
+  if [[ -f "$CRON_FILE" ]]; then
+    rm -f "$CRON_FILE"
+    log "removed $CRON_FILE"
+  else
+    skip "$CRON_FILE"
+  fi
+  rm -f "$POLL_LOCK"
+}
+
+# --- Reverse of step 9: the CLI (but not ruby) ----------------------------------------------------
+
+remove_cli() {
+  step 'The shepherd2 CLI'
+  if [[ -f "$CLI_PATH" ]]; then
+    rm -f "$CLI_PATH"
+    log "removed $CLI_PATH"
+  else
+    skip "$CLI_PATH"
+  fi
+  log 'ruby is left installed: it is an archive package other things may share'
+}
+
+# --- Reverse of step 8: the certificate machinery -------------------------------------------------
+
+remove_tls() {
+  step 'Certificate machinery'
+
+  if [[ "$TLS_MODE" == 'http' ]]; then
+    log 'http mode: nothing was installed, nothing to remove'
+    return 0
+  fi
+
+  if command -v dokku >/dev/null 2>&1 && dokku plugin:list 2>/dev/null | grep -q 'global-cert'; then
+    # Before Dokku goes, so the plugin's own uninstall hook runs while there is a Dokku to run it.
+    dokku plugin:uninstall global-cert || warn 'could not uninstall the global-cert plugin'
+    log 'removed the dokku-global-cert plugin'
+  else
+    skip 'dokku-global-cert'
+  fi
+
+  if [[ -d "$LEGO_PATH" ]]; then
+    rm -rf "$LEGO_PATH"
+    log "removed $LEGO_PATH — the certificate, its key and the ACME account"
+  else
+    skip "$LEGO_PATH"
+  fi
+
+  if [[ -f "$DNS_CREDENTIALS_FILE" ]]; then
+    rm -f "$DNS_CREDENTIALS_FILE"
+    log "removed $DNS_CREDENTIALS_FILE"
+    log 'the DNS API token itself is still valid at the provider: revoke it there'
+  else
+    skip "$DNS_CREDENTIALS_FILE"
+  fi
+
+  apt_purge lego
+}
+
+# --- Reverse of steps 7, 6, 4: the apps, then Dokku itself ----------------------------------------
+
+destroy_apps() {
+  step 'Projects'
+  command -v dokku >/dev/null 2>&1 || { skip 'dokku'; return 0; }
+
+  local app
+  while read -r app; do
+    [[ -z "$app" ]] && continue
+    log "destroying $app"
+    dokku apps:destroy --force "$app" || warn "could not destroy $app"
+    if dokku network:exists "app-$app" >/dev/null 2>&1; then
+      dokku network:destroy --force "app-$app" || warn "could not destroy network app-$app"
+    fi
+  done < <(app_names)
+}
+
+remove_dokku() {
+  step 'Dokku'
+
+  if dpkg -s dokku >/dev/null 2>&1; then
+    apt-mark unhold dokku >/dev/null 2>&1 || true
+    apt_purge dokku
+  else
+    skip 'the dokku package'
+  fi
+
+  for path in "$DOKKU_APT_LIST" "$DOKKU_KEYRING"; do
+    if [[ -f "$path" ]]; then
+      rm -f "$path"
+      log "removed $path"
+    else
+      skip "$path"
+    fi
+  done
+
+  # apt purge does not take /home/dokku with it, and it holds the app repositories and Dokku's own
+  # state. Reported rather than deleted: an operator may want to look before losing it.
+  if [[ -d /home/dokku ]]; then
+    warn "/home/dokku still exists ($(du -sh /home/dokku 2>/dev/null | cut -f1)); remove it by hand once
+       you are sure you want none of it"
+  fi
+}
+
+# --- Reverse of step 5: the address pools ---------------------------------------------------------
+
+restore_address_pools() {
+  step 'Docker address pools'
+
+  if [[ "$KEEP_POOLS" == 'true' ]]; then
+    log "--keep-pools: leaving $DOCKER_DAEMON_JSON alone"
+    return 0
+  fi
+  if [[ ! -f "$DOCKER_DAEMON_JSON" ]]; then
+    skip "$DOCKER_DAEMON_JSON"
+    return 0
+  fi
+
+  # Removed only when the file is byte-for-byte what the install wrote. Anything else — a hand edit,
+  # another component's settings merged in — is somebody's configuration, and deleting it would be a
+  # surprise nobody asked for.
+  if [[ "$(cat "$DOCKER_DAEMON_JSON")" == "$(installed_daemon_json)" ]]; then
+    rm -f "$DOCKER_DAEMON_JSON"
+    log "removed $DOCKER_DAEMON_JSON"
+  else
+    warn "$DOCKER_DAEMON_JSON is not what the install wrote; leaving it alone.
+       Remove the default-address-pools stanza by hand if you want Docker's defaults back."
+  fi
+}
+
+# Exactly what shepherd2-install writes when it creates the file. These two values must track that
+# script's DOCKER_POOL_BASE and DOCKER_POOL_SIZE: the symmetry *is* this script's contract, and a
+# mismatch is not dangerous — the comparison simply fails and the file is left in place.
+installed_daemon_json() {
+  printf '{\n  "default-address-pools": [\n    { "base": "%s", "size": %s }\n  ]\n}' \
+    '172.16.0.0/12' '24'
+}
+
+# --- Reverse of step 2: Docker --------------------------------------------------------------------
+
+remove_docker() {
+  step 'Docker'
+  if [[ "$KEEP_DOCKER" == 'true' ]]; then
+    log '--keep-docker: leaving docker.io, docker-buildx and docker-compose-v2 installed'
+    return 0
+  fi
+
+  apt_purge docker.io docker-buildx docker-compose-v2
+  log 'images, volumes and networks under /var/lib/docker are removed with the package'
+}
+
+# --- apt helpers ----------------------------------------------------------------------------------
+
+# Purges only what is actually installed, so a partially-installed box does not fail the uninstall.
+apt_purge() {
+  local installed=()
+  local package
+  for package in "$@"; do
+    dpkg -s "$package" >/dev/null 2>&1 && installed+=("$package")
+  done
+
+  if [[ ${#installed[@]} -eq 0 ]]; then
+    skip "$*"
+    return 0
+  fi
+
+  DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "${installed[@]}" >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null
+  log "purged ${installed[*]}"
+}
+
+main() {
+  parse_args "$@"
+  preflight
+
+  remove_crons
+  remove_cli
+  remove_tls
+  destroy_apps
+  remove_dokku
+  restore_address_pools
+  remove_docker
+
+  step 'Done'
+  log 'this box no longer runs Shepherd2. ruby, /home/dokku (if any) and nginx'"'"'s emptied'
+  log 'sites-enabled are what is left of it.'
+}
+
+main "$@"

@@ -106,6 +106,11 @@ correct the script and run it again, rather than repairing the box by hand.
 `shepherd2-install --help` is the authority on its arguments; [SOLUTION.md](SOLUTION.md) lists the
 steps in order.
 
+To undo it, `sudo ./shepherd2-uninstall` — which **destroys every hosted project** and asks for the
+box's hostname before it does. It removes what the install added, in reverse, including Docker and the
+address-pool change; `--keep-docker` and `--keep-pools` opt out of those two. It leaves `ruby` and
+reports `/home/dokku` rather than deleting it.
+
 **Dokku is installed as its authors' deb package, with apt** — no `curl | bash`, and Dokku's own
 `bootstrap.sh` is never run ([`D_install_apt`](DECISIONS.md)). That script is itself only a wrapper
 that adds packagecloud's apt repository and installs the same package, so this costs nothing and gains

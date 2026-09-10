@@ -9,8 +9,8 @@ and deploys them as Docker containers at `https://PROJECTID.<domain>` on a singl
 the building, running, routing and TLS; this repo is the **glue** — host setup, per-project
 convergence, the periodic-rebuild trigger, the wildcard-certificate story, and housekeeping.
 
-**Status: the design is agreed and the code is landing** — `shepherd2-install`, the `shepherd2` CLI and
-its tests exist; `shepherd2-uninstall` does not, and **no box has been installed from any of it yet**.
+**Status: the design is agreed and v1 is written but unproven** — both installers, the `shepherd2` CLI
+and its tests exist, and **no box has been installed from any of it yet**.
 **`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
@@ -124,7 +124,7 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 | Script | What it is for |
 |---|---|
 | `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
-| `shepherd2-uninstall` | *not written yet.* Bash. The inverse, driven by `SHEPHERD_TLS_MODE` |
+| `shepherd2-uninstall` | Bash. The inverse, driven by `SHEPHERD_TLS_MODE`. Destroys every project; `--keep-docker` / `--keep-pools` opt out of the two steps that reach past Shepherd2's own layer |
 | `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache`. Its process-running seams (`Dokku`, `Docker`, `BuildLock`) are constructor arguments — that is the test surface |
 | `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`) |
 | `.github/workflows/test.yml` | the suite plus shellcheck, in an `ubuntu:24.04` container so it runs on the box's Ruby |

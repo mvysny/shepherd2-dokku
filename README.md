@@ -222,7 +222,8 @@ Prefer `.env` to `.npmrc` for the npm cache: recent pnpm no longer expands `${VA
 repository-controlled `.npmrc`, and Vaadin's own recommended `.gitignore` excludes that file anyway.
 `dokku config:set` sets the same variables from the box side and wins over `.env`.
 
-**Pay attention to the memory limit** the container will run under (256 MB on the reference box). If
+**Pay attention to the memory limit** the container will run under — **256 MB** unless the operator
+gave your app more. If
 the JVM asks for more it is hard-killed by the Linux OOM killer with no warning and no log message
 (only the host's `dmesg` records it). Run Java with `-Xmx` a little below the limit, so the app dies
 with an `OutOfMemoryError` that shows up in the logs instead.

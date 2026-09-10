@@ -418,6 +418,13 @@ dokku network:report [<app>] [<flag>]
 dokku network:rebuild <app>   dokku network:rebuildall
 ```
 
+**The plugin owns membership, Docker does the enforcing.** `network:create` is a thin wrapper: it
+shells out to `docker network create --attachable --label dokku.network.name=<name> <name>` and accepts
+**no other arguments** — no `--driver`, no `-o/--opt`, no `--subnet`, no extra labels. **[src]** So
+Dokku contributes no isolation primitive of its own (no ACLs, no per-port policy, no egress rules); it
+contributes *which* network a container joins and *when*, and the boundary is whatever a Docker bridge
+network gives you. Everything below follows from that split.
+
 `network:set` properties: **[docs]**
 
 | Property | Meaning |
@@ -429,19 +436,84 @@ dokku network:rebuild <app>   dokku network:rebuildall
 | `static-web-listener` | app-only; static `host:port` override for proxy templates when nothing is running |
 | `tld` | custom TLD appended to network aliases |
 
+**The three attachment phases are not interchangeable, and only one of them isolates.** **[docs]**
+
+| Property | Container state | Phases it applies to | What it is for |
+|---|---|---|---|
+| `initial-network` | `created` | build, deploy, run | **isolation** — the app is *only* ever on this network |
+| `attach-post-create` | `created` | build, deploy, run | joining an *additional* shared network the app needs at boot; the inter-app-communication tutorial's recommended property |
+| `attach-post-deploy` | `running` | deploy only | joining an additional network once healthchecks pass, "when other containers need to access this one" |
+
+`attach-post-deploy` carries a documented warning: *"If the attachment fails during the `running`
+container state, this may result in your application failing to respond to proxied requests."* **[docs]**
+The `attach-*` properties **add** networks, so an app with only an `attach-*` set is still on the
+default bridge — they cannot deliver isolation, only reachability. Isolation is `initial-network`.
+
 **The default is not isolated.** "Apps will default to being associated with the default bridge network
 or a network specified by the `initial-network` network property" — so out of the box **every Dokku app
 shares Docker's default bridge and can reach every other app**. Getting shepherd-traefik's
 one-network-per-app property means creating a network per app and setting `initial-network` on it.
 **[docs + third-party corroboration; the per-app recipe is unverified]**
 
-Containers on a non-default network get automatic aliases `APP.PROC_TYPE`, e.g.
-`http://node-js-app.web:5000`. **[docs]**
+The one mitigation on the shared default bridge is weak and worth naming so nobody mistakes it for a
+boundary: *"Containers on the default bridge network can only access each other by IP addresses, unless
+you use the `--link` option, which is considered legacy"* — so app-to-app there needs a container IP
+rather than a name, while on any non-default network containers get automatic aliases `APP.PROC_TYPE`
+(`http://node-js-app.web:5000`), optionally suffixed by the `tld` property. Discovery is harder on the
+shared bridge; reachability is unchanged. **[docs]**
 
-**Carried over from shepherd-traefik regardless:** one Docker network per app on one daemon still hits
-Docker's default address pools at ~29 networks, so `/etc/docker/daemon.json` still needs enlarged
-`default-address-pools`. Dokku's bootstrap is not documented as writing that file. **[unverified —
-whether bootstrap.sh touches daemon.json needs reading or a box]**
+**Datastore plugins take the same three phases, which is what makes per-app isolation usable.**
+`dokku-postgres` exposes `-N|--initial-network`, `-P|--post-create-network` and
+`-S|--post-start-network` on `postgres:create` (comma-separated lists for the latter two), and the same
+values are settable afterwards with e.g. `dokku postgres:set <service> post-create-network <net>`.
+**[docs]** So an app and its own Postgres can share one per-project network with no raw-Docker escape
+hatch — see *Services: Postgres*. Note `postgres:link` "will use native docker links via the
+docker-options plugin", i.e. it adds a `--link`, which is a *legacy default-bridge* mechanism; what the
+link flag does to a container whose `initial-network` is a user-defined bridge is **[unverified]**.
+
+`network:rebuild <app>` / `network:rebuildall` re-apply network config to running containers — a
+first-party re-assert, so keeping isolation true after drift does not need a tool of ours. **[docs]**
+
+### What a Docker bridge network does and does not buy
+
+Load-bearing for the isolation design, and it is Docker's behaviour rather than Dokku's:
+
+- **Bridge membership is a real boundary.** *"Using a user-defined network provides a scoped network in
+  which only containers attached to that network are able to communicate"*; containers on two different
+  user-defined bridges have no route to each other. **[docs]**
+- **But unlike a Swarm overlay, the host's firewall can see this traffic.** A bridge lives in the root
+  network namespace, so container-to-container packets traverse the host's `FORWARD` chain — which is
+  how Docker implements both inter-network isolation (`DOCKER-ISOLATION-STAGE-1/2`) and the `icc`
+  setting in the first place. **Consequence: "one shared network plus a firewall rule" is a shape that
+  can exist here**, and it is the rung that Swarm structurally denies the Dokploy sibling (there,
+  intra-overlay traffic never reaches host netfilter). **[docs for the chains and the `enable_icc`
+  driver option; the claim that an `icc=false` bridge plus links is a *workable* Shepherd2 topology is
+  `[unverified]` and is the open half of `ideas/app-network-isolation.md`]**
+- **We cannot ask Dokku for a non-default bridge, though.** `enable_icc=false`, `--internal` and an
+  explicit `--subnet` are all `docker network create` driver options, and `network:create` passes none
+  of them **[src]**. A hand-made `docker network create -o …` referenced by name may work — the
+  `network:list --dokku-managed` *filter* implies unmanaged networks are visible to the plugin — but
+  that network then becomes ours to create and maintain. **[unverified]**
+- **`--internal` would break builds anyway**, if anyone reaches for it: `initial-network` applies to the
+  build phase too, so an egress-less initial network takes the build's package downloads with it.
+  **[docs + inference]**
+- **Per-app networks do not hide the host.** Every container keeps a route to its bridge gateway, so an
+  app can reach anything bound on the box (sshd included) no matter which network it is on. That is a
+  `DOCKER-USER` rule, not a membership question, and it is the whole of what the Dokploy sibling's
+  "app → admin plane" axis becomes here — Dokku's control plane is a host binary and a git remote, with
+  no dashboard container and no control-plane database to move off the wire. **[inference from the
+  bridge model; unverified on a box]**
+
+**The address-pool tax is real here, and this is the one place Dokku is worse than the Swarm sibling.**
+Per-app networks are *bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16
+plus `192.168.0.0/16` at size 20, so ~31 networks total, minus `docker0` — call it **~30 apps** before
+allocation fails. `/etc/docker/daemon.json` needs enlarged `default-address-pools` and a daemon
+restart, exactly as in shepherd-traefik. (Swarm's *global*-scope overlay pool, which is what
+shepherd2-dokploy draws on, defaults to `10.0.0.0/8` at mask 24 — 65 536 subnets — which is why the
+same tax is a non-issue over there. The `~29` figure that used to sit in this file was this same local
+pool, minus a `docker_gwbridge` that a non-Swarm box does not have.) Dokku's bootstrap is not documented
+as writing `daemon.json`. **[docs for the pools; unverified — whether bootstrap.sh touches daemon.json
+needs reading or a box]**
 
 ## Resource limits
 
@@ -563,6 +635,12 @@ dokku postgres:upgrade <service> [--upgrade-flags...]
 `postgres://lollipop:SOME_PASSWORD@dokku-postgres-lollipop:5432/lollipop`, reachable only from inside
 containers unless `expose`d. Major-version upgrades are export → new service → import. Scheduled S3
 backups are built in. **[docs]**
+
+**The service container takes the same network properties an app does** — `postgres:create -N|--initial-network`,
+`-P|--post-create-network`, `-S|--post-start-network`, and `postgres:set <service> post-create-network`
+after the fact. That is what lets a project's app and its own database share one isolated network; see
+*Networking and app isolation* for the isolation design and for the `--link` caveat that `postgres:link`
+drags in. **[docs]**
 
 This is strictly more than shepherd-traefik has today (a README TODO) and more than shepherd-java's
 fixed `postgres-service` with a hardcoded password.
@@ -756,7 +834,8 @@ The honest gap list, for the feature discussion:
 | **Periodic rebuild** | `app.json` cron runs the deployed image, never a build. Host crontab required. |
 | **A git SHA per build** | Build history itself is covered (*Build tracking*), but the record has no commit field — only the events log notes the SHA attempted/deployed. |
 | **Box-wide resource quota** | `resource:limit` is per app. Nothing sums them or refuses an over-committing app. |
-| **App isolation by default** | Default bridge is shared; isolation is opt-in per app. |
+| **App isolation by default** | Default bridge is shared; isolation is opt-in per app, via `initial-network`. |
+| **Any isolation primitive finer than membership** | No per-port ACLs, no egress policy. And `network:create` passes no driver options, so `enable_icc=false` / `--internal` / an explicit subnet are not reachable through Dokku at all. |
 | **Wildcard-cert-once-for-all-apps** | Every route has a caveat; see *TLS* above. |
 | **Metrics** | Explicitly out of scope for the project. |
 | **A single declarative project descriptor** | Project state is spread over `apps`/`config`/`resource`/`domains`/`ports`/`network`/`git`/`builder-dockerfile` properties. |
@@ -776,9 +855,13 @@ first throwaway VPS:
    through `docker-options` actually *exports* a cache rather than being accepted and ignored? The
    allowlist gets the flag to the build command (`[src]`); the engine decides whether it means anything.
 2. Does `network:create` + `network:set <app> initial-network` actually isolate apps *and* leave
-   host-nginx routing intact?
+   host-nginx routing intact? Concretely, from inside app A's container: can it reach app B's
+   unpublished port by container IP before the change, and not after; and does `curl` through nginx
+   still work for both apps after it.
 3. Does `bootstrap.sh` write `/etc/docker/daemon.json`, and does it survive our enlarged
    `default-address-pools`?
+   - And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch for
+     the allocation failure, so we know the real number rather than the arithmetic.
 4. Can `dokku-letsencrypt` on a current version issue a `*.domain` cert, and can that one cert serve
    every app — or is `dokku-global-cert` + our own renewal cron the only way?
 5. Are cache mounts, and a per-app `type=local` cache directory, actually preserved across
@@ -790,6 +873,18 @@ first throwaway VPS:
 7. What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?
 8. Does `EXPOSE 8080` + `ports:set http:80:8080 https:443:8080` behave as documented, and does it
    survive a rebuild?
+9. **Does `postgres:link` still work when the app is on a per-app network?** The link is a legacy
+   default-bridge `--link`; on a user-defined bridge the app resolves the service by DNS name
+   (`dokku-postgres-<svc>`), so it plausibly works *because* both sit on the per-app network rather than
+   because of the link. Check that `postgres:create -N app-<id>` + `postgres:link` leaves `DATABASE_URL`
+   connectable, and whether the `--link` flag errors, warns, or is silently inert.
+10. **Can `initial-network` point at a network Dokku did not create** — one made with
+    `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
+    deploy and route? This decides whether the shared-network-plus-firewall rung in
+    `ideas/app-network-isolation.md` is reachable through Dokku, or needs a network we own.
+11. **What can an app reach on the host?** From inside a container, on both a shared and a per-app
+    network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header for another
+    app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish :3000" axis.
 
 ## Sources
 
@@ -844,7 +939,19 @@ the per-app buildpack cache volume, and build tracking):
 [`plugins/builds/builds.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/builds.go) (retention, record schema, pruning) ·
 [`plugins/builds/subcommands.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/builds/subcommands.go) (the `builds:output` deploy-lock resolution) ·
 [`plugins/common/functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/common/functions) (`dokku_setup_build_capture`) ·
-[`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it).
+[`plugins/git/internal-functions`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/git/internal-functions) (`git:sync` calls it) ·
+[`plugins/network/subcommands.go`](https://github.com/dokku/dokku/blob/master/plugins/network/subcommands.go)
+(read on 2026-09-10: `network:create` takes a name and nothing else).
+
+Networking, read 2026-09-10 (*Network management* above re-read the same day for the three attachment
+phases):
+[Inter-app communication tutorial](https://dokku.com/tutorials/network/inter-app-communication/) ·
+[dokku-postgres README](https://github.com/dokku/dokku-postgres/blob/master/README.md) (`--initial-network`,
+`post-create-network`, `post-start-network`, "native docker links") ·
+[Docker bridge driver](https://docs.docker.com/engine/network/drivers/bridge/) (scoped networks,
+default-bridge IP-only access, the `com.docker.network.bridge.enable_icc` option) ·
+[Docker packet filtering and firewalls](https://docs.docker.com/engine/network/packet-filtering-firewalls/) ·
+[legacy container links](https://docs.docker.com/engine/network/links/).
 
 Build-cache background (carried over, not re-verified here):
 [buildx mount caches vs per-project `type=local`](https://mvysny.github.io/docker-build-cache/) ·

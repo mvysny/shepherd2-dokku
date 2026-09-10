@@ -92,26 +92,39 @@ git SHA).
 | `F_run_limits` | Runtime memory + CPU quota per app | `docker run -m … --cpus …` by shepherd-java | `resource:limit --memory N --cpu N` | ✅ |
 | `F_keep_alive` | Restart on crash and after a host reboot | Docker restart policy | `ps:set --global restart-policy always` (default is `on-failure:10`) + `ps:restore` from the init service | ✅ |
 | `F_runtime_env` ⁿᵉʷ | Per-project runtime env vars | `runtime.envVars` | `config:set` | ✅ |
-| `F_network_isolation` | Apps can't reach each other, or the admin plane | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opt in with `network:create` + `network:set <app> initial-network` | 🔧 |
+| `F_network_isolation` | Apps can't reach another app's non-public ports (was: "…or the admin plane" — there is no longer an admin plane) | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opt in with `network:create` + `network:set <app> initial-network`, and `postgres:create -N` for the app's database | 🔧 |
 | `F_postgres` | Optional per-project Postgres | a README TODO in *both* predecessors; shepherd-java has a fixed `postgres-service` with a hardcoded password | `dokku-postgres`: `postgres:create` + `postgres:link` → `DATABASE_URL`, plus S3 backup schedules | ✅ |
 | `F_restart` | Restart one app on demand | `shepherd-cli restart` | `ps:restart <app>` | ✅ |
 
 **`F_network_isolation` is the one to think about**, because Dokku changes its economics in both
 directions at once. The *reason* for it is unchanged and still good: these are other people's example
-projects and addons, mutually untrusted, all on one daemon. What changes:
+projects and addons, mutually untrusted, all on one daemon. **Researched 2026-09-10 — the mechanics are
+now in `RESEARCH.md` (*Networking and app isolation*) and the remaining choice is in
+`ideas/app-network-isolation.md`.** What changes:
 
 - **It got cheaper.** Dokku's nginx runs on the **host** and dials container IPs, so it never needs to
   share an app's network. shepherd-traefik's whole network-sharing gotcha —
   `shepherd-traefik-connect-networks`, "prefer `docker restart` over a compose recreate", the 502s —
   simply does not exist. That was the entire cost of the isolation, and it's gone. (Under the *Traefik*
   plugin it presumably comes back, since Traefik is a container again — see `Q_proxy`.)
-- **It got more manual.** It is now two commands per app instead of a property of the design, and the
-  admin plane it used to protect (`int_jenkins` holding the Docker socket and the credentials,
+- **It got more manual.** It is now two or three commands per app instead of a property of the design,
+  and the admin plane it used to protect (`int_jenkins` holding the Docker socket and the credentials,
   `int_shepherd`) **no longer exists** — so re-examine what we're isolating *from*. App-to-app is still
   a real concern; app-to-admin-container mostly isn't, since Dokku is a host binary, not a container.
-- **The address-pool tax is unchanged.** One network per app still walls into Docker's default pools at
-  ~29 networks, so `/etc/docker/daemon.json` still needs enlarged `default-address-pools`. Whether
-  Dokku's `bootstrap.sh` writes that file is `[unverified]`.
+  What replaces that axis is app-to-*host*, which no network membership fixes — every container keeps a
+  route to its bridge gateway. That is a `DOCKER-USER` rule, and it is V2.
+- **`F_postgres` does not conflict with it.** `postgres:create -N|--initial-network` (plus
+  `post-create-network` / `post-start-network`) puts the service container on the app's network, so a
+  project's app and its own database are isolated *together*. This was the expensive unknown on the
+  Dokploy side and it is simply a documented flag here.
+- **The address-pool tax is unchanged, and it is now the one axis where Dokku is worse than the Dokploy
+  sibling.** Per-app *bridge* networks draw on Docker's local pool and wall at ~30, so
+  `/etc/docker/daemon.json` still needs enlarged `default-address-pools`; Swarm overlays draw on 65 536
+  and pay nothing. Whether Dokku's `bootstrap.sh` writes that file is `[unverified]`.
+- **A third rung exists that no Swarm-based sibling can have.** A Dokku app's bridge sits in the root
+  network namespace, so the host firewall *can* see app↔app traffic — "one shared network with
+  `enable_icc=false`" is a real option, at the price of a network Dokku will not create for us. See the
+  note; the lean is still per-app networks.
 
 ## C. Publish
 
@@ -267,8 +280,12 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
   pick. Cheap either way if `Q_descriptor` goes declarative — the cache flags are two more lines the
   converger emits.
-- **`Q_isolation`** — keep one Docker network per app, or accept Dokku's shared default bridge? Cheaper
-  than before (no network-sharing gotcha) but more manual, and the admin plane it protected is gone.
+- **`Q_isolation`** — keep one Docker network per app, accept Dokku's shared default bridge, or take the
+  third rung (one shared network with inter-container communication filtered off)? **Researched but not
+  answered — `ideas/app-network-isolation.md` holds the three rungs, the lean towards per-app networks,
+  and what would change it.** Cheaper than before (no network-sharing gotcha, and a project's Postgres
+  rides along on `-N`) but more manual, the admin plane it protected is gone, and it is the one place
+  the bridge address pool costs us something the Dokploy sibling does not pay.
 - **`Q_multi_user`** — is Shepherd2 a single-operator box, or does it keep per-user project ownership?
   Really the question *who else gets an SSH key*, because in core Dokku a key is unrestricted: there is
   no ownership to scope it with. Answering "only me" deletes `F_multi_user` and `F_user_login` outright
@@ -302,7 +319,8 @@ Assuming the declarative answer to `Q_descriptor`, nginx for `Q_proxy` and `dokk
 ```
 projects/PROJECTID.json      # per-project descriptor, in git, the source of truth
 shepherd2-apply PROJECTID    # converge one project: apps:create, config:set, resource:limit,
-                             #   domains:set, ports:set, network:set, builder-dockerfile:set,
+                             #   domains:set, ports:set, network:create + network:set,
+                             #   postgres:create -N if the project wants a DB, builder-dockerfile:set,
                              #   docker-options build args + per-project --cache-to/--cache-from,
                              #   then git:sync --build-if-changes
 shepherd2-poll               # weekly-ish cron: shepherd2-apply for every project, serially,
@@ -316,6 +334,11 @@ shepherd2-uninstall
 Seven Bash scripts and a directory of JSON, against today's Jenkins + Traefik + compose + five scripts +
 a Kotlin/Vaadin repo. **`shepherd2-poll` is the whole of Jenkins**, and `F_safe_reboot` is `flock` on the
 lock file it already holds.
+
+Worth noting what is *not* in the list: no network reconciler. The Dokploy sibling needs an eighth
+script on a short cron to re-attach its proxy to every per-app network after Dokploy re-creates the
+Traefik container; a host-side nginx dialling container IPs cannot have that failure mode, and
+`network:rebuild` covers the rest. See `ideas/app-network-isolation.md`.
 
 Where this sketch is weakest: `shepherd2-apply` has to know which changes need a rebuild versus a
 re-apply, which is `F_smart_update` and is where shepherd-java's non-obvious logic lived. `Q_cache` is

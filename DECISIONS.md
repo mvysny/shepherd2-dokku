@@ -80,10 +80,10 @@ of why the verdict landed on Dokku:
 
 **Alternatives rejected.**
 
-- *Keep maintaining Shepherd-Traefik.* The status quo works, and rejecting it costs real features (see
-  `ideas/features-to-preserve.md` for the inventory, and the regressions listed under *Consequences*).
-  Rejected because the maintenance surface — two repos, a Jenkins, a JVM web app, a network-repair
-  script — is out of proportion to a box hosting demo apps.
+- *Keep maintaining Shepherd-Traefik.* The status quo works, and rejecting it costs real features —
+  the regressions are under *Consequences*, and `D_builder`, `D_cert` and `D_single_operator` each name
+  what their own subject cost. Rejected because the maintenance surface — two repos, a Jenkins, a JVM
+  web app, a network-repair script — is out of proportion to a box hosting demo apps.
 - *Coolify.* Checks every box on plain Docker with the largest community, a REST API and an official Go
   CLI — but four mandatory containers idling at ~1 GB before a single app is deployed, and a
   demonstrated willingness to break the build cache by injecting per-build args. Rejected on footprint.
@@ -129,7 +129,7 @@ of why the verdict landed on Dokku:
 
 **Status:** Accepted 2026-09-09 in principle. The shape of the CLI replacement is settled by
 `D_dokku_is_truth` (2026-09-10); whether any browser UI returns is still `Q_web_admin` in
-`ideas/features-to-preserve.md`. What is decided here is that shepherd-java-client is not carried forward.
+`ideas/web-admin-ui.md`. What is decided here is that shepherd-java-client is not carried forward.
 
 **Context.** [shepherd-java-client](https://github.com/mvysny/shepherd-java-client) supplies today's
 Vaadin web admin, the `shepherd-cli` command-line client, and the `ShepherdClient` library on Maven
@@ -165,12 +165,12 @@ box.
   sounds: core Dokku has no app ownership, so every authorised key may run every command against every
   app. Per-user scoping would have to be built on the `user-auth` trigger. See *Users and access
   control* in `RESEARCH.md`; `D_single_operator` scopes v1 to one keyholder and leaves per-user
-  ownership to v2 (`Q_multi_user` in `ideas/features-to-preserve.md`).
+  ownership to v2 (`Q_multi_user` in `ideas/multi-user-ownership.md`).
 - **Five behaviours lose their only home** and must each be re-provided, re-scoped or consciously
   dropped: the project descriptor, the box-wide memory quota, reserved ids, the smart-update logic, and
   the graceful "safe to reboot" wait. None has a Dokku counterpart. `D_dokku_is_truth` settles the first,
-  second and fourth (descriptor and smart-update dropped, quota enforced at creation time); reserved ids
-  and the safe-reboot wait are still `F_` entries in `ideas/features-to-preserve.md`.
+  second and fourth (descriptor and smart-update dropped, quota deferred to v2); reserved ids came back
+  broadened as `D_admin_namespace`, and the safe-reboot wait is `shepherd2 wait-idle`.
 - **The Maven Central artifact `com.github.mvysny.shepherd:shepherd-java-api` stops gaining versions.**
   Already-published versions stay published; nothing here replaces the library.
 
@@ -234,14 +234,16 @@ option rather than a straw man.
   read of an app's `initial-network` / `attach-*` properties (`plugins/traefik-vhosts/internal-functions`
   **[src]**). So a per-app isolated network is plausibly unreachable by it, and repairing that would be
   `shepherd-traefik-connect-networks` reincarnated as ours. **Choosing Traefik would cost either
-  `F_network_isolation` or a reconciler cron** — exactly the script `D_dokku` celebrates deleting.
+  the per-project network isolation or a reconciler cron** — exactly the script `D_dokku` celebrates
+  deleting.
 - **Per-app ingress tuning is first-class on nginx and absent on Traefik.** `nginx:set <app>
   client-max-body-size` / `proxy-read-timeout` are app-scoped properties, where **every `traefik:set`
   property is global-only** — per-app tuning would have to be hand-written
-  `traefik:labels:add` directives. `F_ingress_tuning` is a feature both predecessors ship.
+  `traefik:labels:add` directives. Per-project body size and read timeout are a feature both
+  predecessors ship.
 - **Traefik forecloses two of the three TLS routes.** "Managed certificates provided by the `certs`
   plugin are ignored" under Traefik, which rules out `dokku-global-cert` and the `certs` plugin
-  outright. See *Consequences* for what that does to `Q_cert`.
+  outright. See *Consequences* for what that does to the choice of TLS route.
 - Two smaller Traefik restrictions: only `web` containers get labels injected, and only `http:80` /
   `https:443` port mappings are supported.
 
@@ -251,9 +253,9 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 
 - *The official Traefik plugin.* Rejected on the four asymmetries above. What it genuinely buys, and
   what we are giving up: ACME renewal becomes Traefik's problem rather than a cron of ours (as it is
-  today), which is `Q_cert`'s route 3 — at the price of per-app ACME orders and no declared wildcard
-  SAN. Familiarity was the strongest argument for it and is not enough: the knowledge that transfers is
-  knowledge of a component we were trying to stop maintaining.
+  today), which is route 3 in `RESEARCH.md` → *TLS* — at the price of per-app ACME orders and no
+  declared wildcard SAN. Familiarity was the strongest argument for it and is not enough: the
+  knowledge that transfers is knowledge of a component we were trying to stop maintaining.
 - *Keep both — nginx globally, Traefik for one app that needs it.* Dokku allows this (`proxy:type` is
   per app). Rejected because the two proxies have disjoint TLS stories, so a mixed box would need both
   cert mechanisms alive at once; and because a per-app exception is exactly the kind of state that is
@@ -263,11 +265,13 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 
 **Consequences.**
 
-- **`Q_cert` narrows to two routes, not three.** `dokku-global-cert` (one wildcard cert we renew) and
-  `dokku-letsencrypt` (per-app ACME, renewal solved upstream) both stay available; the Traefik DNS-01
-  route is gone. That is the intended direction — the requirement as written asks for one wildcard cert
-  — but it is now foreclosed rather than merely unchosen. `D_cert` has since taken the first of the two.
-- **`F_ingress_tuning` is preserved** as `nginx:set <app> client-max-body-size` / `proxy-read-timeout`.
+- **The TLS question narrows to two routes, not three** (`RESEARCH.md` → *TLS* has all three,
+  `D_cert` the answer). `dokku-global-cert` (one wildcard cert we renew) and `dokku-letsencrypt`
+  (per-app ACME, renewal solved upstream) both stay available; the Traefik DNS-01 route is gone.
+  That is the intended direction — the requirement as written asks for one wildcard cert — but it is
+  now foreclosed rather than merely unchosen. `D_cert` has since taken the first of the two.
+- **Per-project ingress tuning is preserved** as `nginx:set <app> client-max-body-size` /
+  `proxy-read-timeout`, and `README.md`'s cheat sheet is where an operator finds it.
 - **nginx is an apt package on the host**, so it is part of what a box reinstall must reproduce, and
   Dokku's own bootstrap installs it. Nothing for us to configure beyond `nginx:set`.
 - **The `proxy` plugin's other implementations stay unused but present.** If a future need forces
@@ -278,7 +282,7 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 
 **Status:** Accepted 2026-09-10. Not yet implemented; `initial-network` isolating apps while leaving
 nginx routing intact is `[unverified]` until the first box (punch-list items 2 and 12; item 9 went to v2
-with `F_postgres`).
+with the managed database).
 
 **Context.** The box hosts other people's example projects and addons — mutually untrusted code, on one
 Docker daemon. Both predecessors gave each project its own network (`D_network_per_project` in
@@ -293,7 +297,7 @@ reach any other app's unpublished ports by container IP.
 ```bash
 dokku network:create app-<id>
 dokku network:set    <app> initial-network app-<id>
-dokku postgres:create <svc> --initial-network app-<id>   # v2 only — F_postgres is deferred, and this
+dokku postgres:create <svc> --initial-network app-<id>   # v2 only — the database is deferred, and this
                                                          #   flag is the one thing it must not forget
 ```
 
@@ -346,13 +350,14 @@ properties of Dokku's version make the predecessor's price disappear:
   retrofitted cheaply. Whether anything in the install writes that file already — Docker's own package
   is the candidate, now that `D_install_apt` means `bootstrap.sh` never runs — is `[unverified]`.
 - **A project's database must be created with `--initial-network` — a v2 obligation this entry records
-  in advance.** `F_postgres` is deferred to v2 (2026-09-10), so v1 creates no services and this costs
-  nothing yet; it is written down because the flag is *creation-time only*. A service created without it
-  sits on the shared bridge, where the app can no longer reach it under this decision, and the repair is
-  `postgres:set <svc> post-create-network`. `postgres:link` additionally adds a legacy `--link`, whose
-  behaviour on a user-defined bridge is `[unverified]` (punch-list item 9, now a v2 question).
-- **Project teardown grows a step:** `network:destroy app-<id>` after `apps:destroy`, or `F_uninstall`
-  leaks a network per project.
+  in advance.** The managed database is deferred to v2 (2026-09-10), so v1 creates no services and
+  this costs nothing yet; it is written down because the flag is *creation-time only*. A service
+  created without it sits on the shared bridge, where the app can no longer reach it under this
+  decision, and the repair is `postgres:set <svc> post-create-network`. `postgres:link` additionally
+  adds a legacy `--link`, whose behaviour on a user-defined bridge is `[unverified]` (punch-list item
+  9, now a v2 question).
+- **Project teardown grows a step:** `network:destroy app-<id>` after `apps:destroy`, or the box leaks
+  a Docker network per project destroyed.
 - **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
   a reconciler cron. Do not switch proxies without re-reading both entries.
 - **Two things isolation does not buy.** The L7 front door stays open — any app can reach nginx by the
@@ -374,7 +379,7 @@ v0.38.27 but not yet seen on a box.
 
 **Context.** shepherd-java's per-project JSON file was the source of truth, and a control plane converged
 Docker onto it, because there was nothing else to converge onto: plain Docker has no persisted per-app
-configuration. `F_project_descriptor` asked whether to carry that shape forward — a descriptor per
+configuration. The open design question was whether to carry that shape forward — a descriptor per
 project plus a converger script — or to run the box from a runbook. Dokku changes the premise: it *is* a
 persisted, idempotent, per-app state store with `--format json` reports on every plugin. The question
 became whether to keep a second one on top of it.
@@ -390,10 +395,10 @@ became whether to keep a second one on top of it.
 - **Shepherd2 provides exactly what Dokku has no single command for**: `create-app` and `destroy-app`
   (the multi-command, partly non-idempotent sequences), `poll` (serial, under a lock, iterating
   `apps:list` and calling `git:sync --build-if-changes` with each app's URL), `rebuild` (the forced
-  variant, `--build`), `wait-idle` (block until no build is running — `F_safe_reboot`), `clearcache`
-  (the weekly prune), and the box-level crons and installer. **Everything else is `dokku` itself** —
-  logs, build output, restart, config, domains, ingress tuning, limits — listed in `README.md` as a
-  cheat sheet from feature to command.
+  variant, `--build`), `wait-idle` (block until no build is running, so a reboot never lands
+  mid-build), `clearcache` (the weekly prune), and the box-level crons and installer. **Everything
+  else is `dokku` itself** — logs, build output, restart, config, domains, ingress tuning, limits —
+  listed in `README.md` as a cheat sheet from feature to command.
 - **Shepherd2 never wraps a command Dokku already has.**
 
 **Why.**
@@ -408,8 +413,8 @@ became whether to keep a second one on top of it.
   there is no third thing to reconcile.
 - **Creation is the error-prone part; operation is not.** Onboarding a project is roughly ten commands,
   two of them (`apps:create`, `network:create`) not idempotent, plus the first sync — and it was more
-  before `D_builder` deleted the cache flags and `F_postgres` moved to v2. That still earns a script.
-  Every day-N action is one well-named `dokku` command, and re-exposing those one-to-one is
+  before `D_builder` deleted the cache flags and the managed database moved to v2. That still earns a
+  script. Every day-N action is one well-named `dokku` command, and re-exposing those one-to-one is
   `shepherd-cli` again — the component class `D_retire_shepherd_java` retired.
 - **Config var over inference, because of one edge.** `git:sync` does record its URL (`apps:report
   --app-deploy-source-metadata`), but only after a build that succeeded far enough to fire
@@ -423,8 +428,8 @@ became whether to keep a second one on top of it.
 
 - *Declarative descriptor + converger* — shepherd-java's shape, and the ideas file's original instinct.
   Rejected on the conflict above and on the third-copy argument: Dokku's property store is already the
-  descriptor, spread across plugins. It would have bought `F_smart_update` and a git-reviewable project
-  set; see *Consequences* for what that costs.
+  descriptor, spread across plugins. It would have bought the smart-update logic — rebuild only when a
+  *build* input changed — and a git-reviewable project set; see *Consequences* for what that costs.
 - *Derive the poll list from `deploy-source-metadata`.* Zero convention, pure Dokku. Rejected on the
   failed-first-build edge; also "where the last deploy came from" is history, not intent.
 - *A projects table of ours* (`id url ref owner`, one line per project). The same two facts, held in a
@@ -439,14 +444,15 @@ became whether to keep a second one on top of it.
 
 **Consequences.**
 
-- **`F_project_descriptor` and `F_smart_update` are dropped.** Changing a build arg is
-  `docker-options:remove`, `docker-options:add`, `ps:rebuild` — three commands, once a year for a key
-  rotation, a runbook line in `README.md`. **`F_memory_quota` is deferred to v2** (operator, 2026-09-10):
-  the only enforcement point this design leaves is `create-app`, where a later hand `resource:limit`
-  bypasses it, and a guard that holds only on the path the operator already controls was not worth
-  writing before the box exists. `Q_quota` stays open as the v2 question — the interesting half of which
-  is whether *any* enforcement point exists that Dokku's own state does not undermine.
-  **`F_project_owner`** is `SHEPHERD_OWNER`. Per-project cache flags are set once by `create-app`.
+- **The descriptor and the smart-update logic are dropped**, and with them the question of which change
+  needs which kind of restart. Changing a build arg is `docker-options:remove`, `docker-options:add`,
+  `ps:rebuild` — three commands, once a year for a key rotation, a cheat-sheet line in `README.md`.
+  **The box-wide memory quota is deferred to v2** (operator, 2026-09-10): the only enforcement point
+  this design leaves is `create-app`, where a later hand `resource:limit` bypasses it, and a guard that
+  holds only on the path the operator already controls was not worth writing before the box exists.
+  `Q_quota` in `ideas/box-memory-quota.md` stays open as the v2 question — the interesting half of which
+  is whether *any* enforcement point exists that Dokku's own state does not undermine. **Recording who
+  owns a project** survives as `SHEPHERD_OWNER`. Per-project cache flags are set once by `create-app`.
 - **Both config vars are injected into the container's environment.** Acceptable because neither is a
   secret: a git URL never carries a token here (credentials go through `git:auth`), and the owner is a
   contact address.
@@ -461,7 +467,8 @@ became whether to keep a second one on top of it.
   `create-app` per project. A read-only export of the reports into git would mitigate it; not decided.
 - **The `Q_multi_user` hook stays cheap** regardless of which way that question goes: "is `$SSH_NAME`
   the app's `SHEPHERD_OWNER`" is one `config:get`.
-- **`Q_language` loses its main input** — there is no descriptor to parse, only reports to read.
+- **The choice of implementation language loses its main input** — there is no descriptor to parse,
+  only reports to read; `D_ruby` decided it on `create-app`'s flag list instead.
 - **A third-party client such as wharf may be adopted, never depended on.** It is a pure SSH client
   holding no server-side state, so its death costs nothing; that is the property `D_retire_shepherd_java`
   found missing in the class. Whether any browser UI returns is still `Q_web_admin`.
@@ -470,7 +477,7 @@ became whether to keep a second one on top of it.
 ## D_single_operator — v1 has one keyholder; per-user project ownership is v2 (2026-09-10)
 
 **Status:** Accepted 2026-09-10 for the first version. Deliberately scoped: this decides *v1*, and it
-defers rather than drops multi-user. `Q_multi_user` in `ideas/features-to-preserve.md` stays open as
+defers rather than drops multi-user. `Q_multi_user` in `ideas/multi-user-ownership.md` stays open as
 the v2 question.
 
 **Context.** Shepherd today has users: an admin adds them, and each sees, creates, edits and deletes only
@@ -499,9 +506,10 @@ per app; `D_dokku_is_truth` already does.
 
 **Consequences.**
 
-- **`F_multi_user` and `F_user_login` are deferred, not dropped.** They stay in the ideas file as the v2
-  fork. The only v2 route to `F_user_login` (Google SSO) is the reworked Vaadin admin, option 3 of
-  `Q_web_admin`.
+- **Per-user project ownership is deferred, not dropped** — `ideas/multi-user-ownership.md` is the v2
+  fork, and its cheap favourite is a `user-auth` hook of our own. Password and Google-SSO **login** is
+  the harder half: its only v2 route is the reworked Vaadin admin, option 3 in `ideas/web-admin-ui.md`,
+  because nothing else short of Dokku Pro provides it and a CLI has nothing to log in to.
 - **`SHEPHERD_OWNER` is an email address** (operator, 2026-09-10), which is what shepherd-java's `owner`
   held and what a contact field is for. The `user-auth` trigger sees the key's `$SSH_NAME`, so v2 closes
   the gap from the other end: **name SSH keys by email** (`ssh-keys:add alice@example.com …`) and the
@@ -514,10 +522,10 @@ per app; `D_dokku_is_truth` already does.
 
 **Status:** Accepted 2026-09-10, awaiting implementation — it lands as `install` steps (lego, the plugin,
 the first issuance, one root cron line) and nothing per app. Depends on `D_proxy`: the `certs` plugin
-this rides on is ignored under the Traefik plugin. **Amended the same day** with `F_http_only`: https as
+this rides on is ignored under the Traefik plugin. **Amended the same day** with the http-only mode: https as
 described here is one of *two* install modes, and the second one is the absence of all of it.
 
-**Context.** `F_wildcard_https` asks for **one** `*.mydomain.me` certificate, so that a new app is on
+**Context.** The inherited requirement asks for **one** `*.mydomain.me` certificate, so that a new app is on
 https the moment it exists and nobody performs a per-app ACME order, ever. shepherd-traefik does this
 today with Traefik's DNS-01 challenge against GoDaddy. Dokku's nginx cannot: nginx has no ACME client,
 so under `D_proxy` something else has to issue and renew. Two routes survived `D_proxy` — the official
@@ -527,7 +535,7 @@ so under `D_proxy` something else has to issue and renew. Two routes survived `D
 
 It is the requirement. Every app this product has ever hosted was a demo at `PROJECTID.<domain>` under a
 wildcard DNS record; the production use with foreign domains that the predecessors allowed for never
-materialised. Once `F_custom_domains` and `F_apex_domain` are deferred (see *Consequences*), per-app
+materialised. Once custom and apex domains are deferred (see *Consequences*), per-app
 issuance buys nothing and the wildcard is the whole story. And a wildcard is DNS-01 by definition —
 Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*).
 
@@ -542,7 +550,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   certificate alone. It is the one third-party plugin Shepherd2 depends on, and this entry is the `D_`
   that `CLAUDE.md`'s *Conventions* require for that.
 - **No per-app ACME in v1.** `dokku-letsencrypt` is not installed; no app runs `letsencrypt:enable`.
-- **TLS is an install-time *mode*, and `http` is a supported one** — `F_http_only`, added 2026-09-10.
+- **TLS is an install-time *mode*, and `http` is a supported one** — added 2026-09-10.
   `install` asks once, and the answer is recorded on the box:
   - **`https`** — everything above: lego, the DNS credentials, `dokku-global-cert`, the renewal cron.
     This is what a real box runs, and it needs a DNS zone with `@` and `*` records plus API access to it.
@@ -576,12 +584,12 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 **Alternatives rejected.**
 
 - *`dokku-letsencrypt`, per-app orders, HTTP-01 or DNS-01.* Would have been the answer had
-  `F_custom_domains` stayed, because a wildcard covers no foreign domain and every app would have needed
+  custom domains stayed, because a wildcard covers no foreign domain and every app would have needed
   its own cert anyway; with that feature deferred it only adds an ACME order per app. Two further costs:
   the app "needs to already be deployed and reachable on the public internet over HTTP before a
   certificate can be issued", so an app whose first builds fail — the normal case — has no https until
   someone re-runs `enable`; and its wildcard support is "not officially supported" (issue #189). It
-  stays the v2 tool for `F_custom_domains`, on those apps only, and coexists with the global cert.
+  stays the v2 tool for custom domains, on those apps only, and coexists with the global cert.
 - *The Traefik plugin with `challenge-mode dns`.* Foreclosed by `D_proxy`, and it was per-app orders too,
   since nothing in it declares a wildcard SAN.
 - *certbot with a DNS plugin.* No GoDaddy in the distro; see *Why*. It becomes the right tool the day the
@@ -598,7 +606,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 
 **Consequences.**
 
-- **`F_custom_domains` and `F_apex_domain` are deferred, not dropped.** A `*.mydomain.me` cert matches
+- **Custom domains and the apex domain are deferred, not dropped.** A `*.mydomain.me` cert matches
   neither `foo.example.org` nor `mydomain.me` itself. Custom domains are v2 via `dokku-letsencrypt` on
   the affected apps only. The apex is one more `-d mydomain.me` on the lego command plus a Dokku app
   named as the FQDN — cheap, but there is nothing to run there in v1, since a visitor cannot ask for an
@@ -624,7 +632,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   visitor's browser rather than on the box. Downgrading is therefore not something `install` can undo,
   and rather than support half a switch we support neither: **pick per install; to change, reinstall.**
   Two implications for the code: `install` records the mode where `uninstall` can find it (so the
-  teardown is symmetric — `F_uninstall`), and nothing in http mode may pre-set `nginx:set … hsts`, which
+  teardown stays symmetric), and nothing in http mode may pre-set `nginx:set … hsts`, which
   is inert without a certificate but would go live the instant one appeared.
 - **The mode is recorded as `dokku config:set --global SHEPHERD_TLS_MODE=https|http`** (2026-09-10) —
   the box-level counterpart of `D_dokku_is_truth`'s rule that a fact of ours is a `SHEPHERD_*` config
@@ -641,7 +649,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 - **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*):
   that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
   re-applies to every app and reloads nginx without dropping connections; that an app created and
-  never yet deployed serves the global cert on its first successful deploy; and — for `F_http_only` —
+  never yet deployed serves the global cert on its first successful deploy; and — for the http mode —
   that an app on a box with no certificate serves plain http with no redirect and no HSTS header.
 
 ## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
@@ -655,7 +663,7 @@ than inherited.
 
 **Context.** Dokku ships **seven** builders (`RESEARCH.md` → *The builders, and how one is chosen*), and
 Shepherd2 had only ever considered one, because both predecessors built a `Dockerfile` and the feature
-survey recorded that as `F_build_dockerfile` — preserved, ✅, not examined. Two requirements, stated by
+survey recorded that as preserved, ✅, not examined. Two requirements, stated by
 the operator on 2026-09-10, turned out to decide the whole question:
 
 - a scheduled rebuild must **not** re-download the Maven dependency tree from Central, and
@@ -713,7 +721,7 @@ whole decision in one sentence.
   `nixpacks` and `railpack` are each a CLI we would have to install, pin and re-install after a rebuild.
 - **It is Dokku's own default and fallback** — the best-trodden path on this platform, which matters
   more than ecosystem-wide popularity, and the path most likely to be fixed quickly when it breaks.
-- **`F_build_cpu_limit` probably closes as a side effect.** On the herokuish path the build-phase
+- **Capping build CPU probably closes as a side effect.** On the herokuish path the build-phase
   `docker-options` are passed to `docker container create` with **no allowlist filtering** **[src]**, so
   `--cpus` should simply work — a gap the feature survey had written off as unfixable, because on the
   *Dockerfile* path the flag is silently dropped.
@@ -755,7 +763,7 @@ whole decision in one sentence.
   container on a box whose isolation story is `D_isolation`. The cost is not close to the benefit.
 - ***Don't build on the box at all*** — build in CI, deploy with `git:from-image`. Both requirements
   become moot because the cache becomes CI's problem. Rejected because it is a different product: it
-  removes the on-box rebuild that `F_poll_rebuild` exists for, needs a registry and per-project
+  removes the on-box rebuild the scheduled poll exists for, needs a registry and per-project
   credentials, and makes every hosted project maintain a pipeline — the exact chore Shepherd exists to
   spare them.
 - ***A Maven repository proxy (Nexus et al.).*** Rejected in `D_no_shared_cache` on cost and because it
@@ -770,7 +778,8 @@ whole decision in one sentence.
 
 **Consequences.**
 
-- **`F_build_dockerfile` and `F_custom_dockerfile` are dropped features**, not preserved ones. This is
+- **Building from the project's own `Dockerfile`, and a per-project Dockerfile path, are dropped
+  features**, not preserved ones. This is
   the first feature the Dokku move deliberately *removes* rather than migrates, and it is the entry to
   cite when someone asks why a project's `Dockerfile` is being ignored.
 - **Every hosted repo needs descriptors it does not have today** — at minimum a `Procfile`, usually a
@@ -820,7 +829,7 @@ whole decision in one sentence.
   they are pinned inside the herokuish image (`heroku/heroku-buildpack-java v81`). Mitigation, if a
   project ever needs a third-party buildpack: pin it, `https://…/repo#<commit-sha>` — multi does a
   full `git clone` then `git checkout "$ref"` **[src]**, so a SHA works where a branch name drifts.
-- **`F_build_args` gets simpler.** `builder-herokuish/pre-build` bundles every app config var into an
+- **Per-project build args get simpler.** `builder-herokuish/pre-build` bundles every app config var into an
   ENV_DIR inside the build **[src]**, so the Vaadin offline key is a plain `dokku config:set` with no
   `--build-arg` plumbing. The flip side is that every *runtime* secret is visible to the build too.
 - **The `.m2` cache now lives in a Docker volume that nothing garbage-collects.** buildkitd's GC, the
@@ -857,14 +866,14 @@ whole decision in one sentence.
   when Maven runs. It also makes the build *fail* outright if its `detect` finds no `package.json`,
   since multi exits when any listed buildpack fails to detect **[src]**.
 - **`ideas/build-cache.md` is deleted.** Its fork was conditional on the Dockerfile builder and is moot;
-  its surviving Dokku facts went to `RESEARCH.md`, and the unpinned poll interval it flagged moved to
-  `F_poll_rebuild` in the feature survey.
+  its surviving Dokku facts went to `RESEARCH.md`, and the unpinned poll interval it flagged is now
+  pinned at five minutes (`SOLUTION.md`).
 - **`D_dokku_is_truth` is unaffected and slightly strengthened** — the builder choice is `builder:report`
   state, not a file of ours, and the cache is a Docker volume Dokku names. Still no descriptor.
 
 ## D_ruby — The `shepherd2` CLI is Ruby; `install` and `uninstall` stay Bash (2026-09-10)
 
-**Status:** Accepted 2026-09-10, answering `Q_language`. Not yet implemented — it decides what the first
+**Status:** Accepted 2026-09-10. Not yet implemented — it decides what the first
 file written into this repo is.
 
 **Context.** Both predecessors wrote their glue in Bash, and `CLAUDE.md` carried "scripts are Bash with
@@ -938,15 +947,15 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
 
 ## D_admin_namespace — App ids beginning with `admin` are reserved (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Reverses the proposed drop of `F_reserved_ids`, in a different shape
-from the rule it replaces.
+**Status:** Accepted 2026-09-10. Reverses the proposed drop of shepherd-java's reserved-id check, in a
+different shape from the rule it replaces.
 
 **Context.** shepherd-java refused project ids that collided with the admin plane — `admin` and
 `*-admin` — and the feature survey proposed dropping the rule outright, on the correct observation that
 there is no admin plane left to collide with. True today; likely false later. Every candidate in
 `Q_web_admin` — a cron-generated status page, wharf, a reworked Vaadin admin, even a plain nginx vhost
 serving build logs — is reached over http and therefore needs a hostname on this box's wildcard domain.
-Hostnames here are first-come: the app *is* the subdomain (`F_subdomain`).
+Hostnames here are first-come: the app name *is* the subdomain.
 
 **Decision.** `create-app` refuses any id matching `admin*` — the whole prefix, so `admin`,
 `admin-status` and `admintools` are all reserved. Nothing else is reserved by Shepherd2; Dokku's own
@@ -974,7 +983,7 @@ business, not ours to restate.
   unaffordable to add later: by then someone owns the name.
 - *Reserve shepherd-java's exact list* (`admin`, `*-admin`). The suffix half protects names nobody will
   choose; the prefix is where an admin surface actually lands.
-- *Put the admin surface on the apex domain instead, and reserve nothing.* `F_apex_domain` is deferred
+- *Put the admin surface on the apex domain instead, and reserve nothing.* The apex domain is deferred
   (`D_cert`) and the apex is **not** covered by the wildcard certificate, so that route costs a second
   certificate before it costs anything else. A reserved subdomain costs nothing.
 - *Enforce it in Dokku rather than in `create-app`* — an `app-create` plugin trigger of ours. Rejected
@@ -984,8 +993,8 @@ business, not ours to restate.
 
 **Consequences.**
 
-- **`F_reserved_ids` is preserved, not dropped** — the feature survey's drop list is wrong on that row,
-  and the rule it preserves is broader than the original.
+- **Reserved project ids are preserved, not dropped** — the feature survey had them on its drop list,
+  wrongly, and the rule that replaced them is broader than the original.
 - **v2's admin surface has a name waiting for it**, on https from the day it exists, with no
   certificate step and no rename of anything.
 - **`destroy-app` needs no counterpart** — nothing was allocated, only refused.
@@ -1097,7 +1106,7 @@ path, and version branches back to 0.3.13.
   upstream's distribution channel, and the pin is the same version string bootstrap would have passed.
   `CLAUDE.md`'s "Dokku stays upstream and unforked" is untouched — we are declining a *convenience
   script*, not the product.
-- **We are writing an installer anyway** (`F_install`), and its stated job is that the box is
+- **We are writing an installer anyway**, and its stated job is that the box is
   reproducible from this repo. A dozen apt lines we can read and re-run beats a 300-line script that
   branches across five distros, two install methods and versions back to 0.3.13, of which our box
   exercises exactly one path.
@@ -1164,3 +1173,67 @@ path, and version branches back to 0.3.13.
   it is `apt`, not something Dokku lacks a command for.
 - **If packagecloud is ever unavailable**, the fallbacks are upstream's `bootstrap.sh` or the source
   install, in that order. Recorded, not planned for.
+
+## D_no_feature_list — The feature set gets no durable file; the `F_` slugs are retired (2026-09-10)
+
+**Status:** Accepted 2026-09-10 and applied the same day: `ideas/features-to-preserve.md` is deleted and
+every `F_` citation swept out of the durable files and the two surviving idea notes.
+
+**Context.** Shepherd2 is the third implementation of the same product, so the rebuild opened with a
+migration inventory — every feature the old box had, what Dokku answers it with, and a verdict of
+*Dokku does it* / *glue we write* / *dropped* / *deferred*. That inventory lived in
+`ideas/features-to-preserve.md` and gave each row a slug, `F_poll_rebuild`, `F_wildcard_https`,
+`F_safe_reboot` and 36 more. The slugs were useful while the design was open: a `D_` entry could say
+"costing `F_ingress_tuning`" and the reader could look the row up. By 2026-09-10 every row had a verdict
+and the note was a ledger awaiting graduation — but it was also the only place any of the 39 slugs was
+*defined*, and they were cited 69 times across `DECISIONS.md`, `SOLUTION.md`, `RESEARCH.md`,
+`CLAUDE.md` and two other idea notes.
+
+**Decision.** **There is no feature list, and no `F_` namespace.** The graduation dropped the slug at
+every citation and kept the prose. What each surviving feature *is* is described where it lives: the
+preserved half in `README.md` → *Day-to-day operations* (task → command) and in `SOLUTION.md`'s
+inventory, CLI surface and flows; the deferred half in `SOLUTION.md` → *What v1 does not do*; the
+dropped half in `CLAUDE.md` → *What is deliberately gone* and in the `D_` entry that dropped it. The
+enumerated-slug rule in `CLAUDE.md` now applies to exactly two namespaces: **`D_` in `DECISIONS.md`,
+`Q_` in `ideas/`.**
+
+**Alternatives rejected.**
+
+- *A seventh documentation target, `FEATURES.md`, owning the slugs and the migration table.* The
+  `D_research_md` move, and the reason it doesn't apply: `RESEARCH.md` holds facts about a product we
+  don't own, which have no other home. A feature row holds facts about *this* box, and every one of
+  them already has a home — so the file would be a fourth copy that drifts, which is the failure mode
+  the *Documentation targets* table exists to prevent.
+- *A compact `F_` → one-line → decided-by table in `SOLUTION.md`.* The cheap option: it keeps all 69
+  citations valid for the price of one table. Rejected because a table of names and one-line glosses,
+  with the substance elsewhere, is a **glossary** — which this repo deliberately does not have — and
+  because it would define `F_web_admin`, `F_postgres` and `F_user_login` inside the file that describes
+  what the box *holds*.
+- *Keep the note alive as the definition file.* What the note itself proposed, on the grounds that the
+  migration view has no other home. Rejected on the `ideas/` contract: a note that never graduates is
+  the stale `ideas/` folder the convention exists to prevent, and "is worth keeping until someone
+  confirms it has no readers" is not a lifetime.
+- *Half-retire — keep the slugs that read well, drop the rest.* Worse than either end. A namespace whose
+  definitions are gone but whose citations survive sends the reader looking for a file that was deleted.
+
+**Consequences.**
+
+- **Don't reintroduce an `F_` namespace, or any feature-list file.** If a feature needs naming from a
+  distance, name it in prose and link the file that owns it. This is the invariant `CLAUDE.md` carries.
+- **The migration view is gone on purpose, and it is recoverable.** Feature-by-feature "what did
+  shepherd-traefik do and what replaced it" is answered by git history here plus both predecessors,
+  which stay readable on GitHub — the same reason `CLAUDE.md` forbids copying their decisions in.
+- **`COMPARISON.md` in shepherd-traefik is not a feature list, and a reader sent there will assume it
+  is.** Its `R_` boxes are *requirements for choosing a product*, written to discriminate between
+  Coolify, Dokploy, Dokku and CapRover, so they compress or omit anything all four did equally.
+  Building the inventory from Shepherd's own scripts and shepherd-java-client turned up **11 features
+  with no `R_` box at all**, most of them in the component being deleted. So `COMPARISON.md` answers
+  "should some other PaaS have been picked", nothing more — which is how `README.md` cites it.
+- **The `README.md` cheat sheet is load-bearing now, not a convenience.** It is where the *Dokku does
+  it* rows landed, and `D_dokku_is_truth` and `SOLUTION.md` both promise it exists. A day-N capability
+  that is in neither the cheat sheet nor a `dokku` command is a capability this box has quietly lost.
+- **Four open questions kept their `Q_` slugs and got notes of their own** —
+  `ideas/multi-user-ownership.md`, `ideas/web-admin-ui.md`, `ideas/box-memory-quota.md`,
+  `ideas/private-repo-credentials.md`. The *answered* questions (`Q_descriptor`, `Q_proxy`, `Q_cert`,
+  `Q_cache`, `Q_isolation`, `Q_language`, `Q_build_history`) are cited nowhere any more: an entry that
+  used to point at one now points at the `D_` entry that answered it, or at `RESEARCH.md`.

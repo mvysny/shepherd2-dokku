@@ -12,8 +12,10 @@ convergence, the periodic-rebuild trigger, the wildcard-certificate story, and h
 **Status: design phase, and the v1 design is agreed.** There is no code yet. **`SOLUTION.md` is what is
 to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
-underneath it) first. Two things still gate a *finished* v1: the punch list in `RESEARCH.md` needs a
-throwaway VPS, and `ideas/features-to-preserve.md` has not yet graduated.
+underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
+throwaway VPS. The feature survey that decided *what* the rebuilt thing does has graduated and is gone
+(`D_no_feature_list`); everything left in `ideas/` is v2 — four open questions carrying `Q_` slugs, and
+two pieces of deferred work.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:
@@ -45,7 +47,7 @@ Match the target before writing a line — the failure mode is a fact explained 
 
 | Target | Audience | Scope & length | Owns |
 |---|---|---|---|
-| **README.md** | the operator at the front door | thin: positioning, requirements, install, troubleshooting, how to onboard a project | *how to run this box* — and routing the reader onward |
+| **README.md** | the operator at the front door | thin: positioning, requirements, install, troubleshooting, how to onboard a project, and the day-N cheat sheet | *how to run this box* — every common task as the exact command — and routing the reader onward |
 | **SOLUTION.md** | someone asking "what *is* this box, end to end?" | the assembled picture: an inventory and a handful of flows | *how the pieces are wired together* — the install inventory, and the sequences that cross several decisions |
 | **CLAUDE.md** (this file) | a contributor / coding agent | invariant-focused; pointers, not reference | what you must not break *from a distance*, the doc map, and the index of whatever code appears |
 | **DECISIONS.md** | someone asking "why is it like this?" | one coherent, mutable entry per live decision *already made* (`D_` slugs) | the *why-we-chose*, including the roads not taken |
@@ -79,12 +81,13 @@ Rules that make six targets survivable:
   (that is what its `Status:` line is for). A speculative feature, an idea, an open question or a TODO is
   *not* a decision and gets no `D_` — it goes to `ideas/`. The roads-not-taken inside an existing entry
   are the only "what we didn't do" content that file carries.
-- **Enumerated items get slugs, not numbers** — `D_dokku`, `F_wildcard_https`, underscores throughout,
-  backticked in prose. Stable once published; rename only with a sweep of every reference. `F_` slugs
-  currently live in `ideas/features-to-preserve.md`; when that idea graduates they move to wherever the
-  feature set lands.
-- There is deliberately **no CHANGELOG** (the deploy is a `git pull`, so git *is* the changelog) and no
-  glossary.
+- **Enumerated items get slugs, not numbers** — `D_dokku`, `Q_multi_user`, underscores throughout,
+  backticked in prose. Stable once published; rename only with a sweep of every reference. There are
+  exactly **two** namespaces: **`D_` decisions in `DECISIONS.md`** and **`Q_` open questions in
+  `ideas/`**, one note per question. The `F_` feature slugs were retired with the feature survey —
+  **don't reintroduce them, or any feature-list file** (`D_no_feature_list`).
+- There is deliberately **no CHANGELOG** (the deploy is a `git pull`, so git *is* the changelog), no
+  glossary, and no feature list.
 
 ## Ideas & their graduation
 
@@ -97,7 +100,8 @@ section is the authority on where nuggets land in Shepherd2**:
 - verified behaviour of **Dokku** (or a Dokku plugin) → **RESEARCH.md**, with a `[docs]`/`[src]`/`[unverified]` marker
 - the choice made + the alternatives rejected → **DECISIONS.md** (a `D_` entry)
 - work deferred *as a consequence of a logged decision* → that entry's *Consequences*
-- an operator-facing setup step, requirement or troubleshooting recipe → **README.md**
+- an operator-facing setup step, requirement or troubleshooting recipe → **README.md**; a day-N task and
+  the exact command for it → its *Day-to-day operations* cheat sheet
 - where a piece sits in the assembled box — an install step in sequence, a flow that crosses several
   decisions, a fact about what the box holds → **SOLUTION.md**
 - a cross-cutting invariant ("never reintroduce a naming contract") → **CLAUDE.md**
@@ -141,7 +145,7 @@ truth *there*, not here.
   touch certificates — the plugin covers new apps at creation. The DNS API token is root-only and must
   stay unreadable to the `dokku` user. See `D_cert`.
   - **…but https is a *mode*, and the box also installs http-only.** Everything above is the `https`
-    mode; the `http` mode installs none of it (`F_http_only`). So nothing outside `install` /
+    mode; the `http` mode installs none of it. So nothing outside `install` /
     `uninstall` may *assume* a certificate exists, and nothing anywhere may offer to convert a running
     box between the two — the choice is made once, at install, and HSTS makes the downgrade
     unrepairable from the box. See `D_cert`.

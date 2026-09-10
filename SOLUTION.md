@@ -11,9 +11,9 @@ end to end. Those flows cross four or five decisions each and are therefore insi
 **What it does not own, and must never restate:** *why* a piece was chosen (`DECISIONS.md`), *what
 Dokku does* (`RESEARCH.md`), *how to operate the box* (`README.md`), or a script's arguments and env
 knobs (that script's comment header, once it exists). Where a one-line fact saves a jump it is
-repeated here; the argument behind it never is. The `F_` feature set still lives in
-`ideas/features-to-preserve.md` until that note graduates — this file cites `F_` slugs, it does not
-hold the table.
+repeated here; the argument behind it never is. There is no feature list anywhere and no `F_` namespace
+(`D_no_feature_list`): what the box *does* is this file plus `README.md`'s cheat sheet, and what it
+deliberately does not do is *What v1 does not do*, at the end.
 
 ---
 
@@ -31,15 +31,15 @@ hold the table.
 | **ruby** (`apt`) | the CLI's runtime. Stdlib only — no gems, no bundler | `D_ruby` |
 | **`shepherd2`** | one Ruby dispatcher on `PATH`: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache` | `D_ruby`, `D_dokku_is_truth` |
 | **`shepherd2-install` / `-uninstall`** | Bash, `set -euo pipefail`. The only parts that run before, or after, everything else exists | `D_ruby` |
-| **root cron lines** | the `*/5` poll and the weekly prune, plus the daily `lego renew` in https mode | `F_poll_rebuild`, `D_cert`, `F_housekeeping` |
+| **root cron lines** | the `*/5` poll and the weekly prune, plus the daily `lego renew` in https mode | `D_dokku`, `D_cert`, `D_builder` |
 
 And a set of **global Dokku properties**, which is the whole of the box's configuration:
 
 | Property | Value | Why, in one line |
 |---|---|---|
-| `domains:set-global` | `mydomain.me` | the app name becomes the subdomain (`F_subdomain`) |
+| `domains:set-global` | `mydomain.me` | the app name becomes the subdomain, so `PROJECTID.<domain>` is free |
 | `builder:set --global selected` | `herokuish` | short-circuits detection, so a committed `Dockerfile` is never read (`D_builder`) |
-| `ps:set --global restart-policy` | `always` | survive a crash and a reboot (`F_keep_alive`) |
+| `ps:set --global restart-policy` | `always` | survive a crash and a reboot; Dokku's default is `on-failure:10` |
 | `config:set --global SHEPHERD_TLS_MODE` | `https` or `http` | the install mode, recorded where `uninstall` can find it (`D_cert`) |
 
 **What is deliberately absent:** Jenkins, Traefik, `docker-compose.yaml`, any JVM, any web UI, any
@@ -50,7 +50,7 @@ change.
 ## Two install modes, chosen once
 
 `install` asks once and never asks again; the modes are not switchable on a running box, because HSTS
-makes the downgrade unrepairable from here (`D_cert`, `F_http_only`).
+makes the downgrade unrepairable from here (`D_cert`).
 
 | | `https` | `http` |
 |---|---|---|
@@ -98,10 +98,10 @@ script does on this box's one code path, minus the parts that exist for other di
 11. **Record the mode** — `config:set --global SHEPHERD_TLS_MODE=…`, written *last*, so it means "this
     mode's steps all succeeded".
 
-`shepherd2-uninstall` is the inverse and must be symmetric (`F_uninstall`): it reads
-`SHEPHERD_TLS_MODE` to know whether lego, the plugin and the renewal cron are there to remove, and
-must not trip over their absence in http mode. It does **not** remove `ruby` — an archive package other
-things may share.
+`shepherd2-uninstall` is the inverse, and staying symmetric with `install` is its whole contract: it
+reads `SHEPHERD_TLS_MODE` to know whether lego, the plugin and the renewal cron are there to remove,
+and must not trip over their absence in http mode. It does **not** remove `ruby` — an archive package
+other things may share.
 
 ## The CLI surface
 
@@ -115,15 +115,14 @@ already has** (`D_dokku_is_truth`).
 | `destroy-app ID` | its exact inverse |
 | `poll` | the `*/5` cron: `git:sync --build-if-changes` over every registered app, serially, under a non-blocking lock |
 | `rebuild ID` | the forced `git:sync --build` — the retry after a failed build, and the only way to rebuild an unchanged ref |
-| `wait-idle` | blocks until no build is running, so a reboot never lands mid-build (`F_safe_reboot`) |
+| `wait-idle` | blocks until no build is running, so a reboot never lands mid-build |
 | `clearcache` | the weekly prune |
 
 `create-app`'s flags: `--owner EMAIL`, `--mem`, `--cpu`, `--build-mem`, `--build-cpu`, `--buildpack`,
-`--build-dir`. There is no `--domain` (`F_custom_domains` is v2 and `domains:add` is a `dokku` command),
-no `--postgres` (`F_postgres` is v2), and no cache flag of any kind (`D_builder` — the cache is a volume
-Dokku names). The limit defaults are **`256m` runtime and `2g` build** (operator, 2026-09-10): one
-build runs at a time (`F_build_serial`), so the build figure is a box-wide peak rather than a
-per-app multiplier.
+`--build-dir`. There is no `--domain` (custom domains are v2, and `domains:add` is a `dokku` command),
+no `--postgres` (a managed database is v2), and no cache flag of any kind (`D_builder` — the cache is a
+volume Dokku names). The limit defaults are **`256m` runtime and `2g` build** (operator, 2026-09-10):
+one build runs at a time box-wide, so the build figure is a peak rather than a per-app multiplier.
 
 ## Flow — registering a project
 
@@ -167,7 +166,8 @@ to that ref, and every later sync can then omit it.
 
 1. **`flock -n` on `/run/lock/shepherd2-poll.lock`.** Non-blocking: a tick that lands on a running build
    exits quietly rather than queueing, which at 288 ticks a day is the difference between skipping and
-   accumulating (`F_build_serial`). The whole poll is inside one lock, so **builds are serial box-wide**.
+   accumulating. The whole poll is inside one lock, so **builds are serial box-wide** — which is the
+   other half of the cache story, since concurrent writers are what corrupt one.
 2. For each app in `apps:list` that has a `SHEPHERD_GIT_URL`, in turn:
    `dokku git:sync --build-if-changes <app> <url>` — no ref needed, Dokku remembers the deploy branch.
 3. **Dokku fetches. If the ref did not move, nothing happens** — so 288 ticks produce a build only on a
@@ -213,8 +213,8 @@ Unattended: Docker's `always` policy plus Dokku's `ps:restore` from the init ser
 back after a reboot, skipping any that was manually stopped.
 
 Deliberate: `shepherd2 wait-idle` first. It blocks on the same poll lock and on `builds:list` with no
-app, which lists every running build box-wide, and exits when both are clear. That is the whole of
-`F_safe_reboot`.
+app, which lists every running build box-wide, and exits when both are clear. That is the whole of the
+graceful-shutdown wait shepherd-java-client used to provide.
 
 ## Flow — destroying a project
 
@@ -222,8 +222,8 @@ app, which lists every running build box-wide, and exits when both are clear. Th
 shepherd2 destroy-app demo
 ```
 
-`apps:destroy --force demo`, then `network:destroy app-demo` — the second half matters, or
-`F_uninstall` leaks a network per project (`D_isolation`). Whether `apps:destroy` also removes the
+`apps:destroy --force demo`, then `network:destroy app-demo` — the second half matters, or the box
+leaks a Docker network per project destroyed (`D_isolation`). Whether `apps:destroy` also removes the
 `cache-demo` volume is `[unverified]`; if it does not, `destroy-app` removes it via
 `repo:purge-cache` before destroying the app. There is nothing else per project: no file, no
 certificate, no service, no firewall rule.
@@ -258,18 +258,22 @@ this repo plus Dokku's own state, or re-running `create-app` per project.
 
 Each of these is deferred with a decision behind it, not forgotten:
 
-- **No database.** `F_postgres` is v2; `dokku-postgres` is not installed. When it lands it must be
-  created with `--initial-network app-<id>`, which is creation-time only (`D_isolation`).
+- **No database.** `dokku-postgres` is not installed and `create-app` has no `--postgres`. The cheapest
+  deferral on this list — a database attaches to an app that already exists — except that when it lands
+  it must be created with `--initial-network app-<id>`, which is creation-time only (`D_isolation`).
 - **No private repos.** Every hosted repo must be publicly cloneable; the box holds no git credential
-  (`F_private_repos`, `Q_credentials`).
-- **No custom or apex domains**, because the wildcard covers neither (`D_cert`).
-- **No multi-user anything.** One keyholder, who can do everything to every app (`D_single_operator`).
-  No web UI (`Q_web_admin`), no login (`F_user_login`).
+  (`Q_credentials` in `ideas/private-repo-credentials.md`).
+- **No custom or apex domains**, because the wildcard covers neither (`D_cert`). Both are v2 rather than
+  dropped, and v2 is `dokku-letsencrypt` on the affected apps only.
+- **No multi-user anything.** One keyholder, who can do everything to every app (`D_single_operator`),
+  and no web UI (`Q_web_admin` in `ideas/web-admin-ui.md`). Password and Google-SSO login go with the
+  UI — a CLI has nothing to log in to — and the one v2 route that brings them back is option 3 there.
 - **No egress filtering, and the host is reachable from every container.** Unchanged from both
   predecessors; deferred to v2 in `ideas/harden-container-egress.md`, which also records the two things
   v1 must not do to keep that fix cheap.
-- **No memory quota.** `F_memory_quota` is v2 (`Q_quota`): the only enforcement point available is
-  `create-app`, and a later hand `resource:limit` bypasses it.
+- **No memory quota.** Nothing refuses a project whose runtime + build memory overflows the box
+  (`Q_quota` in `ideas/box-memory-quota.md`): the only enforcement point available is `create-app`, and
+  a later hand `resource:limit` bypasses it.
 - **No frontend build cache.** Every app here uses Vaadin's pre-compiled production bundle, so there is
   no npm or Vite run to cache; the candidates for the day one is needed are in
   `ideas/vaadin-build-under-herokuish.md`.

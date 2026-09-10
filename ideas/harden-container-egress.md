@@ -72,8 +72,8 @@ Rough shape, to be argued with rather than copied:
 - **Does it break `dokku-postgres` or any linked service?** Those are container-to-container, so they
   should not touch `DOCKER-USER` at all — but the `--link` residue in `postgres:link` is already
   `[unverified]` (`RESEARCH.md` punch-list item 9) and this is a second reason to pin it down. Both
-  halves are v2 now: `F_postgres` was deferred the same day, so there is no linked service in v1 to
-  break.
+  halves are v2 now: the managed database was deferred the same day, so there is no linked service in
+  v1 to break.
 - **Where does the rule live so a reinstall reproduces it?** `iptables-save`/`iptables-restore` state is
   not in this repo. Options: a `shepherd2-install` step writing an `iptables-persistent` rules file, or
   a tiny systemd unit. Whichever — *"anything the box must survive a reinstall of belongs in this repo"*

@@ -566,7 +566,7 @@ must be named `*-vhosts` for the scheduler integration to work. **[docs]**
   box possible.** An app with no cert gets an http-only vhost: the `hsts*` properties have no listener
   to attach to, and the http→https redirect Dokku emits for an SSL-enabled app has nothing to redirect
   to. Both are `[unverified]` readings of the template rather than documented statements — punch-list
-  item 18 — and they matter twice over: they are why `F_http_only` needs no Dokku flag, and why
+  item 18 — and they matter twice over: they are why the http-only install mode needs no Dokku flag, and why
   `D_cert` treats the mode as one-way. `hsts` is `true` by default with a **182-day** `max-age` and
   `includeSubdomains`, so a domain that has once served https over it cannot be walked back from the
   box.
@@ -864,7 +864,7 @@ container again, and the plugin's code contains no network-attachment logic — 
 connect`, no read of the app's network properties (`plugins/traefik-vhosts/internal-functions`,
 read 2026-09-10) **[src]**. So a per-app `initial-network` plausibly leaves Traefik unable to reach the
 app at all, and repairing that is `shepherd-traefik-connect-networks` returning, this time as ours.
-**Traefik would therefore cost either `F_network_isolation` or a reconciler script** — which is one of
+**Traefik would therefore cost either the per-project network isolation or a reconciler script** — which is one of
 the reasons `D_proxy` chose nginx, and why `D_isolation` names `D_proxy` as a dependency rather than a
 neighbour. **[src for the absence; unverified — whether Traefik + `initial-network` actually 502s needs
 a box]**
@@ -1241,7 +1241,7 @@ first throwaway VPS:
    app; a *renewal* (`lego renew --days 3650 --renew-hook …` to force one) re-applies to every app and
    reloads nginx without dropped connections; and an app created but never deployed serves the global
    cert on its first successful deploy. (The earlier question here — whether `dokku-letsencrypt` can
-   issue and share a wildcard — is moot for v1 and only matters if `F_custom_domains` returns.)
+   issue and share a wildcard — is moot for v1 and only matters if custom domains return.)
 5. ~~Are cache mounts, and a per-app `type=local` cache directory, preserved across `git:sync --build`
    runs, and for how long?~~ **Superseded by 13** — under `D_builder` the cache is the `cache-$APP`
    Docker volume, which has no TTL and no GC.
@@ -1254,7 +1254,7 @@ first throwaway VPS:
 8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
    it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
    Dockerfile-builder question, moot under `D_builder`.)
-9. **(v2 — `F_postgres` is deferred, so nothing here blocks v1.) Does `postgres:link` still work when
+9. **(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work when
    the app is on a per-app network?** The link is a legacy
    default-bridge `--link`; on a user-defined bridge the app resolves the service by DNS name
    (`dokku-postgres-<svc>`), so it plausibly works *because* both sit on the per-app network rather than
@@ -1299,9 +1299,9 @@ first throwaway VPS:
     `docker-options:add <app> build '-v …'` bind mount, which the herokuish path passes to
     `docker container create` unfiltered `[src]`.
 17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
-    `docker-options:add <app> build '--cpus 2'`. If it does, `F_build_cpu_limit` is not a gap after
-    all, and the feature survey's `🕳️` was a Dockerfile-builder artefact.
-18. **What exactly does an app look like on a box with no certificate?** The `F_http_only` install mode
+    `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
+    all, and the gap the feature survey recorded was a Dockerfile-builder artefact.
+18. **What exactly does an app look like on a box with no certificate?** The http-only install mode
     (`D_cert`) is defined by *absence* — no lego, no `global-cert` — so what needs confirming is that
     absence behaves: an app on a `domains:set-global`'d box serves plain http on port 80, emits **no**
     `Strict-Transport-Security` header, and does **not** redirect to https. Both halves are

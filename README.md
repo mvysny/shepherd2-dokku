@@ -21,7 +21,8 @@ How this is meant to work:
   within a few minutes of being pushed *somewhere else*, and nothing is rebuilt when nothing changed.
 * Dokku's proxy terminates https and routes by hostname; Docker keeps the containers up and brings them
   back after a reboot.
-* Administration is `ssh dokku@host …` — Dokku's own CLI. There is no web UI and no JVM anywhere.
+* Administration is Dokku's own CLI, from an SSH session on the box — see *Day-to-day operations*
+  below. There is no web UI and no JVM anywhere.
 
 The two predecessors of this project stay online and readable:
 [Vaadin Shepherd](https://github.com/mvysny/shepherd) (Kubernetes) and
@@ -44,7 +45,7 @@ fork out.
 | know what **Dokku** does — a command, a flag, a plugin, a gap | [RESEARCH.md](RESEARCH.md) |
 | know *why* it's built this way, and what was rejected | [DECISIONS.md](DECISIONS.md) (`D_` entries) |
 | see what's still being figured out | [`ideas/`](ideas/) — `ls` is the index |
-| know which features are being preserved, glued or dropped | [`ideas/features-to-preserve.md`](ideas/features-to-preserve.md) |
+| do something to a running project — logs, a restart, a config change, a forced rebuild | *Day-to-day operations*, below |
 | change things without breaking something remote | [CLAUDE.md](CLAUDE.md) |
 | know whether some *other* PaaS should have been picked | [`COMPARISON.md` in shepherd-traefik](https://github.com/mvysny/shepherd-traefik/blob/main/COMPARISON.md) |
 
@@ -231,3 +232,73 @@ with an `OutOfMemoryError` that shows up in the logs instead.
 **Listen on `$PORT`, not on a port of your choosing.** The buildpack sets it (5000), and Dokku wires
 the proxy to it automatically — so the `EXPOSE`/`ports:set` dance the predecessors needed does not
 arise. Details in [RESEARCH.md](RESEARCH.md#ports--the-expose-trap).
+
+## Day-to-day operations
+
+**Shepherd2 wraps nothing Dokku already has** ([`D_dokku_is_truth`](DECISIONS.md)), so almost everything
+below is plain `dokku`; the six `shepherd2` verbs exist only where Dokku has no single command. Run them
+logged in on the box as an admin user — `dokku …` and `shepherd2 …` then come from one shell. Dokku's
+sanctioned remote form, `ssh dokku@host <command>`, reaches only `dokku`, never `shepherd2`; in v1
+there is one keyholder, who can do everything to every app ([`D_single_operator`](DECISIONS.md)).
+
+Nothing here needs a project file, because there isn't one: every fact about an app is Dokku's, and
+`dokku <plugin>:report <app> --format json` is how you read it.
+
+| To… | Run |
+|---|---|
+| **register a project** | `shepherd2 create-app ID URL [REF] --owner you@example.com --buildpack heroku/java` |
+| **delete one**, network and all | `shepherd2 destroy-app ID` |
+| force a rebuild — retry a failed build, or rebuild an unchanged ref | `shepherd2 rebuild ID` |
+| make sure a reboot won't land mid-build | `shepherd2 wait-idle` |
+| prune images now rather than on Sunday | `shepherd2 clearcache` |
+| list projects · read everything about one | `dokku apps:list` · `dokku apps:report ID` |
+| **see the runtime log** | `dokku logs ID -t -p web` |
+| see why the last deploy failed | `dokku logs:failed ID` |
+| **list past builds** (newest first, 20 kept) | `dokku builds:list ID [--format json]` |
+| read one build's log | `dokku builds:output ID <build-id>` |
+| watch the build that is running | `dokku builds:output ID current` |
+| stop a build that is running | `dokku builds:cancel ID` |
+| **restart** · stop · start | `dokku ps:restart ID` · `dokku ps:stop ID` · `dokku ps:start ID` |
+| set a runtime env var · read them all | `dokku config:set ID KEY=VALUE` · `dokku config:show ID` |
+| change a **build-time** setting | `dokku config:set ID KEY=VALUE`, then `shepherd2 rebuild ID` |
+| change the runtime memory or CPU cap | `dokku resource:limit --memory 512m --cpu 1 ID` |
+| change the build memory cap | `dokku resource:limit --process-type build --memory 3g ID` |
+| see what limits an app has | `dokku resource:report ID` |
+| throw away one project's build cache | `dokku repo:purge-cache ID` |
+| add another hostname (http only — see below) | `dokku domains:add ID host.example.com` |
+| allow a bigger upload · a slower endpoint | `dokku nginx:set ID client-max-body-size 20m` · `dokku nginx:set ID proxy-read-timeout 300s` |
+| check the generated vhost | `dokku nginx:show-config ID`, `dokku nginx:validate-config` |
+| see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` |
+| see what the box has been doing | `dokku events -t` |
+
+Six things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+
+- **`dokku builds:output ID` with no build id does not mean "the last build".** It resolves one from the
+  app's deploy lock, so on an idle app it prints `App not currently deploying` rather than the failure
+  you came for. The last *failed* build's log is two steps:
+
+  ```bash
+  dokku builds:output ID "$(dokku builds:list ID --status failed --format json | jq -r '.[0].id')"
+  ```
+
+- **A build record carries no git SHA.** Which commit is live is
+  `dokku apps:report ID --app-deploy-source-metadata`, which reads `<url>#<sha>` after a *successful*
+  deploy — and doubles as a drift check, since a URL that isn't the app's `SHEPHERD_GIT_URL` is worth
+  noticing.
+- **`config:set` restarts the app.** Add `--no-restart` when you are about to `shepherd2 rebuild`
+  anyway. A buildpack app gets its config vars at build time as well as at run time, which is why a
+  build-time setting is a config var here and not a build arg.
+- **The poll won't pick up a config change on its own.** `git:sync --build-if-changes` builds only when
+  the ref moved, so after changing anything that affects the build you must `shepherd2 rebuild ID`.
+- **A second hostname gets no https in v1.** The one wildcard certificate covers `*.<domain>` and
+  nothing else; custom and apex domains are a v2 feature ([`D_cert`](DECISIONS.md)). Don't reach for
+  `dokku-letsencrypt` to patch one app.
+- **Never prune volumes.** Not `docker volume prune`, not `docker system prune --volumes`: the build
+  cache *is* the per-app `cache-ID` volume, nothing garbage-collects it, and at a five-minute poll a
+  build is always about to want it ([`D_builder`](DECISIONS.md)). `repo:purge-cache` is the per-app
+  lever, and `shepherd2 clearcache` is the safe blanket one.
+
+**Prefer a `dokku` command to a `docker` one** — `dokku ps:restart` over `docker restart`, the reports
+over `docker inspect`. Reaching around Dokku to the daemon is how its state drifts out from under it.
+`docker stats` is the exception that matters: Dokku does not do monitoring, by design, and apps are
+plain containers.

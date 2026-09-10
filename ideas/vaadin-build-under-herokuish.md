@@ -6,7 +6,7 @@ Opened 2026-09-10, as the one thing `D_builder` decided *around* rather than sol
 **This is now a v2 note.** On 2026-09-10 the operator answered the question the whole file hung on
 (punch-list 15, for this farm rather than in general): **every app on this box uses Vaadin's
 pre-compiled production bundle**, so there is no npm and no Vite run to cache. Candidate 1 below is the
-answer, and it costs the box nothing — the frontend half of `F_build_cache` is **deferred to v2**, and
+answer, and it costs the box nothing — the frontend half of the build cache is **deferred to v2**, and
 candidates 2 and 3 are what v2 reaches for on the first app that needs a real frontend build.
 
 **The state of play.** `D_builder` prohibits the Dockerfile builder and builds every app with
@@ -152,9 +152,10 @@ save *after* the Java buildpack, this comes back.
 
 ## Related, and easy to test at the same time
 
-- **`F_build_cpu_limit` may not be a gap.** Same unfiltered path as 3:
-  `dokku docker-options:add demo build '--cpus 2'`. If it works, the feature survey's `🕳️` was a
-  Dockerfile-builder artefact. Punch-list 17, and unlike 14/16 this one is a **v1** question.
+- **Capping build CPU may not be a gap.** Same unfiltered path as 3:
+  `dokku docker-options:add demo build '--cpus 2'`. If it works, the gap the old feature survey
+  recorded here was a Dockerfile-builder artefact. Punch-list 17, and unlike 14/16 this one is a **v1**
+  question.
 - **Name the buildpack, never trust detection.** herokuish detects `nodejs` before `java` **[src]**
   and Vaadin's own guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo is a Node
   app unless something says `heroku/java` — either a `.buildpacks` in the repo or

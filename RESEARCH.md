@@ -337,8 +337,8 @@ Docker networks.** `plugins/traefik-vhosts/internal-functions` templates a compo
 properties; there is no `docker network connect`, no `--network`, and no read of the app's
 `initial-network` / `attach-*` properties (read 2026-09-10). Since Traefik here *is* a container, an app
 isolated on its own network is plausibly unreachable by it. See *Nobody has to re-attach anything* under
-*Networking and app isolation* — this is the one place where `Q_proxy` and `Q_isolation` are not
-independent. **[src for the absence; unverified for the 502]**
+*Networking and app isolation*. This is one of the reasons `D_proxy` chose nginx, and it is why
+`D_isolation` depends on that choice. **[src for the absence; unverified for the 502]**
 
 DNS-01 mode is documented as being "for wildcard certificates or when port 443 is not accessible" —
 but nothing in the plugin declares a wildcard SAN, so per-app ACME *orders* remain unless `tls.domains`
@@ -496,7 +496,7 @@ Load-bearing for the isolation design, and it is Docker's behaviour rather than 
   can exist here**, and it is the rung that Swarm structurally denies the Dokploy sibling (there,
   intra-overlay traffic never reaches host netfilter). **[docs for the chains and the `enable_icc`
   driver option; the claim that an `icc=false` bridge plus links is a *workable* Shepherd2 topology is
-  `[unverified]` and is the open half of `ideas/app-network-isolation.md`]**
+  `[unverified]`; we chose per-app networks over it — see `D_isolation`]**
 - **We cannot ask Dokku for a non-default bridge, though.** `enable_icc=false`, `--internal` and an
   explicit `--subnet` are all `docker network create` driver options, and `network:create` passes none
   of them **[src]**. A hand-made `docker network create -o …` referenced by name may work — the
@@ -543,14 +543,15 @@ mechanisms, and they have different futures:
   there is no proxy membership to maintain, and `dokku-event-listener` rewrites the config when a
   container IP changes.
 
-**The second half is a property of `Q_proxy`, not of Dokku.** Under the Traefik plugin the proxy is a
+**The second half is a property of the proxy choice, not of Dokku.** Under the Traefik plugin the proxy is a
 container again, and the plugin's code contains no network-attachment logic — no `docker network
 connect`, no read of the app's network properties (`plugins/traefik-vhosts/internal-functions`,
 read 2026-09-10) **[src]**. So a per-app `initial-network` plausibly leaves Traefik unable to reach the
 app at all, and repairing that is `shepherd-traefik-connect-networks` returning, this time as ours.
-**Choosing Traefik may therefore cost `F_network_isolation`, or cost the reconciler script** — an
-interaction between two open questions that neither one's own notes would surface.
-**[src for the absence; unverified — whether Traefik + `initial-network` actually 502s needs a box]**
+**Traefik would therefore cost either `F_network_isolation` or a reconciler script** — which is one of
+the reasons `D_proxy` chose nginx, and why `D_isolation` names `D_proxy` as a dependency rather than a
+neighbour. **[src for the absence; unverified — whether Traefik + `initial-network` actually 502s needs
+a box]**
 
 ## Resource limits
 
@@ -917,15 +918,15 @@ first throwaway VPS:
    connectable, and whether the `--link` flag errors, warns, or is silently inert.
 10. **Can `initial-network` point at a network Dokku did not create** — one made with
     `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
-    deploy and route? This decides whether the shared-network-plus-firewall rung in
-    `ideas/app-network-isolation.md` is reachable through Dokku, or needs a network we own.
+    deploy and route? Only matters if `D_isolation` is ever revisited — it decides whether that entry's
+    rejected shared-network-plus-firewall rung is reachable through Dokku at all. Lowest priority here.
 11. **What can an app reach on the host?** From inside a container, on both a shared and a per-app
     network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header for another
     app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish :3000" axis.
 12. **Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
-    network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Only worth ten
-    minutes, but it is the difference between `Q_proxy` and `Q_isolation` being independent choices and
-    one foreclosing the other — and it is cheapest to answer on the same box as item 2.
+    network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Worth ten
+    minutes on the same box as item 2, because it is the evidence under `D_proxy`'s strongest reason and
+    the thing to re-check if anyone ever proposes switching proxies.
 
 ## Sources
 

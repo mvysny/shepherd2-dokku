@@ -104,6 +104,13 @@ knobs and prerequisites. Put new technical truth *there*, not here.
 - **Dokku stays upstream and unforked.** If something is missing, the answer is a wrapper script, a
   crontab line or a documented manual step — not a patched Dokku, not a fork, not a plugin we maintain
   unless there is a `D_` entry saying so.
+- **The proxy is Dokku's default host nginx, and it is not a container.** Don't install the Traefik
+  plugin or set `proxy:type` on an app; per-app ingress tuning is `nginx:set`. See `D_proxy` — and note
+  that `D_isolation` *depends* on this, so switching proxies is not a local change.
+- **Each project gets its own Docker network, and nothing has to re-attach anything.** `initial-network`
+  is persisted app state that Dokku re-applies at container creation, so there is no successor to
+  `shepherd-traefik-connect-networks` — if you find yourself writing one, something else is wrong. See
+  `D_isolation`.
 - **Prefer a Dokku command to a `docker` command.** `dokku ps:restart` over `docker restart`; the
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.

@@ -92,50 +92,25 @@ git SHA).
 | `F_run_limits` | Runtime memory + CPU quota per app | `docker run -m … --cpus …` by shepherd-java | `resource:limit --memory N --cpu N` | ✅ |
 | `F_keep_alive` | Restart on crash and after a host reboot | Docker restart policy | `ps:set --global restart-policy always` (default is `on-failure:10`) + `ps:restore` from the init service | ✅ |
 | `F_runtime_env` ⁿᵉʷ | Per-project runtime env vars | `runtime.envVars` | `config:set` | ✅ |
-| `F_network_isolation` | Apps can't reach another app's non-public ports (was: "…or the admin plane" — there is no longer an admin plane) | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opt in with `network:create` + `network:set <app> initial-network`, and `postgres:create -N` for the app's database | 🔧 |
+| `F_network_isolation` | Apps can't reach another app's non-public ports (was: "…or the admin plane" — there is no longer an admin plane) | one bridge network per app (`D_network_per_project`) | **Not the default** — every app shares Docker's default bridge. Opted into per project: `network:create` + `network:set <app> initial-network`, and `postgres:create --initial-network` for the app's database. **Decided — `D_isolation`** | 🔧 |
 | `F_postgres` | Optional per-project Postgres | a README TODO in *both* predecessors; shepherd-java has a fixed `postgres-service` with a hardcoded password | `dokku-postgres`: `postgres:create` + `postgres:link` → `DATABASE_URL`, plus S3 backup schedules | ✅ |
 | `F_restart` | Restart one app on demand | `shepherd-cli restart` | `ps:restart <app>` | ✅ |
 
-**`F_network_isolation` is the one to think about**, because Dokku changes its economics in both
-directions at once. The *reason* for it is unchanged and still good: these are other people's example
-projects and addons, mutually untrusted, all on one daemon. **Researched 2026-09-10 — the mechanics are
-now in `RESEARCH.md` (*Networking and app isolation*) and the remaining choice is in
-`ideas/app-network-isolation.md`.** What changes:
+**`F_network_isolation` — decided 2026-09-10, see `D_isolation`.** One Dokku-managed bridge network per
+project (`network:create` + `network:set <app> initial-network`, and `postgres:create --initial-network`
+for the project's database), which is `D_network_per_project` carried forward. The argument, the two
+rejected rungs and the consequences are in that entry; the mechanics are in `RESEARCH.md`
+(*Networking and app isolation*). The three things worth knowing from here:
 
-- **It got cheaper.** Dokku's nginx runs on the **host** and dials container IPs, so it never needs to
-  share an app's network. shepherd-traefik's whole network-sharing gotcha —
-  `shepherd-traefik-connect-networks`, "prefer `docker restart` over a compose recreate", the 502s —
-  simply does not exist. That was the entire cost of the isolation, and it's gone. (Under the *Traefik*
-  plugin it presumably comes back, since Traefik is a container again — see `Q_proxy`.)
-- **It got more manual.** It is now two or three commands per app instead of a property of the design,
-  and the admin plane it used to protect (`int_jenkins` holding the Docker socket and the credentials,
-  `int_shepherd`) **no longer exists** — so re-examine what we're isolating *from*. App-to-app is still
-  a real concern; app-to-admin-container mostly isn't, since Dokku is a host binary, not a container.
-  What replaces that axis is app-to-*host*, which no network membership fixes — every container keeps a
-  route to its bridge gateway. That is a `DOCKER-USER` rule, and it is V2.
-- **`F_postgres` does not conflict with it.** `postgres:create -N|--initial-network` (plus
-  `post-create-network` / `post-start-network`) puts the service container on the app's network, so a
-  project's app and its own database are isolated *together*. This was the expensive unknown on the
-  Dokploy side and it is simply a documented flag here.
-- **The address-pool ceiling is not a problem** — settled 2026-09-10. Per-app *bridge* networks draw on
-  Docker's local pool and wall at ~30 on a stock daemon, and enlarging `default-address-pools` in
-  `/etc/docker/daemon.json` lifts it exactly as shepherd-traefik already does. One stanza in
-  `shepherd2-install`, one `README.md` requirement, precedent in hand; the only thing to remember is
-  that it needs a daemon restart, so it is install-time work. Whether `bootstrap.sh` writes that file is
-  `[unverified]`.
-- **Dokku manages the membership for us, which is the real prize.** `initial-network` is a persisted app
-  property re-applied on every container creation — not a `docker network connect` that evaporates — and
-  `network:rebuild` re-asserts it on demand. Combined with a host-side nginx that needs no membership at
-  all, **`shepherd-traefik-connect-networks` has no successor**: the app side is Dokku's job and the
-  proxy side does not exist.
-- **But that second half is `Q_proxy`'s, not Dokku's.** The Traefik plugin has no network-attachment
-  logic at all `[src]`, so under Traefik an isolated app is plausibly unreachable and the repair script
-  comes back as ours. See `Q_proxy` below and punch-list item 12.
-- **A third rung exists that no Swarm-based sibling can have.** A Dokku app's bridge sits in the root
-  network namespace, so the host firewall *can* see app↔app traffic — "one shared network with
-  `enable_icc=false`" is a real option, at the price of a network Dokku will not create for us. With the
-  pool objection withdrawn it has lost its only advantage, so the note now leans per-app networks
-  outright rather than merely leaning.
+- **It got cheaper, and that is why it survived the move.** `shepherd-traefik-connect-networks` has no
+  successor: membership is managed state Dokku re-applies at every container creation, and a host-side
+  nginx needs no membership at all. That was the entire cost of the isolation before.
+- **It is contingent on `D_proxy`** — the Traefik plugin has no network-attachment logic, so under
+  Traefik this feature costs either itself or a reconciler cron.
+- **What it does *not* cover** is app-to-host and egress, since every container keeps a route to its
+  bridge gateway no matter which network it is on. That axis is deferred to
+  `ideas/harden-container-egress.md` and is where the old `int_jenkins` / `int_shepherd` admin-plane
+  concern now lands.
 
 ## C. Publish
 
@@ -159,15 +134,16 @@ now in `RESEARCH.md` (*Networking and app isolation*) and the remaining choice i
    daily, 30-day grace), DNS-01 providers are configurable globally. Costs: **issuance is per app**, so
    every new app does its own ACME order; and wildcard support is muddier than the README implies —
    issue #189 still carries *"wildcard support is not officially supported by this plugin"*.
-3. **Traefik plugin + `challenge-mode dns`** — keeps our existing Traefik knowledge, renewal is
-   Traefik's problem as it is today. Costs: **it ignores the `certs` plugin entirely**, so routes 1 and
-   2 are off the table under it; nothing declares a wildcard SAN, so per-app orders remain unless we add
-   `tls.domains` labels by hand; every `traefik:set` property is **global-only**, so `F_ingress_tuning`
-   has to go through `traefik:labels:add`.
+3. ~~**Traefik plugin + `challenge-mode dns`**~~ — **foreclosed 2026-09-10 by `D_proxy`.** It kept our
+   existing Traefik knowledge and made renewal Traefik's problem as it is today. What killed it: it
+   ignores the `certs` plugin entirely, so routes 1 and 2 are off the table under it; nothing declares a
+   wildcard SAN, so per-app orders remain unless we add `tls.domains` labels by hand; every
+   `traefik:set` property is **global-only**, so `F_ingress_tuning` degrades to hand-written labels; and
+   the plugin has no network-attachment logic, so it costs `F_network_isolation` too. Retained here only
+   because it is the reason `Q_cert` now has two routes rather than three.
 
 Rough read: **1 and 2 differ only in which cron we own** — our own renewal (1) versus per-app ACME
-orders (2) — and 1 is what we do today. 3 trades `F_ingress_tuning` and both cert plugins for
-familiarity. See `Q_proxy` and `Q_cert`.
+orders (2) — and 1 is what we do today. That is the whole of `Q_cert` now.
 
 ## D. Project lifecycle and configuration
 
@@ -279,12 +255,10 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 - **`Q_descriptor`** — declarative per-project file + a converger script, or an imperative runbook of
   `dokku` commands? Decides whether this repo is software or a guide, and whether `F_memory_quota`,
   `F_smart_update`, `F_project_owner` and per-project cache ids are cheap or impossible. *(Section D.)*
-- **`Q_proxy`** — nginx (Dokku's default) or the official Traefik plugin? nginx wins on per-app ingress
-  tuning, on being a host process (no network gotcha), and on keeping both cert plugins available.
-  Traefik wins on us already knowing it. They are not symmetric: choosing Traefik forecloses `Q_cert`
-  options 1 and 2 — **and now `F_network_isolation` too**, since the Traefik plugin has no
-  network-attachment logic, so an app on its own network is plausibly unreachable by it. That makes
-  nginx the answer unless the box says otherwise (punch-list item 12).
+- ~~**`Q_proxy`**~~ — **answered 2026-09-10: nginx, Dokku's default. See `D_proxy`.** It was not close in
+  the end: Traefik is global-only for ingress properties (costing `F_ingress_tuning`), ignores the
+  `certs` plugin (costing `Q_cert` routes 1 and 2), and has no network-attachment logic at all (costing
+  `F_network_isolation`, or a reconciler cron). Familiarity was its whole case.
 - **`Q_cert`** — one cert we renew ourselves (`dokku-global-cert`), or per-app ACME with renewal solved
   (`dokku-letsencrypt`)? The requirement as written says the former; the requirement may be worth
   relaxing now that a new app appearing is a `dokku` command rather than a JSON file edit.
@@ -293,12 +267,10 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   (the app's own cache mounts) to close or accept. `D_no_shared_cache` deserves re-reading before we
   pick. Cheap either way if `Q_descriptor` goes declarative — the cache flags are two more lines the
   converger emits.
-- **`Q_isolation`** — keep one Docker network per app, accept Dokku's shared default bridge, or take the
-  third rung (one shared network with inter-container communication filtered off)? **Researched but not
-  answered — `ideas/app-network-isolation.md` holds the three rungs, the lean towards per-app networks,
-  and what would change it.** Cheaper than before (no network-sharing gotcha, and a project's Postgres
-  rides along on `-N`) but more manual, the admin plane it protected is gone, and it is the one place
-  the bridge address pool costs us something the Dokploy sibling does not pay.
+- ~~**`Q_isolation`**~~ — **answered 2026-09-10: one bridge network per project. See `D_isolation`.** The
+  shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
+  remains open is only the axis that was never this question's — app-to-host and egress, now
+  `ideas/harden-container-egress.md`.
 - **`Q_multi_user`** — is Shepherd2 a single-operator box, or does it keep per-user project ownership?
   Really the question *who else gets an SSH key*, because in core Dokku a key is unrestricted: there is
   no ownership to scope it with. Answering "only me" deletes `F_multi_user` and `F_user_login` outright
@@ -326,8 +298,9 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
 
 ## A concrete sketch, to argue against
 
-Assuming the declarative answer to `Q_descriptor`, nginx for `Q_proxy` and `dokku-global-cert` for
-`Q_cert` — i.e. the most feature-preserving reading — the whole repo is roughly:
+Assuming the declarative answer to `Q_descriptor` and `dokku-global-cert` for `Q_cert` — i.e. the most
+feature-preserving reading — with nginx now settled by `D_proxy` and per-project networks by
+`D_isolation`, the whole repo is roughly:
 
 ```
 projects/PROJECTID.json      # per-project descriptor, in git, the source of truth

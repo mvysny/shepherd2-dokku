@@ -120,7 +120,8 @@ of why the verdict landed on Dokku:
 - **One thing gets strictly better:** Dokku's nginx runs on the *host*, not in a container, and reaches
   apps by container IP. That deletes shepherd-traefik's network-sharing gotcha — and with it
   `shepherd-traefik-connect-networks` — outright. Per-app network isolation becomes opt-in rather than
-  fragile.
+  fragile. Both halves of that are now decisions of their own: `D_proxy` (keep the host nginx) and
+  `D_isolation` (take the isolation it makes cheap).
 - **A second thing gets better:** `dokku-postgres` makes the per-project Postgres service that was a
   README TODO for two implementations a two-command feature.
 
@@ -206,3 +207,152 @@ backported to `RESEARCH.md` before the idea is deleted.
   version we no longer run is stale, not history. Re-check before relying on anything version-sensitive.
 - **`[unverified]` is load-bearing.** It is the marker that separates "Dokku's docs say" from "we saw it
   work", and *Questions only a box can answer* at the end of the file is the punch list built from it.
+
+## D_proxy — Dokku's default host nginx, not the Traefik plugin (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Nothing to implement — nginx is Dokku's default, so this decision is
+mostly a commitment *not* to do something. `D_isolation` depends on it.
+
+**Context.** Dokku ships five proxy implementations and nginx is the default; the official `traefik`
+plugin is one of the alternatives, switched on per app with `proxy:set <app> type traefik`. Traefik was
+the obvious candidate because shepherd-traefik *is* a Traefik box — the labels, the DNS-01 config and
+the failure modes are all knowledge this project already has, and "keep the part that works" was a real
+option rather than a straw man.
+
+**Decision.** Use **nginx**, Dokku's default. The Traefik plugin is not installed and no app sets
+`proxy:type`.
+
+**Why.** The two are not symmetric, and every asymmetry runs the same way:
+
+- **nginx is a host process; Traefik is a container.** nginx dials app containers at `IP:PORT` from
+  `.DOKKU_APP_<PROC>_LISTENERS`, so it needs no Docker network membership at all, and
+  `dokku-event-listener` rewrites its config when a container IP changes. This is the single biggest
+  architectural gain of the whole Dokku move (`D_dokku`), and it is what makes `D_isolation` free.
+- **The Traefik plugin has no network-attachment logic whatsoever** — no `docker network connect`, no
+  read of an app's `initial-network` / `attach-*` properties (`plugins/traefik-vhosts/internal-functions`
+  **[src]**). So a per-app isolated network is plausibly unreachable by it, and repairing that would be
+  `shepherd-traefik-connect-networks` reincarnated as ours. **Choosing Traefik would cost either
+  `F_network_isolation` or a reconciler cron** — exactly the script `D_dokku` celebrates deleting.
+- **Per-app ingress tuning is first-class on nginx and absent on Traefik.** `nginx:set <app>
+  client-max-body-size` / `proxy-read-timeout` are app-scoped properties, where **every `traefik:set`
+  property is global-only** — per-app tuning would have to be hand-written
+  `traefik:labels:add` directives. `F_ingress_tuning` is a feature both predecessors ship.
+- **Traefik forecloses two of the three TLS routes.** "Managed certificates provided by the `certs`
+  plugin are ignored" under Traefik, which rules out `dokku-global-cert` and the `certs` plugin
+  outright. See *Consequences* for what that does to `Q_cert`.
+- Two smaller Traefik restrictions: only `web` containers get labels injected, and only `http:80` /
+  `https:443` port mappings are supported.
+
+All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
+
+**Alternatives rejected.**
+
+- *The official Traefik plugin.* Rejected on the four asymmetries above. What it genuinely buys, and
+  what we are giving up: ACME renewal becomes Traefik's problem rather than a cron of ours (as it is
+  today), which is `Q_cert`'s route 3 — at the price of per-app ACME orders and no declared wildcard
+  SAN. Familiarity was the strongest argument for it and is not enough: the knowledge that transfers is
+  knowledge of a component we were trying to stop maintaining.
+- *Keep both — nginx globally, Traefik for one app that needs it.* Dokku allows this (`proxy:type` is
+  per app). Rejected because the two proxies have disjoint TLS stories, so a mixed box would need both
+  cert mechanisms alive at once; and because a per-app exception is exactly the kind of state that is
+  invisible until it breaks.
+- *A proxy of our own in front of Dokku's.* Not seriously considered — it re-creates the component
+  `D_dokku` deleted.
+
+**Consequences.**
+
+- **`Q_cert` narrows to two routes, not three.** `dokku-global-cert` (one wildcard cert we renew) and
+  `dokku-letsencrypt` (per-app ACME, renewal solved upstream) both stay available; the Traefik DNS-01
+  route is gone. That is the intended direction — the requirement as written asks for one wildcard cert
+  — but it is now foreclosed rather than merely unchosen.
+- **`F_ingress_tuning` is preserved** as `nginx:set <app> client-max-body-size` / `proxy-read-timeout`.
+- **nginx is an apt package on the host**, so it is part of what a box reinstall must reproduce, and
+  Dokku's own bootstrap installs it. Nothing for us to configure beyond `nginx:set`.
+- **The `proxy` plugin's other implementations stay unused but present.** If a future need forces
+  Traefik, this entry is the thing to re-read — and `D_isolation` has to be re-read with it, because it
+  is the dependent decision.
+
+## D_isolation — One Dokku-managed bridge network per project (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Not yet implemented; `initial-network` isolating apps while leaving
+nginx routing intact is `[unverified]` until the first box (punch-list items 2, 9, 12).
+
+**Context.** The box hosts other people's example projects and addons — mutually untrusted code, on one
+Docker daemon. Both predecessors gave each project its own network (`D_network_per_project` in
+shepherd-traefik), and in shepherd-traefik that isolation was the *most expensive* thing on the box: a
+container proxy had to join every app network, lost those attachments whenever it was re-created, and
+needed `shepherd-traefik-connect-networks` to repair the 502s. Dokku's default is the opposite of
+isolated — "apps will default to being associated with the default `bridge` network", where any app can
+reach any other app's unpublished ports by container IP.
+
+**Decision.** One bridge network per project, created and attached through Dokku:
+
+```bash
+dokku network:create app-<id>
+dokku network:set    <app> initial-network app-<id>
+dokku postgres:create <svc> --initial-network app-<id>   # if the project wants a database
+```
+
+The requirement this delivers, stated honestly: **no app can reach another app's non-public ports.**
+(The old wording added "or the admin plane"; there is no longer an admin plane — see *Consequences*.)
+
+**Why this shape.** Dokku's `network` plugin contributes *membership and nothing else* —
+`network:create` is a wrapper over `docker network create --attachable --label …` and accepts no driver
+options, and there are no ACLs, no per-port policy and no egress rules anywhere in Dokku. So the
+boundary is whatever a Docker bridge gives, and the design question is only *which* networks exist. Two
+properties of Dokku's version make the predecessor's price disappear:
+
+- **Membership is managed state, not a live attachment.** `initial-network` is a persisted app property
+  re-applied every time Dokku creates a container, so it survives deploys, `ps:restart`, rebuilds and
+  reboots; `network:rebuild` / `network:rebuildall` re-assert on demand. A converger re-asserting it is
+  belt-and-braces rather than the mechanism.
+- **The proxy needs no membership at all** — `D_proxy`. Between them, **`shepherd-traefik-connect-networks`
+  has no successor in this repo.** That is the whole reason this decision is cheap here and was not
+  cheap before.
+
+**Alternatives rejected.**
+
+- *Accept Dokku's shared default bridge.* Free, and one fewer moving part. Rejected: it is the only
+  option that gives up a feature both predecessors shipped, and the mitigation people reach for — "the
+  default bridge has no DNS, so apps can't find each other" — is not a boundary. A container IP is
+  enough, and they are guessable.
+- *One shared network with inter-container communication filtered off* (`enable_icc=false`, app↔app
+  dropped in the host's `FORWARD` chain). Genuinely available here and worth recording as a road not
+  taken, because it is **structurally impossible on the Docker Swarm sibling** — a Dokku app's bridge
+  lives in the root network namespace, so host netfilter sees app-to-app traffic, where intra-overlay
+  traffic never does. Rejected on three counts: `network:create` passes no driver options, so the network
+  would be a hand-made `docker network create -o …` living outside Dokku's model and outside a
+  reinstall; topology beats filtering for untrusted code, since under per-app networks app A cannot
+  *address* app B and there is nothing left to filter; and an iptables rule can be silently absent with
+  nothing in Dokku noticing. Its one advantage was avoiding the address-pool ceiling, which turned out
+  to be an install-time line rather than a cost.
+- *The sibling's n+1 shape* — per-app networks **plus** a separate network for the admin plane. Not
+  needed: Dokku's control plane is a host binary and a git remote, with no dashboard container, no
+  control-plane database and no published admin port to move off the app wire.
+- *`attach-post-create` / `attach-post-deploy` instead of `initial-network`.* A category error worth
+  naming, because the plugin's tutorial recommends `attach-post-create` and it looks interchangeable:
+  the `attach-*` properties **add** networks, so an app with only those set is still on the shared
+  bridge. They are for reachability; only `initial-network` isolates.
+
+**Consequences.**
+
+- **`/etc/docker/daemon.json` needs enlarged `default-address-pools`, at install time.** A stock daemon
+  walls at ~30 bridge networks, i.e. ~30 apps. This is precedent, not a new cost — shepherd-traefik
+  already does it — but it needs a daemon restart, so it belongs in the installer and cannot be
+  retrofitted cheaply. Whether Dokku's `bootstrap.sh` writes that file is `[unverified]`.
+- **A project's database must be created with `--initial-network`.** It is a creation-time flag; a
+  service created without it sits on the shared bridge, where the app can no longer reach it under this
+  decision. `postgres:set <svc> post-create-network` is the repair. `postgres:link` additionally adds a
+  legacy `--link`, whose behaviour on a user-defined bridge is `[unverified]` (punch-list item 9).
+- **Project teardown grows a step:** `network:destroy app-<id>` after `apps:destroy`, or `F_uninstall`
+  leaks a network per project.
+- **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
+  a reconciler cron. Do not switch proxies without re-reading both entries.
+- **Two things isolation does not buy.** The L7 front door stays open — any app can reach nginx by the
+  bridge gateway IP and ask for another app's vhost with a `Host:` header, which is harmless because
+  that surface is public anyway. And **the host stays reachable**: every container keeps a route to its
+  bridge gateway regardless of membership, so sshd and anything else bound on the box are reachable from
+  every app. That axis needs a `DOCKER-USER` rule and is deferred — see
+  `ideas/harden-container-egress.md`. It is also where the sibling's "app → admin plane" concern lands
+  here.
+- **Egress is unfiltered**, same note.

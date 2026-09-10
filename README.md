@@ -62,6 +62,17 @@ Not written yet. Dokku's own install is two commands and is documented in
 [RESEARCH.md](RESEARCH.md#versions-platform-install); everything Shepherd2 adds on top of it is what
 this section will become.
 
+Two steps are already settled and are here so they are not forgotten, because both are awkward to
+retrofit:
+
+* **Enlarge Docker's address pools before deploying anything.** Each project gets its own Docker network
+  (`D_isolation` in [DECISIONS.md](DECISIONS.md)), and a stock daemon runs out of them at **~30 apps**.
+  Add a wider `default-address-pools` to `/etc/docker/daemon.json` and restart the daemon — the same
+  edit shepherd-traefik needs. It cannot be applied later without restarting Docker, so it belongs in
+  the install rather than in a fix.
+* **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`); do not install the Traefik
+  plugin. Per-app tuning is `dokku nginx:set PROJECTID …`.
+
 ## Adding your project
 
 Not written yet. The contract Shepherd2 will expect from a project, unchanged from both predecessors:

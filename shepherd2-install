@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+#
+# shepherd2-install — turn a vanilla Ubuntu 24.04 host into a Shepherd2 box.
+#
+# Installs Docker, Dokku (upstream's deb, pinned), the wildcard-certificate machinery, the `shepherd2`
+# CLI and the cron lines that drive it. Run once, as root, on a machine with nothing else on it. It is
+# re-runnable: every step is guarded, so a failed install is fixed by editing this script and running it
+# again rather than by hand-repairing the box.
+#
+# USAGE
+#   shepherd2-install --domain DOMAIN --mode https --email ADDRESS --ssh-key FILE [options]
+#   shepherd2-install --domain DOMAIN --mode http  --ssh-key FILE [options]
+#
+# ARGUMENTS
+#   --domain DOMAIN    The wildcard domain apps are served under; app NAME becomes NAME.DOMAIN.
+#                      Becomes Dokku's global domain and, in https mode, the certificate's subject.
+#   --mode https|http  The install mode, chosen once and never switchable on a running box (D_cert).
+#                      https: lego + DNS credentials + dokku-global-cert + the renewal cron.
+#                      http:  none of that. Apps are served over port 80. For a throwaway test VM.
+#   --email ADDRESS    ACME account address. Required in https mode, unused in http mode.
+#   --ssh-key FILE     Public key authorised as the `admin` Dokku user — the key that may `git push`
+#                      and run `dokku` over ssh. An OpenSSH public key file (`id_ed25519.pub`).
+#   --acme-server URL  ACME directory to issue against. Default: lego's, i.e. Let's Encrypt production.
+#                      Set it to https://acme-staging-v02.api.letsencrypt.org/directory while testing:
+#                      production caps duplicate certificates at 5/week and the renewal drills burn
+#                      through that fast. The value is recorded in the renewal cron line too, so
+#                      issuance and renewal always talk to the same ACME server.
+#   --yes              Do not ask for confirmation before the step that empties nginx's sites-enabled.
+#   -h, --help         This header, in short form.
+#
+# ENVIRONMENT (https mode only; never pass secrets as arguments — argv is world-readable in /proc)
+#   GODADDY_API_KEY, GODADDY_API_SECRET
+#                      The DNS API credentials lego authenticates with. Read from the environment if
+#                      set, prompted for otherwise, and written to /root/.shepherd2-dns-credentials
+#                      with mode 0600. That token can rewrite the whole zone, which makes it a bigger
+#                      secret than the certificate it produces: it must stay unreadable to the `dokku`
+#                      user (D_cert).
+#
+# PREREQUISITES
+#   - Ubuntu 24.04 LTS. Not 22.04 (supported by Dokku, not tested by us), not 26.04 (D_host_os: Dokku's
+#     installer refuses it and packagecloud builds no dokku deb for `resolute`).
+#   - root.
+#   - `hostname -f` must resolve — Dokku's own install requires it, and so do we.
+#   - >= 1 GB RAM (Dokku's floor); realistically more, since a build peaks at the build memory limit.
+#   - Outbound network to the Ubuntu archive, packagecloud, and — in https mode — the ACME server and
+#     the GoDaddy API. No inbound connectivity is needed at install time: the wildcard is issued over
+#     DNS-01, which never contacts this host.
+#   - In https mode, a DNS zone for DOMAIN with `@` and `*` records pointing here, plus API access to it.
+#
+# WHAT IT DOES NOT DO
+#   Nothing per project — no app is created and no certificate is touched at app creation time; the
+#   global-cert plugin covers new apps by itself. See `shepherd2 create-app`.
+#
+# THIS SCRIPT MIRRORS upstream's bootstrap.sh, which we deliberately never run (D_install_apt). Read at
+# v0.38.27, its steps on our one code path are: os-release gate; hostname -f; gpg-agent +
+# software-properties-common + universe; the sites-enabled warning; Docker via get.docker.com if absent;
+# apt codename resolution; packagecloud key + sources line; five debconf answers; apt-get install dokku=
+# + plugin:install-dependencies --core; 99-dokku motd. When the Dokku pin below is bumped, re-read
+# bootstrap.sh at that tag and diff it against the steps here — that is the maintenance cost
+# D_install_apt buys, and this list is what makes the diff cheap.
+#
+# SEE ALSO
+#   SOLUTION.md  — the install in order, and what the box holds afterwards
+#   D_install_apt (why apt and not bootstrap.sh), D_host_os (why 24.04), D_cert (the two modes),
+#   D_isolation (why the address pools are enlarged here), D_builder (why herokuish is forced),
+#   D_ruby (why this is Bash and the CLI is not).
+#   shepherd2-uninstall — the inverse; it reads SHEPHERD_TLS_MODE to know what this left behind.
+
+set -euo pipefail
+
+# --- Pins and constants ------------------------------------------------------------------------
+
+# The Dokku version, in one place. Never below 0.38.2, which carries the app-name-injection,
+# archive-symlink, .netrc-permission and openresty-include security fixes.
+readonly DOKKU_VERSION='0.38.27'
+
+# packagecloud's signing key, scoped with signed-by= to Dokku's repository alone rather than dropped
+# into /etc/apt/trusted.gpg.d as bootstrap.sh does (where it would be trusted for every repository on
+# the box). The fingerprint is checked before the key is installed; it is packagecloud's
+# dokku/dokku repository key <support@packagecloud.io>, created 2018-10-08, read 2026-09-10.
+readonly DOKKU_KEY_URL='https://packagecloud.io/dokku/dokku/gpgkey'
+readonly DOKKU_KEYRING='/usr/share/keyrings/dokku-archive-keyring.asc'
+readonly DOKKU_KEY_FINGERPRINT='0027A6FCE4DEB304104D2D13F1FF6851288B3315'
+readonly DOKKU_APT_LIST='/etc/apt/sources.list.d/dokku.list'
+
+# Enlarged Docker address pools. A stock daemon allocates bridge networks out of 172.17.0.0/12 at size
+# 16 plus 192.168.0.0/16 at size 20 — about 31 networks, minus docker0 — and Shepherd2 spends one per
+# app (D_isolation), so a stock box walls at ~30 apps. Re-cutting the same 172.16.0.0/12 space at /24
+# gives 4096 networks of 254 addresses each: same address range as stock Docker, so no new collision
+# surface, just smaller subnets. If 172.16.0.0/12 collides with a VPN or the hoster's private network,
+# this is the one line to change — before the first app exists, since it needs a daemon restart.
+readonly DOCKER_POOL_BASE='172.16.0.0/12'
+readonly DOCKER_POOL_SIZE='24'
+readonly DOCKER_DAEMON_JSON='/etc/docker/daemon.json'
+
+# The one third-party Dokku plugin this box depends on (D_cert). Its README still names the old
+# josegonzalez/ URL; the repository moved to dokku-community and that is what we install from.
+readonly GLOBAL_CERT_PLUGIN_URL='https://github.com/dokku-community/dokku-global-cert.git'
+
+readonly LEGO_PATH='/root/.lego'
+readonly DNS_CREDENTIALS_FILE='/root/.shepherd2-dns-credentials'
+readonly CRON_FILE='/etc/cron.d/shepherd2'
+readonly CLI_PATH='/usr/local/bin/shepherd2'
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+
+# --- Options -----------------------------------------------------------------------------------
+
+DOMAIN=''
+MODE=''
+EMAIL=''
+SSH_KEY_FILE=''
+ACME_SERVER=''
+ASSUME_YES='false'
+
+# --- Output ------------------------------------------------------------------------------------
+
+step()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+log()   { printf '    %s\n' "$*"; }
+skip()  { printf '    (already done) %s\n' "$*"; }
+warn()  { printf '\033[33mwarning: %s\033[0m\n' "$*" >&2; }
+die()   { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
+
+usage() {
+  sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+# --- Argument parsing --------------------------------------------------------------------------
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --domain)      DOMAIN="${2:-}";       shift 2 ;;
+      --mode)        MODE="${2:-}";         shift 2 ;;
+      --email)       EMAIL="${2:-}";        shift 2 ;;
+      --ssh-key)     SSH_KEY_FILE="${2:-}"; shift 2 ;;
+      --acme-server) ACME_SERVER="${2:-}";  shift 2 ;;
+      --yes|-y)      ASSUME_YES='true';     shift ;;
+      -h|--help)     usage 0 ;;
+      *)             die "unknown argument: $1 (try --help)" ;;
+    esac
+  done
+}
+
+# Ask for anything that was not passed, when there is somebody to ask. Refuse rather than guess when
+# there is not — a half-configured box is worse than no box.
+prompt_for_missing() {
+  local interactive='false'
+  [[ -t 0 ]] && interactive='true'
+
+  if [[ -z "$MODE" ]]; then
+    [[ "$interactive" == 'true' ]] || die '--mode is required (https or http)'
+    read -rp 'TLS mode — one wildcard certificate (https) or none (http)? [https/http] ' MODE
+  fi
+  [[ "$MODE" == 'https' || "$MODE" == 'http' ]] || die "--mode must be https or http, not '$MODE'"
+
+  if [[ -z "$DOMAIN" ]]; then
+    [[ "$interactive" == 'true' ]] || die '--domain is required'
+    read -rp 'Domain apps are served under (apps become NAME.DOMAIN): ' DOMAIN
+  fi
+
+  if [[ -z "$SSH_KEY_FILE" ]]; then
+    [[ "$interactive" == 'true' ]] || die '--ssh-key is required'
+    read -rp 'Public key file to authorise as the admin key: ' SSH_KEY_FILE
+  fi
+
+  if [[ "$MODE" == 'https' ]]; then
+    if [[ -z "$EMAIL" ]]; then
+      [[ "$interactive" == 'true' ]] || die '--email is required in https mode (the ACME account address)'
+      read -rp 'ACME account email: ' EMAIL
+    fi
+    if [[ -z "${GODADDY_API_KEY:-}" ]]; then
+      [[ "$interactive" == 'true' ]] || die 'GODADDY_API_KEY is required in https mode'
+      read -rsp 'GoDaddy API key: ' GODADDY_API_KEY; echo
+    fi
+    if [[ -z "${GODADDY_API_SECRET:-}" ]]; then
+      [[ "$interactive" == 'true' ]] || die 'GODADDY_API_SECRET is required in https mode'
+      read -rsp 'GoDaddy API secret: ' GODADDY_API_SECRET; echo
+    fi
+  fi
+}
+
+# --- Step 1: preflight -------------------------------------------------------------------------
+
+preflight() {
+  step 'Preflight'
+
+  [[ "${EUID}" -eq 0 ]] || die 'must run as root'
+
+  # OS gate. 26.04 gets its own message because it is the mistake somebody will actually make.
+  local id='' version_id=''
+  [[ -r /etc/os-release ]] || die 'cannot read /etc/os-release'
+  # shellcheck disable=SC1091
+  id="$(. /etc/os-release && printf '%s' "${ID:-}")"
+  # shellcheck disable=SC1091
+  version_id="$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")"
+  if [[ "$id" != 'ubuntu' || "$version_id" != '24.04' ]]; then
+    if [[ "$id" == 'ubuntu' && "$version_id" == '26.04' ]]; then
+      die 'Ubuntu 26.04 is not usable yet: Dokku'"'"'s installer refuses it and packagecloud builds no
+       dokku package for the resolute dist. See D_host_os in DECISIONS.md for the two upstream
+       things that must change first. Install on 24.04.'
+    fi
+    die "this box is $id $version_id; Shepherd2 installs on Ubuntu 24.04 only (D_host_os)"
+  fi
+  log "Ubuntu $version_id"
+
+  hostname -f >/dev/null 2>&1 || die "'hostname -f' does not resolve; Dokku's install requires it"
+  log "hostname: $(hostname -f)"
+
+  local mem_kb
+  mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  if [[ "$mem_kb" -lt 1000000 ]]; then
+    warn "$((mem_kb / 1024)) MB of RAM; Dokku's documented floor is 1 GB and a build wants more"
+  fi
+
+  [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$ ]] \
+    || die "'$DOMAIN' does not look like a domain name"
+
+  [[ -r "$SSH_KEY_FILE" ]] || die "cannot read ssh key file: $SSH_KEY_FILE"
+  grep -qE '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-)' "$SSH_KEY_FILE" \
+    || die "$SSH_KEY_FILE does not look like an OpenSSH public key (did you point at the private one?)"
+
+  log "mode: $MODE"
+  log "domain: $DOMAIN — apps will be served at NAME.$DOMAIN"
+  if [[ "$MODE" == 'https' ]]; then
+    log "certificate: *.$DOMAIN, issued over DNS-01 by lego"
+    [[ -n "$ACME_SERVER" ]] && log "acme server: $ACME_SERVER"
+  else
+    log 'no certificate will be issued; apps are served over plain http on port 80'
+    log "the client resolves NAME.$DOMAIN — an /etc/hosts entry is enough"
+  fi
+
+  # bootstrap.sh prints this and sleeps ten seconds. We ask instead, because there is somebody there.
+  if ! dokku_installed; then
+    warn "installing Dokku empties /etc/nginx/sites-enabled — any vhost already on this box stops being served"
+    if [[ "$ASSUME_YES" != 'true' ]]; then
+      local answer=''
+      read -rp 'Continue? [y/N] ' answer
+      [[ "$answer" == 'y' || "$answer" == 'Y' ]] || die 'aborted'
+    fi
+  fi
+}
+
+dokku_installed() { command -v dokku >/dev/null 2>&1; }
+
+# --- Step 2: Docker ----------------------------------------------------------------------------
+
+install_docker() {
+  step 'Docker, from Ubuntu'"'"'s archive'
+
+  # All three by name, and before Dokku. By name because Dokku's compose dependency is
+  # `docker-compose-plugin | moby-compose | docker-compose`, and `docker-compose` is a real package in
+  # Ubuntu — the obsolete Python v1 — so apt resolving that alternation unaided installs *that* rather
+  # than docker-compose-v2, which merely Provides the name (D_install_apt).
+  apt_install docker.io docker-buildx docker-compose-v2
+  systemctl enable --now docker >/dev/null
+  log "docker: $(docker --version)"
+}
+
+# --- Step 3: prerequisites ---------------------------------------------------------------------
+
+install_prerequisites() {
+  step 'Prerequisites'
+
+  apt_install gpg-agent software-properties-common ca-certificates curl
+  # Needed twice over: Dokku's own install does it, and lego lives in universe (D_cert).
+  add-apt-repository -y universe >/dev/null
+}
+
+# --- Step 4: Dokku -----------------------------------------------------------------------------
+
+install_dokku() {
+  step "Dokku $DOKKU_VERSION"
+
+  install_dokku_apt_source
+  preseed_dokku_debconf
+
+  if dokku_installed && [[ "$(dokku version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)" == "$DOKKU_VERSION" ]]; then
+    skip "dokku $DOKKU_VERSION is installed"
+  else
+    apt-mark unhold dokku >/dev/null 2>&1 || true
+    # WITH recommends, deliberately: herokuish is a Recommends of the deb, not a Depends, and it is the
+    # builder this whole box is built around (D_builder). --no-install-recommends produces an
+    # installation that looks fine until the first build.
+    apt_install "dokku=$DOKKU_VERSION"
+    dokku plugin:install-dependencies --core
+  fi
+
+  # No unattended upgrade moves Dokku. Upgrading is a deliberate runbook sequence in README.md.
+  apt-mark hold dokku >/dev/null
+  log "dokku: $(dokku version | head -n1)"
+}
+
+install_dokku_apt_source() {
+  if [[ -f "$DOKKU_KEYRING" ]] && key_fingerprint_matches "$DOKKU_KEYRING"; then
+    skip 'packagecloud signing key'
+  else
+    local tmp_key
+    tmp_key="$(mktemp)"
+    curl -fsSL "$DOKKU_KEY_URL" -o "$tmp_key" || die "cannot fetch $DOKKU_KEY_URL"
+    key_fingerprint_matches "$tmp_key" \
+      || die "packagecloud key fingerprint does not match $DOKKU_KEY_FINGERPRINT — refusing to install it"
+    install -m 0644 "$tmp_key" "$DOKKU_KEYRING"
+    rm -f "$tmp_key"
+    log "signing key verified and installed: $DOKKU_KEYRING"
+  fi
+
+  # noble, explicitly. bootstrap.sh falls back to `noble` for any unrecognised Ubuntu codename, which is
+  # how it would silently install the noble deb on a distro nobody tested (D_host_os); we install on
+  # 24.04 and say so.
+  local line="deb [signed-by=$DOKKU_KEYRING] https://packagecloud.io/dokku/dokku/ubuntu/ noble main"
+  if [[ -f "$DOKKU_APT_LIST" ]] && [[ "$(cat "$DOKKU_APT_LIST")" == "$line" ]]; then
+    skip 'dokku apt source'
+  else
+    printf '%s\n' "$line" > "$DOKKU_APT_LIST"
+    log "apt source: $DOKKU_APT_LIST"
+    APT_UPDATED='false'
+  fi
+}
+
+key_fingerprint_matches() {
+  local file="$1" fingerprints=''
+  fingerprints="$(gpg --show-keys --with-colons --with-fingerprint "$file" 2>/dev/null | awk -F: '/^fpr:/ {print $10}')"
+  grep -qx "$DOKKU_KEY_FINGERPRINT" <<<"$fingerprints"
+}
+
+# The five answers bootstrap.sh only forwards when the caller sets five environment variables. We know
+# ours, so they are preseeded explicitly and the install stays non-interactive *and* intentional.
+preseed_dokku_debconf() {
+  debconf-set-selections <<EOF
+dokku dokku/hostname string $DOMAIN
+dokku dokku/vhost_enable boolean true
+dokku dokku/nginx_enable boolean true
+dokku dokku/skip_key_file boolean true
+dokku dokku/key_file string /root/.ssh/id_rsa.pub
+EOF
+  # skip_key_file is true because the admin key is added below with `ssh-keys:add admin`, which names
+  # the key and can be re-run; the debconf path imports an unnamed key at package-configure time only.
+}
+
+# --- Step 5: Docker address pools ---------------------------------------------------------------
+
+configure_address_pools() {
+  step 'Docker address pools'
+
+  local desired_json
+  printf -v desired_json '{\n  "default-address-pools": [\n    { "base": "%s", "size": %s }\n  ]\n}' \
+    "$DOCKER_POOL_BASE" "$DOCKER_POOL_SIZE"
+
+  if [[ ! -e "$DOCKER_DAEMON_JSON" ]]; then
+    # The expected case: neither Ubuntu's docker.io package nor Dokku writes this file.
+    # [unverified — punch-list 3] is exactly whether that holds on a real box.
+    mkdir -p "$(dirname "$DOCKER_DAEMON_JSON")"
+    printf '%s\n' "$desired_json" > "$DOCKER_DAEMON_JSON"
+    log "wrote $DOCKER_DAEMON_JSON: $DOCKER_POOL_BASE at size $DOCKER_POOL_SIZE"
+  elif grep -q 'default-address-pools' "$DOCKER_DAEMON_JSON"; then
+    skip "$DOCKER_DAEMON_JSON already sets default-address-pools"
+    return 0
+  else
+    # Something else got there first. Merge if we can do it safely, refuse if we cannot — silently
+    # overwriting another component's daemon configuration is how a box becomes unexplainable.
+    command -v python3 >/dev/null 2>&1 || die "$DOCKER_DAEMON_JSON exists and sets no default-address-pools,
+       and python3 is not available to merge into it. Add this by hand and re-run:
+         \"default-address-pools\": [{ \"base\": \"$DOCKER_POOL_BASE\", \"size\": $DOCKER_POOL_SIZE }]"
+    python3 - "$DOCKER_DAEMON_JSON" "$DOCKER_POOL_BASE" "$DOCKER_POOL_SIZE" <<'PY'
+import json, sys
+path, base, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(path) as fh:
+    config = json.load(fh)
+config["default-address-pools"] = [{"base": base, "size": size}]
+with open(path, "w") as fh:
+    json.dump(config, fh, indent=2)
+    fh.write("\n")
+PY
+    log "merged default-address-pools into the existing $DOCKER_DAEMON_JSON"
+  fi
+
+  # The pools are read at daemon start, so this restart is the whole reason the step lives in the
+  # install and not in a later fix. Safe here: no app exists yet.
+  systemctl restart docker
+  log 'docker restarted'
+}
+
+# --- Step 6: admin key and domain ---------------------------------------------------------------
+
+configure_admin_and_domain() {
+  step 'Admin key and global domain'
+
+  if dokku ssh-keys:list 2>/dev/null | grep -qw 'admin'; then
+    skip 'admin ssh key'
+  else
+    dokku ssh-keys:add admin < "$SSH_KEY_FILE"
+    log "authorised $SSH_KEY_FILE as admin"
+  fi
+
+  dokku domains:set-global "$DOMAIN"
+  log "global domain: $DOMAIN"
+}
+
+# --- Step 7: global Dokku properties ------------------------------------------------------------
+
+configure_globals() {
+  step 'Global Dokku properties'
+
+  # Short-circuits builder detection, so a committed Dockerfile is never read — which is what makes
+  # per-project cache isolation enforceable (D_builder). This is load-bearing, not a preference.
+  dokku builder:set --global selected herokuish
+  log 'builder: herokuish, globally'
+
+  # Dokku's default is on-failure:10; apps here should come back after a crash and after a reboot.
+  dokku ps:set --global restart-policy always
+  log 'restart policy: always'
+}
+
+# --- Step 8: https mode -------------------------------------------------------------------------
+
+install_tls() {
+  [[ "$MODE" == 'https' ]] || { step 'TLS: http mode, nothing to install'; return 0; }
+
+  step 'Wildcard certificate'
+
+  apt_install lego
+  log "lego: $(lego --version 2>&1 | head -n1)"
+
+  write_dns_credentials
+  install_global_cert_plugin
+  issue_wildcard_certificate
+}
+
+write_dns_credentials() {
+  # Root-only, and it must stay unreadable to the `dokku` user: this token can rewrite the whole zone,
+  # which makes it a bigger secret than the certificate it produces (D_cert).
+  umask 077
+  {
+    printf "# Read by root's lego cron line. Written by shepherd2-install; mode 0600, root:root.\n"
+    printf 'export GODADDY_API_KEY=%q\n' "$GODADDY_API_KEY"
+    printf 'export GODADDY_API_SECRET=%q\n' "$GODADDY_API_SECRET"
+  } > "$DNS_CREDENTIALS_FILE"
+  chown root:root "$DNS_CREDENTIALS_FILE"
+  chmod 0600 "$DNS_CREDENTIALS_FILE"
+  umask 022
+  log "DNS credentials: $DNS_CREDENTIALS_FILE (0600, root only)"
+}
+
+install_global_cert_plugin() {
+  if dokku plugin:list 2>/dev/null | grep -q 'global-cert'; then
+    skip 'dokku-global-cert plugin'
+  else
+    dokku plugin:install "$GLOBAL_CERT_PLUGIN_URL" global-cert
+    log 'installed dokku-global-cert — it imports the wildcard into every app created from now on'
+  fi
+}
+
+issue_wildcard_certificate() {
+  local crt="$LEGO_PATH/certificates/_.$DOMAIN.crt"
+  local key="$LEGO_PATH/certificates/_.$DOMAIN.key"
+
+  if [[ -s "$crt" && -s "$key" ]]; then
+    skip "certificate already issued: $crt"
+  else
+    log "issuing *.$DOMAIN over DNS-01 (no inbound connectivity needed; this can take a few minutes)"
+    # lego's own flags are global and come *before* the subcommand; only --days and --renew-hook belong
+    # to `renew`. GODADDY_* are read from the environment by the godaddy provider.
+    # shellcheck disable=SC2046
+    env GODADDY_API_KEY="$GODADDY_API_KEY" GODADDY_API_SECRET="$GODADDY_API_SECRET" \
+      lego --accept-tos --email "$EMAIL" --dns godaddy --domains "*.$DOMAIN" --path "$LEGO_PATH" \
+           $(acme_server_flag) run
+  fi
+
+  dokku global-cert:set "$crt" "$key"
+  log 'global certificate set; every app now serves it, and new apps get it at creation'
+}
+
+acme_server_flag() {
+  [[ -n "$ACME_SERVER" ]] && printf -- '--server %s' "$ACME_SERVER"
+  return 0
+}
+
+# --- Step 9: Ruby and the CLI --------------------------------------------------------------------
+
+install_cli() {
+  step 'Ruby and the shepherd2 CLI'
+
+  # Standard library only — no Gemfile, no gems, nothing to re-install after a distro upgrade (D_ruby).
+  apt_install ruby
+  log "ruby: $(ruby --version)"
+
+  [[ -f "$SCRIPT_DIR/shepherd2" ]] \
+    || die "cannot find $SCRIPT_DIR/shepherd2 — run this script from a checkout of the repository"
+  install -m 0755 "$SCRIPT_DIR/shepherd2" "$CLI_PATH"
+  log "installed $CLI_PATH"
+}
+
+# --- Step 10: cron --------------------------------------------------------------------------------
+
+install_crons() {
+  step 'Cron'
+
+  # One file, written whole, rather than lines edited into root's crontab: a script that maintains
+  # crontab entries has to parse and rewrite what it finds there, and uninstall has to unpick it.
+  {
+    printf '# Shepherd2. Written by shepherd2-install; remove with shepherd2-uninstall.\n'
+    printf 'SHELL=/bin/bash\n'
+    printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+    printf '\n'
+    printf '# Poll every registered project for new commits, serially, under a non-blocking lock.\n'
+    printf '*/5 * * * * root %s poll\n' "$CLI_PATH"
+    printf '\n'
+    printf '# Weekly housekeeping: dangling images and stopped containers. Never volumes.\n'
+    printf '17 4 * * 0 root %s clearcache\n' "$CLI_PATH"
+    if [[ "$MODE" == 'https' ]]; then
+      printf '\n'
+      printf '# Renew the wildcard and push it into every app. lego runs the hook only when a renewal\n'
+      printf '# actually happened. --days 30 is explicit because Ubuntu'"'"'s lego is a major version\n'
+      printf '# behind upstream'"'"'s dynamic default.\n'
+      printf '23 3 * * * root . %s && lego --dns godaddy --domains "*.%s" --path %s %s renew --days 30 --renew-hook "dokku global-cert:set %s/certificates/_.%s.crt %s/certificates/_.%s.key"\n' \
+        "$DNS_CREDENTIALS_FILE" "$DOMAIN" "$LEGO_PATH" "$(acme_server_flag)" \
+        "$LEGO_PATH" "$DOMAIN" "$LEGO_PATH" "$DOMAIN"
+    fi
+  } > "$CRON_FILE"
+  chmod 0644 "$CRON_FILE"
+  log "$CRON_FILE: poll every 5 minutes, prune weekly$([[ "$MODE" == 'https' ]] && printf ', renew daily')"
+}
+
+# --- Step 11: record the mode ---------------------------------------------------------------------
+
+record_mode() {
+  step 'Recording the install mode'
+
+  # Written last, so it means "this mode's steps all succeeded". shepherd2-uninstall reads it to know
+  # whether lego, the plugin and the renewal cron are there to remove (D_cert).
+  dokku config:set --global "SHEPHERD_TLS_MODE=$MODE"
+  log "SHEPHERD_TLS_MODE=$MODE"
+}
+
+# --- apt helpers ------------------------------------------------------------------------------
+
+APT_UPDATED='false'
+
+apt_install() {
+  if [[ "$APT_UPDATED" != 'true' ]]; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    APT_UPDATED='true'
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+}
+
+# --- Main ---------------------------------------------------------------------------------------
+
+main() {
+  parse_args "$@"
+  prompt_for_missing
+  preflight
+
+  install_docker
+  install_prerequisites
+  install_dokku
+  configure_address_pools
+  configure_admin_and_domain
+  configure_globals
+  install_tls
+  install_cli
+  install_crons
+  record_mode
+
+  step 'Done'
+  log "Register a project:  shepherd2 create-app demo https://github.com/you/demo main"
+  if [[ "$MODE" == 'https' ]]; then
+    log "It will be served at https://demo.$DOMAIN once its first build succeeds."
+  else
+    log "It will be served at http://demo.$DOMAIN once its first build succeeds —"
+    log "point demo.$DOMAIN at this box in the client's /etc/hosts."
+  fi
+}
+
+main "$@"

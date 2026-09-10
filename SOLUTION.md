@@ -1,7 +1,7 @@
 # SOLUTION.md — the v1 box, assembled
 
-> **Design phase: this describes the box we intend to build, not one that exists.** No code has been
-> written. Everything here is decided (each claim names the `D_` entry that decided it), but the parts
+> **This describes the box we intend to build, not one that has ever been run.** `shepherd2-install`
+> exists; nothing else does, and no box has been installed from it yet. Everything here is decided (each claim names the `D_` entry that decided it), but the parts
 > that rest on Dokku behaviour nobody has run yet are marked `[unverified]` and point at
 > `RESEARCH.md` → *Questions only a box can answer*.
 
@@ -31,7 +31,7 @@ deliberately does not do is *What v1 does not do*, at the end.
 | **ruby** (`apt`) | the CLI's runtime. Stdlib only — no gems, no bundler | `D_ruby` |
 | **`shepherd2`** | one Ruby dispatcher on `PATH`: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache` | `D_ruby`, `D_dokku_is_truth` |
 | **`shepherd2-install` / `-uninstall`** | Bash, `set -euo pipefail`. The only parts that run before, or after, everything else exists | `D_ruby` |
-| **root cron lines** | the `*/5` poll and the weekly prune, plus the daily `lego renew` in https mode | `D_dokku`, `D_cert`, `D_builder` |
+| **`/etc/cron.d/shepherd2`** | the `*/5` poll and the weekly prune, plus the daily `lego renew` in https mode. One file, written whole, so `uninstall` deletes rather than unpicks | `D_dokku`, `D_cert`, `D_builder` |
 
 And a set of **global Dokku properties**, which is the whole of the box's configuration:
 
@@ -56,7 +56,7 @@ makes the downgrade unrepairable from here (`D_cert`).
 |---|---|---|
 | certificate | one wildcard `*.mydomain.me` | none |
 | installs | lego, DNS credentials, `dokku-global-cert`, the renewal cron | none of it |
-| needs | a DNS zone with `@` and `*` records, plus API access to it | nothing; the client's `/etc/hosts` resolves app names |
+| needs | a DNS zone with `@` and `*` records, API access to it, and an email address for the ACME account | nothing; the client's `/etc/hosts` resolves app names |
 | for | the real box | a throwaway test VM |
 
 `domains:set-global` is identical in both, and so is everything about building and running apps. The
@@ -91,10 +91,13 @@ script does on this box's one code path, minus the parts that exist for other di
 6. **Admin key and domain** — `ssh-keys:add admin`, `domains:set-global mydomain.me`.
 7. **Globals** — `builder:set --global selected herokuish`, `ps:set --global restart-policy always`.
 8. **https mode only** — `apt install lego`; write the DNS credentials to a root-only file;
-   `plugin:install …/dokku-global-cert.git global-cert`; the first `lego run --dns godaddy -d
-   '*.mydomain.me'`; `global-cert:set` with the result; install the daily renewal cron line.
+   `plugin:install …/dokku-global-cert.git global-cert`; the first
+   `lego --accept-tos --email … --dns godaddy -d '*.mydomain.me' --path /root/.lego run`;
+   `global-cert:set` with the result. **lego's own flags are global and precede the subcommand** —
+   only `--days` and `--renew-hook` belong to `renew`.
 9. **Ruby and the CLI** — `apt install ruby`, then `shepherd2` onto `PATH`.
-10. **Crons** — the `*/5` poll and the weekly prune, in root's crontab alongside lego's.
+10. **Crons** — one `/etc/cron.d/shepherd2` holding the `*/5` poll, the weekly prune, and in https
+    mode the daily renewal.
 11. **Record the mode** — `config:set --global SHEPHERD_TLS_MODE=…`, written *last*, so it means "this
     mode's steps all succeeded".
 
@@ -202,13 +205,18 @@ to that ref, and every later sync can then omit it.
 
 ## Flow — certificate renewal (https mode only)
 
-One daily root cron line, and it is not a script (`D_cert`):
+One daily line in `/etc/cron.d/shepherd2`, and it is not a script (`D_cert`):
 
 ```
-. /root/.shepherd2-dns-credentials && lego renew --days 30 --dns godaddy -d '*.mydomain.me' \
+. /root/.shepherd2-dns-credentials && lego --dns godaddy -d '*.mydomain.me' --path /root/.lego \
+     renew --days 30 \
      --renew-hook 'dokku global-cert:set /root/.lego/certificates/_.mydomain.me.crt \
                                           /root/.lego/certificates/_.mydomain.me.key'
 ```
+
+**Flag order is load-bearing, not style:** `--dns`, `-d` and `--path` are lego's *global* flags and
+must precede `renew`, which owns only `--days` and `--renew-hook` (verified against lego's
+`cmd/flags.go` and `cmd/cmd_renew.go`, 2026-09-10).
 
 The credentials file holds `GODADDY_API_KEY` / `GODADDY_API_SECRET`, is root-only, and must stay
 unreadable to the `dokku` user — it can rewrite the whole zone, which makes it a bigger secret than the
@@ -261,7 +269,7 @@ The complete list. If a fact is not here, it is Dokku's, and the way to read it 
 | `config:set <app> SHEPHERD_OWNER` | a contact email — **not** an ACL (`D_single_operator`) | `create-app` |
 | `config:set --global SHEPHERD_TLS_MODE` | `https` or `http` | `install` |
 | `/run/lock/shepherd2-poll.lock` | the build serialisation lock; tmpfs, gone on reboot | `poll`, read by `wait-idle` |
-| root's crontab, `/etc/docker/daemon.json`, the apt source + keyring for Dokku, lego's credentials file | box configuration | `install` |
+| `/etc/cron.d/shepherd2`, `/etc/docker/daemon.json`, the apt source + keyring for Dokku, lego's credentials file | box configuration | `install` |
 
 No project descriptor, no converger, no data directory, no database of ours. The reinstall story is
 this repo plus Dokku's own state, or re-running `create-app` per project.

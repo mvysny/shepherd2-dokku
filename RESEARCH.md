@@ -1292,7 +1292,10 @@ first throwaway VPS:
    survive our enlarged `default-address-pools`?
    - And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch for
      the allocation failure, so we know the real number rather than the arithmetic.
-4. **The `D_cert` chain, end to end:** `lego run --dns godaddy` succeeds with the current GoDaddy key
+4. **The `D_cert` chain, end to end** — run it against **Let's Encrypt staging first**
+   (`shepherd2-install --acme-server https://acme-staging-v02.api.letsencrypt.org/directory`):
+   production caps duplicate certificates at 5/week and the forced-renewal drill below burns through
+   that in an afternoon. Then: `lego run --dns godaddy` succeeds with the current GoDaddy key
    and secret on Ubuntu's packaged 4.9.1; `global-cert:set` with the result serves https on an existing
    app; a *renewal* (`lego renew --days 3650 --renew-hook …` to force one) re-applies to every app and
    reloads nginx without dropped connections; and an app created but never deployed serves the global

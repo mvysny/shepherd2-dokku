@@ -9,8 +9,8 @@ and deploys them as Docker containers at `https://PROJECTID.<domain>` on a singl
 the building, running, routing and TLS; this repo is the **glue** — host setup, per-project
 convergence, the periodic-rebuild trigger, the wildcard-certificate story, and housekeeping.
 
-**Status: design phase, and the v1 design is agreed.** There is no code yet. **`SOLUTION.md` is what is
-to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
+**Status: the design is agreed and the first code has landed** — `shepherd2-install` exists; the CLI,
+`uninstall` and the tests do not. **`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
 throwaway VPS. The feature survey that decided *what* the rebuilt thing does has graduated and is gone
@@ -116,12 +116,16 @@ finding is `RESEARCH.md`, not the bin. Scan `ls ideas/<name>/` at graduation, no
 
 ## Script index
 
-Nothing yet — but the shape is decided, and `SOLUTION.md` describes what each piece does:
-`shepherd2` (Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`,
-`clearcache`), plus `shepherd2-install` and `shepherd2-uninstall` (Bash). When they land, this table
-becomes a map — not a reference: each entry a pointer plus what the thing is for, with **every script's
-own comment header the authority** on its arguments, env knobs and prerequisites. Put new technical
-truth *there*, not here.
+A map, not a reference: each entry is a pointer plus what the thing is for, with **every script's own
+comment header the authority** on its arguments, env knobs and prerequisites. Put new technical truth
+*there*, not here.
+
+| Script | What it is for |
+|---|---|
+| `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
+| `shepherd2-uninstall` | *not written yet.* Bash. The inverse, driven by `SHEPHERD_TLS_MODE` |
+| `shepherd2` | *not written yet.* Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache` |
+| `test/` | *not written yet.* minitest from `ruby-minitest` (apt, dev-only — **no `Gemfile`**, `D_ruby`), run as `ruby test/run` |
 
 ## Conventions when editing
 
@@ -167,8 +171,8 @@ truth *there*, not here.
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.
 - **The CLI is Ruby; the installers are Bash.** `shepherd2` is one Ruby dispatcher holding every verb,
-  standard library only — no `Gemfile`, no gems — and written against Ruby 3.0, which is what the
-  oldest supported distro ships. `shepherd2-install` and `shepherd2-uninstall` stay Bash with
+  standard library only — no `Gemfile`, no gems — and written against Ruby 3.2, which is what the box
+  ships (Ubuntu 24.04, `D_host_os`). `shepherd2-install` and `shepherd2-uninstall` stay Bash with
   `set -euo pipefail`, as does any future box script: they run before Ruby is guaranteed to exist and
   after it may be gone. A new file picks by which of the two it is. See `D_ruby`.
 - **Project ids beginning with `admin` are reserved** — `create-app` refuses them, so a future admin

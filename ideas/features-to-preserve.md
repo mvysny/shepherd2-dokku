@@ -23,19 +23,40 @@ answer, and `[unverified]` there means it is a hypothesis, not a plan.
 
 | `F_` | Feature | Today | Dokku answer | |
 |---|---|---|---|---|
-| `F_build_dockerfile` | Build from the `Dockerfile` at the repo root, on the box | Jenkins → `shepherd-build` → `docker build` | Dockerfile builder, auto-detected | ✅ |
+| ~~`F_build_dockerfile`~~ | ~~Build from the `Dockerfile` at the repo root, on the box~~ | Jenkins → `shepherd-build` → `docker build` | **Dropped — `D_builder`.** The Dockerfile builder is prohibited box-wide; apps are built by the herokuish buildpack builder | ✂️ |
 | `F_poll_rebuild` | Rebuild **on a schedule**, not on push — we host repos we don't own | Jenkins poll-SCM job per project | `dokku git:sync --build-if-changes <app> <url> <ref>` from a **host crontab** — `app.json` cron runs the deployed image and cannot build | 🔧 |
 | `F_build_mem_limit` | Cap build memory | `shepherd-build` `--memory` | `resource:limit --process-type build --memory N` | ✅ |
-| `F_build_cpu_limit` | Cap build CPU | `shepherd-build` `--cpu-quota` | **Not supported for the Dockerfile builder** (documented `✗`, and confirmed by the build-option allowlist: `--memory` is on it, no `--cpus`/`--cpu-quota` is) | 🕳️ |
-| `F_build_args` ⁿᵉʷ | Per-project build args — the Vaadin offline key needs to exist at *build* time | `build.buildArgs` in the project JSON | `docker-options:add <app> build '--build-arg K=V'`; config vars are runtime-only for Dockerfile builds | 🔧 |
-| `F_custom_dockerfile` ⁿᵉʷ | Per-project Dockerfile path (`vherd.Dockerfile`) | `build.dockerFile` | `builder-dockerfile:set <app> dockerfile-path …` | ✅ |
-| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | Both halves survive: cache mounts documented, and `--cache-to/--cache-from` go through per app | ✅ |
-| `F_cache_isolation` | …and that cache must be **per project** — one project must not reach another's artifacts | `--cache-to/--cache-from` per project id, enforced on the build command | **Parity, not a gap** — `docker-options:add <app> build '--cache-to …'` is allowlisted through to `docker image build`. The `RUN --mount` half stays convention, as it is today | 🔧 |
+| `F_build_cpu_limit` | Cap build CPU | `shepherd-build` `--cpu-quota` | **Probably no longer a gap under `D_builder`**: the documented `✗` and the missing `--cpus` are *Dockerfile-builder* facts, and on the herokuish path build options go to `docker container create` unfiltered `[src]`. Punch-list 17 | ❓ |
+| `F_build_args` ⁿᵉʷ | Per-project build args — the Vaadin offline key needs to exist at *build* time | `build.buildArgs` in the project JSON | **Simpler under `D_builder`**: plain `dokku config:set`, since herokuish bundles config vars into the build's ENV_DIR `[src]`. (The `--build-arg` route was a Dockerfile-builder workaround) | ✅ |
+| ~~`F_custom_dockerfile`~~ ⁿᵉʷ | ~~Per-project Dockerfile path (`vherd.Dockerfile`)~~ | `build.dockerFile` | **Dropped with `F_build_dockerfile` — `D_builder`.** The nearest equivalent is `builder:set <app> build-dir` for a monorepo subdirectory | ✂️ |
+| `F_build_cache` | The Maven/Gradle dependency tree must not be re-downloaded on every scheduled rebuild | per-project buildx `type=local` dir + cache mounts | **`cache-$APP` volume, and the Heroku Java buildpack puts `maven.repo.local` inside it** `[src]`. Maven half solved; the Vaadin *frontend* half is open — punch-list 13–16 | 🔧 |
+| `F_cache_isolation` | …and that cache must be **per project** — one project must not reach another's artifacts | `--cache-to/--cache-from` per project id, enforced on the build command | **Closed, and now enforced rather than conventional** — Dokku names the volume, the app has no Dockerfile in which to name another. `repo:purge-cache <app>` purges exactly one. See `D_builder` | ✅ |
 | `F_build_serial` ⁿᵉʷ | Never two builds at once (`concurrentJenkinsBuilders: 1`) — the corruption half of the cache problem | Jenkins executor count | Free if the poll is one serial cron loop; `parallel-schedule-count` is about deploys, not builds | 🔧 |
 | `F_build_history` ⁿᵉʷ | The list of past builds, and each one's build log | Jenkins; `shepherd-cli builds` / `buildlog` | Core `builds` plugin since 0.38.0: `builds:list` / `builds:output`, a record + log file per deploy, 20 per app. `git:sync` is captured like a push. No git SHA in the record | ✅ |
 | `F_private_repos` ⁿᵉʷ | Build private repos, with a credential per project | Jenkins credentials store, `gitRepo.credentialsID` | `git:auth <host> <user> <token>` (netrc) or a deploy key — but **per host, not per project** | 🕳️ |
 
-**`F_cache_isolation` was the scariest row here and it has shrunk — corrected 2026-09-09.** The earlier
+**Section A was settled by `D_builder` on 2026-09-10, and it cost a feature.** The Dockerfile builder
+is prohibited box-wide (`builder:set --global selected herokuish`) and apps are built by Heroku v2a
+buildpacks, because that is the only way to make `F_cache_isolation` *enforced* rather than a
+convention the app could break. `F_build_dockerfile` and `F_custom_dockerfile` are dropped — the first
+features this migration deletes rather than preserves. Read `D_builder` before re-arguing any row
+above; the five positions this file used to list under `F_cache_isolation` are gone with it, and so is
+`ideas/build-cache.md`, which existed to choose between them.
+
+Two loose ends survive into `ideas/vaadin-build-under-herokuish.md`: the frontend half of a Vaadin
+build (`F_build_cache`), and whether `F_build_cpu_limit` was ever really a gap.
+
+**One number still isn't written down anywhere, and `F_poll_rebuild` depends on it: the poll
+interval.** Under the Dockerfile builder it was load-bearing (BuildKit evicts mount caches after
+~48 h, so a weekly poll meant a permanently cold cache); under `D_builder` the cache volume has no TTL,
+so the stakes are lower — but the housekeeping cron still must not wipe a cache the poll is about to
+use, and `builds:set --global retention 20` was sized for "a weekly poll" in `Q_build_history`. Look up
+the predecessor's Jenkins poll cadence rather than assuming.
+
+---
+
+**`F_cache_isolation` was the scariest row here and it has shrunk — corrected 2026-09-09.** *(Kept for
+the correction it records; superseded in substance by `D_builder`.)* The earlier
 reading ("no per-app `--cache-to`; `docker-options … build` is container options") was wrong, and it was
 wrong in the direction that mattered: the docs' container-options warning describes the *herokuish*
 builder, while the *Dockerfile* builder allowlists the option and appends it to `docker image build`.
@@ -51,28 +72,11 @@ it; its short form is that **corruption** (concurrent writers) is fixed by seria
 forks of the same starter, so two projects legitimately share `com.example:my-app:1.0-SNAPSHOT` and the
 second silently resolves the first one's jar with a green build.
 
-Positions on that remaining half, cheapest first — the question is now "close a gap we already have?",
-not "absorb a regression":
-
-1. **Status quo: layer cache per project, mounts by convention.** `--cache-to` per app plus an
-   `id=<project>` convention on the mounts we can influence. `D_no_shared_cache` already keeps `id=`
-   "as a collision-avoidance convention, never as a boundary". Zero new glue; the gap stays open.
-2. **Layer cache only.** Drop cache mounts entirely; rely on a `COPY pom.xml` + `mvn dependency:go-offline`
-   layer, which the per-app `--cache-to` cache then protects properly. Safe and slower — a dependency
-   bump re-downloads — and it only works for repos whose `Dockerfile` we can influence.
-3. **A Maven repo proxy** (Nexus et al.) — the classic CI answer, sidesteps pollution entirely, and was
-   rejected in `D_no_shared_cache` on cost + cooperation. Reconsider: the cost argument was "adds a
-   container to a small box", and we just deleted Jenkins.
-4. **Switch to a buildpack builder**, where Dokku mounts a `cache-$APP` volume the app cannot name and
-   `repo:purge-cache <app>` clears exactly one project's. Fully enforced, both halves — at the price of
-   `F_build_dockerfile`, since a buildpack means there is no Dockerfile. Almost certainly not worth it,
-   but it is the only option that actually *closes* the gap, so it belongs on the list.
-5. **Accept it and document it.** Say plainly in `README.md` that cache mounts are shared and that
-   projects hosted here are not isolated at the artifact level. This is what is true today, unstated.
-
-*Also carried over regardless of which we pick:* buildkitd runs its own GC (reported to evict unused
-entries after ~48 h), so a cache mount is not a durable store — and the purge cadence is the cache's
-real lifetime, so the successor to `shepherd-clearcache` must stay **weekly**, not nightly.
+**Resolved 2026-09-10 by `D_builder`, which took position 4** — the one this file called "almost
+certainly not worth it". Two requirements the operator stated as hard (a warm Maven cache, and
+per-project isolation that is *enforced*) made it the only option satisfying both, once it was clear
+that nothing available to the Dockerfile builder can remap a cache mount. Positions 1, 2, 3 and 5 are
+recorded as roads not taken in that entry; don't re-list them here.
 
 **`F_build_history` flipped from 🕳️ to ✅ — corrected 2026-09-09.** The earlier reading came from
 discussion #5114, where the builds-plugin effort is described as stalled; it landed in **0.38.0**, which
@@ -117,7 +121,7 @@ rejected rungs and the consequences are in that entry; the mechanics are in `RES
 | `F_` | Feature | Today | Dokku answer | |
 |---|---|---|---|---|
 | `F_subdomain` | App reachable at `PROJECTID.<domain>` | Traefik host rule from a label | `domains:set-global <domain>` and the app name becomes the subdomain | ✅ |
-| `F_port_contract` | `EXPOSE 8080` is the whole app contract | Traefik routes to 8080 | `EXPOSE 8080` makes Dokku publish on **:8080**; needs `ports:set <app> http:80:8080 https:443:8080` per app | 🔧 |
+| `F_port_contract` | ~~`EXPOSE 8080` is the whole app contract~~ → **listen on `$PORT`** | Traefik routes to 8080 | **Free under `D_builder`** — the buildpack builders end the build with `ports-set-detected http:<proxy-port>:5000` `[src]` and the app reads `$PORT`. The `EXPOSE`/`ports:set` dance was Dockerfile-only | ✅ |
 | `F_wildcard_https` | **One** wildcard Let's Encrypt cert via DNS-01 — a new app is on https immediately, with no per-app ACME round-trip | Traefik, DNS challenge, one wildcard cert | lego (`--dns godaddy`) on the host + a root cron line, pushed into every app by `dokku-global-cert`. **Decided — `D_cert`** | 🔧 |
 | `F_custom_domains` ⁿᵉʷ | Extra domains per project, with https on them | `publication.additionalDomains` | `domains:add <app> …` — but the wildcard cert covers no foreign domain, so https on one needs `dokku-letsencrypt` on that app. **Deferred to v2** (`D_cert`); never used in practice | ✂️ |
 | `F_apex_domain` ⁿᵉʷ | One project can own the apex domain | `publication.publishOnMainDomain` | Name the app as an FQDN and the global vhost is ignored; or `domains:set`. The wildcard cert does not cover the apex, so it is one more `-d` on the lego command. **Deferred to v2** (`D_cert`) — nothing to run there | ✂️ |
@@ -242,8 +246,12 @@ Say so if any of these is wrong:
 - **`shepherd-java-api` on Maven Central** — no successor library; published versions stay published.
 - **Jenkins, and everything downstream of it**: the `jenkins-admin.<domain>` vhost, the Jenkins
   credentials store as our secret store, the `admin.int` network, `docker-compose.yaml`.
-- **`F_build_cpu_limit`** — not by choice; the Dockerfile builder can't. Build *memory* still caps, which
-  is the one that actually protects the box from a runaway JVM build.
+- **`F_build_dockerfile` and `F_custom_dockerfile`** — by choice, as of `D_builder`: the Dockerfile is
+  what made per-project cache isolation unenforceable. Apps carry a `Procfile` instead.
+- ~~**`F_build_cpu_limit`** — not by choice; the Dockerfile builder can't.~~ Probably back on the menu
+  under `D_builder`, since the herokuish path passes build options to `docker container create`
+  unfiltered. Build *memory* caps either way, which is the one that actually protects the box from a
+  runaway JVM build.
 
 ## Open questions — these decide the shape
 
@@ -330,18 +338,20 @@ With nginx settled by `D_proxy`, per-project networks by `D_isolation`, no descr
 
 ```
 shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --owner EMAIL
-                             #   --build-arg K=V… --dockerfile PATH --domain D…]
+                             #   --build-dir PATH --domain D…]
                              #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
-                             #   (--no-restart), resource:limit, ports:set, network:create + network:set,
-                             #   postgres:create -N + link if asked, builder-dockerfile:set,
-                             #   docker-options build args + per-project --cache-to/--cache-from,
+                             #   + any build-time vars (--no-restart), resource:limit,
+                             #   network:create + network:set, postgres:create -N + link if asked,
+                             #   buildpacks:set <java bp> (D_builder — never trust detection),
                              #   then git:sync --build
 shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, postgres:destroy, network:destroy
 shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
                              #   and the retry after a failed build
 shepherd2 poll               # cron: for every app with SHEPHERD_GIT_URL, git:sync --build-if-changes,
                              #   serially under a lock file (Dokku records the build logs itself)
-shepherd2-clearcache         # weekly: docker buildx prune + docker system prune
+shepherd2-clearcache         # weekly: docker system prune. NOT a blanket volume prune — under
+                             #   D_builder the per-app cache-$APP volumes are the build cache;
+                             #   the per-app lever is dokku repo:purge-cache ID
 shepherd2-install            # dokku bootstrap.sh + daemon address pools + plugins + globals + crons,
                              #   lego + global-cert + first issuance (D_cert)
 shepherd2-uninstall

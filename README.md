@@ -11,8 +11,9 @@ projects. Built with off-the-shelf tools: **Dokku and nothing else.**
 
 How this is meant to work:
 
-* Each app is a Dokku app, built from the `Dockerfile` at the root of its git repo and run as a Docker
-  container, published at `PROJECTID.<domain>` over https.
+* Each app is a Dokku app, built from its git repo by a **Heroku buildpack** — you supply a `Procfile`,
+  not a `Dockerfile` — and run as a Docker container, published at `PROJECTID.<domain>` over https.
+  Each project gets its own build cache, so one project can never resolve another's jars.
 * Dokku **polls** each repo on a schedule rather than waiting for a push
   (`dokku git:sync --build-if-changes`), so Shepherd2 can host repos you don't own.
 * Dokku's proxy terminates https and routes by hostname; Docker keeps the containers up and brings them
@@ -58,7 +59,8 @@ real box.
   The one wildcard certificate is issued over the DNS-01 challenge, so the box holds an API token that
   can edit the zone (root-only). GoDaddy is what the reference box uses; note that GoDaddy restricts its
   DNS API to accounts with 10+ domains or a Discount Domain Club plan.
-* Docker 24+ is wanted so BuildKit — and therefore build caching — is the default.
+* Docker 24+ is wanted so BuildKit is the default. (The build cache itself is a per-app Docker volume,
+  not a BuildKit cache — see [`D_builder`](DECISIONS.md).)
 
 ## Installation
 
@@ -83,17 +85,22 @@ retrofit:
 
 ## Adding your project
 
-Not written yet. The contract Shepherd2 will expect from a project, unchanged from both predecessors:
+Not written yet. **The contract has changed from both predecessors** — see
+[`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
+is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency
+cache is isolated from every other's. What it needs instead:
 
-1. A `Dockerfile` at the root of its git repo.
-2. Buildable with `docker build -t test/xyz:latest .` and runnable with
-   `docker run --rm -ti -p8080:8080 -m256m test/xyz`.
+1. A `Procfile` at the root of its git repo, naming the `web` process.
+2. For a Maven project, a `system.properties` pinning `java.runtime.version`; the buildpack runs
+   `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
+   say otherwise.
+3. Build-time settings are `dokku config:set` — they are visible to the build, unlike on the old box.
 
-**Pay attention to `-m256m`** — that is the hard memory limit the container will run under. If the JVM
-asks for more it is hard-killed by the Linux OOM killer with no warning and no log message (only the
-host's `dmesg` records it). Run Java with `-Xmx` a little below the limit, so the app dies with an
-`OutOfMemoryError` that shows up in the logs instead.
+**Pay attention to the memory limit** the container will run under (256 MB on the reference box). If
+the JVM asks for more it is hard-killed by the Linux OOM killer with no warning and no log message
+(only the host's `dmesg` records it). Run Java with `-Xmx` a little below the limit, so the app dies
+with an `OutOfMemoryError` that shows up in the logs instead.
 
-One Dokku-specific foot-gun already known: **`EXPOSE 8080` makes Dokku publish the app on port 8080**,
-not on 443, so each app needs `dokku ports:set PROJECTID http:80:8080 https:443:8080`. Details in
-[RESEARCH.md](RESEARCH.md#ports--the-expose-trap).
+**Listen on `$PORT`, not on a port of your choosing.** The buildpack sets it (5000), and Dokku wires
+the proxy to it automatically — so the `EXPOSE`/`ports:set` dance the predecessors needed does not
+arise. Details in [RESEARCH.md](RESEARCH.md#ports--the-expose-trap).

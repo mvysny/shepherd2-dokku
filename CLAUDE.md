@@ -31,7 +31,9 @@ and is not restated here either; `D_dokku` links to it.
 **What is deliberately gone** (don't reintroduce): Jenkins, Traefik-as-ours, the
 `shepherd_PROJECTID` / `shepherd/PROJECTID` / `PROJECTID.shepherd` naming contract, `docker-compose.yaml`,
 `/etc/shepherd/java/config.json`, the per-project JSON descriptor and its converger, and every JVM
-component. See `D_dokku`, `D_retire_shepherd_java` and `D_dokku_is_truth`.
+component. See `D_dokku`, `D_retire_shepherd_java` and `D_dokku_is_truth`. Gone as of `D_builder`, and
+this one is a *feature* rather than a component: **building from the project's own `Dockerfile`**, with
+it `build.dockerFile`, `build.buildArgs` as build args, and the per-project buildx cache directory.
 
 ## Documentation targets
 
@@ -105,6 +107,14 @@ knobs and prerequisites. Put new technical truth *there*, not here.
 - **Dokku stays upstream and unforked.** If something is missing, the answer is a wrapper script, a
   crontab line or a documented manual step — not a patched Dokku, not a fork, not a plugin we maintain
   unless there is a `D_` entry saying so.
+- **Apps are built by buildpacks; the Dockerfile builder is prohibited, and that is load-bearing.**
+  The install sets `builder:set --global selected herokuish`, so a committed `Dockerfile` is never
+  read. Don't "fix" a build by re-enabling it: the Dockerfile is what makes per-project cache
+  isolation unenforceable, which is the whole reason for the prohibition. Buildpacks are pinned per
+  app with `buildpacks:set` rather than detected (herokuish detects `nodejs` before `java`, and Vaadin
+  apps commit a `package.json`). The build cache is the `cache-$APP` volume Dokku names, purged with
+  `repo:purge-cache <app>` — never a `RUN --mount` and never `--cache-to`. `pack`/CNB is a v2 option,
+  not a v1 alternative. See `D_builder`.
 - **The proxy is Dokku's default host nginx, and it is not a container.** Don't install the Traefik
   plugin or set `proxy:type` on an app; per-app ingress tuning is `nginx:set`. See `D_proxy` — and note
   that `D_isolation` *depends* on this, so switching proxies is not a local change.

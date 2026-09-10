@@ -597,3 +597,174 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
   re-applies to every app and reloads nginx without dropping connections; and that an app created and
   never yet deployed serves the global cert on its first successful deploy.
+
+## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
+
+**Status:** Accepted 2026-09-10. Not yet implemented. One `[unverified]` could force a re-read rather
+than a reversal: whether a Vaadin *frontend* build stays warm across rebuilds (punch-list items 13–17).
+Supersedes nothing, but it makes `D_no_shared_cache` in shepherd-traefik's *Known gap* closed rather
+than inherited.
+
+**Context.** Dokku ships **seven** builders (`RESEARCH.md` → *The builders, and how one is chosen*), and
+Shepherd2 had only ever considered one, because both predecessors built a `Dockerfile` and the feature
+survey recorded that as `F_build_dockerfile` — preserved, ✅, not examined. Two requirements, stated by
+the operator on 2026-09-10, turned out to decide the whole question:
+
+- a scheduled rebuild must **not** re-download the Maven dependency tree from Central, and
+- that cache must be **per project**, so one project's `mvn install` of `com.example:my-app:1.0-SNAPSHOT`
+  can never be resolved by another's build.
+
+The second is `D_no_shared_cache` in shepherd-traefik, promoted from *known gap* to requirement. The
+path that bites is not malice: a demo farm is full of forks of the same starter, so two projects
+legitimately share a `1.0-SNAPSHOT` coordinate and the second silently resolves the first one's jar
+with a green build.
+
+**The finding that decided it: the builder decides *who names the build cache*.**
+
+| builder | who names the dependency cache | per-project? |
+|---|---|---|
+| dockerfile | the app's own `RUN --mount=type=cache,id=…` | convention only |
+| herokuish | Dokku — `cache-$APP` volume, mounted at `/cache` | **enforced** |
+| pack (CNB) | pack, from the image ref; or us, via `--cache` | **enforced** |
+| nixpacks / railpack | us, via `--cache-key` on the build command | **enforced** |
+
+Under the Dockerfile builder there is **nothing** on the build command that can remap a cache mount:
+`id=` lives in the repo, `--builder` is a dead end (a `docker-container` builder would need `--load`,
+which is not on the allowlist), and the only enforcing move available — pruning
+`type=exec.cachemount` between builds — buys isolation by making every build cold, which fails the
+first requirement. **No option keeps the Dockerfile *and* satisfies both requirements.** That is the
+whole decision in one sentence.
+
+**Decision.** Three parts.
+
+1. **Apps are built by a buildpack builder, and the Dockerfile builder is prohibited box-wide.** The
+   install runs `dokku builder:set --global selected herokuish`, which short-circuits detection
+   entirely, so a committed `Dockerfile` is never read — no warning, no partial detection.
+2. **herokuish is the builder — the only one, in v1.** Because the prohibition *is* the global
+   `selected` property, that is the same single command: `create-app` sets nothing per app.
+3. **pack (Cloud Native Buildpacks) is deferred to v2**, not offered as a v1 alternative. Dokku
+   supports it natively (`builder:set <app> selected pack`, stack `heroku/builder:24`), so the door
+   stays open at the cost of one command — but v1 does not install the `pack` CLI, does not document
+   a second path, and does not carry two cache stories. Same shape as `D_single_operator` and
+   `D_cert`: one mechanism in v1, the second only when something forces it.
+
+**Why herokuish and not the others.**
+
+- **It satisfies both requirements by construction, not by cooperation.** Dokku runs
+  `docker volume create cache-$APP` and mounts it `-v cache-$APP:/cache --env=CACHE_PATH=/cache`; the
+  Heroku Java buildpack then runs Maven with `-Dmaven.repo.local=${CACHE_DIR}/.m2/repository`. The app
+  never learns the volume's name and, having no Dockerfile, has no syntax in which to open a different
+  mount. The pleasing detail: that buildpack's *default* goals are `clean dependency:list install` —
+  the exact `mvn install` we were afraid of is what it does by default, and it is safe because the
+  local repo it installs into is the app's own volume.
+- **Per-app cache purging works.** `dokku repo:purge-cache <app>` is literally
+  `docker volume rm -f cache-<app>` **[src]**. Under pack the same command is a documented no-op, and
+  purging one app's cache would mean `docker volume rm` on a hash-named volume — reaching around Dokku
+  to the daemon, which is exactly what *Conventions when editing* tells us not to do.
+- **No new binary on the box.** herokuish ships inside the image Dokku already pulls. `pack`,
+  `nixpacks` and `railpack` are each a CLI we would have to install, pin and re-install after a rebuild.
+- **It is Dokku's own default and fallback** — the best-trodden path on this platform, which matters
+  more than ecosystem-wide popularity, and the path most likely to be fixed quickly when it breaks.
+- **`F_build_cpu_limit` probably closes as a side effect.** On the herokuish path the build-phase
+  `docker-options` are passed to `docker container create` with **no allowlist filtering** **[src]**, so
+  `--cpus` should simply work — a gap the feature survey had written off as unfixable, because on the
+  *Dockerfile* path the flag is silently dropped.
+- **The build stops being arbitrary root-privileged code we host.** The app supplies no build
+  instructions at all; a fixed buildpack compiles it. That is a real reduction in attack surface on a
+  box running other people's example projects, and it is the cheapest security win available here.
+
+**Alternatives rejected.**
+
+- ***Keep the Dockerfile, keep `id=` as a convention*** (the incumbent, and `ideas/build-cache.md`
+  position A). The operator reads every Dockerfile at onboarding, so a convention policed by one
+  keyholder (`D_single_operator`) is stronger than the self-service setting `D_no_shared_cache` was
+  written for. Rejected because it leaves the requirement satisfied only as long as nobody makes a
+  mistake, and because the failure is *silent* — a green build resolving the wrong jar. The operator
+  explicitly chose to give up the Dockerfile rather than keep policing it.
+- ***Keep the Dockerfile, prune cache mounts between builds*** (position B). Enforced by the platform,
+  and it fails the warm-cache requirement by design: every build starts cold on exactly the directories
+  that make a Vaadin rebuild bearable. Struck.
+- ***pack / CNB, as the default or as a second supported path in v1.*** The strategically better bet —
+  CNB is where Heroku itself went (Fir apps are CNB-only; Cedar got CNB as an opt-in on 2026-09-03),
+  and `heroku/builder:24`'s Maven buildpack keeps the repository in a restored cache layer
+  (`buildpacks/maven/src/layer/maven_repo.rs`: a `CachedLayerDefinition` named `repository`,
+  `-Dmaven.repo.local` pointed into it, restored with `KeepLayer` **[src]**), so the cache story is
+  genuinely as good. Note that is a property of *Heroku's* CNB and not of CNB in general — Paketo's
+  own docs say their Java buildpack does **not** cache Maven dependencies between builds and tell you
+  to bind-mount `$HOME/.m2` yourself **[docs]** — so the claim depends on the stack being pinned.
+  Lost on three practical points: a CLI to install and pin, a `repo:purge-cache` that is a documented
+  no-op, and no build CPU knob. **Deferred to v2 rather than rejected**, because that verdict could
+  age: if the classic v2a line stops tracking JDK releases, this entry is the thing to re-read, and
+  the migration is one `builder:set` per app.
+- ***nixpacks.*** Popular in the Coolify/Dokploy world and a Dokku core plugin, but its default cache
+  identifier is a hash of the absolute build directory, and Dokku builds in a fresh `mktemp -d` every
+  time — so on Dokku it should be cache-cold on **every** build unless `--cache-key` is set. A builder
+  whose headline feature is off by default, on a platform its upstream does not test, plus ten months
+  without a release while Railway itself moved on. No.
+- ***railpack.*** Actively developed and the best-designed of the Railway family, but it requires a
+  long-running **privileged** `moby/buildkit` container and a global `BUILDKIT_HOST` in
+  `/etc/default/dokku`. A second build daemon with its own cache store and its own GC, and a privileged
+  container on a box whose isolation story is `D_isolation`. The cost is not close to the benefit.
+- ***Don't build on the box at all*** — build in CI, deploy with `git:from-image`. Both requirements
+  become moot because the cache becomes CI's problem. Rejected because it is a different product: it
+  removes the on-box rebuild that `F_poll_rebuild` exists for, needs a registry and per-project
+  credentials, and makes every hosted project maintain a pipeline — the exact chore Shepherd exists to
+  spare them.
+- ***A Maven repository proxy (Nexus et al.).*** Rejected in `D_no_shared_cache` on cost and because it
+  is cooperation (each app's `settings.xml` must point at it, and Central is https so it cannot be
+  forced). Unchanged here, and now unnecessary: it was a *sharing* answer to an *isolation* problem. If
+  bandwidth ever becomes the complaint rather than isolation, it comes back as a speed measure.
+- ***Per-app `builder:set` instead of the global prohibition.*** Rejected as the primary mechanism: it
+  makes the guarantee "per app we remembered to set" rather than a property of the box. Note the
+  per-app override is *not* a hole — only the keyholder runs `dokku` (`D_single_operator`), so a
+  project can never opt itself back into the Dockerfile builder. It is an operator tool, and that is
+  how the pack alternative is delivered.
+
+**Consequences.**
+
+- **`F_build_dockerfile` and `F_custom_dockerfile` are dropped features**, not preserved ones. This is
+  the first feature the Dokku move deliberately *removes* rather than migrates, and it is the entry to
+  cite when someone asks why a project's `Dockerfile` is being ignored.
+- **Every hosted repo needs descriptors it does not have today** — at minimum a `Procfile`, usually a
+  `system.properties`. Acceptable only because we own the apps; on a farm of repos we did not control
+  this decision would not be available. Onboarding is no longer "point at the repo", and `README.md`
+  owns the recipe.
+- **Buildpack *selection* stays operator-side, so a repo cannot mis-route its own build.** This matters
+  more than it looks: herokuish detects `nodejs` **before** `java` **[src]**, and Vaadin's own source-
+  control guidance says to commit `package.json` **[docs]** — so a stock Vaadin repo would be built as
+  a Node app. The fix is not a file in the repo but app state:
+  `dokku buildpacks:set <app> https://github.com/heroku/heroku-buildpack-java`. Dokku's `buildpacks`
+  plugin writes the resulting `.buildpacks` into the *extracted source* at `post-extract`, and
+  `getBuildpacks` reads the app property **before** anything in the repo, so the property wins over a
+  committed `.buildpacks` **[src]** — note the function's own doc comment claims the opposite order
+  and is stale. `create-app` therefore pins the buildpack explicitly rather than trusting detection.
+- **`F_build_args` gets simpler.** `builder-herokuish/pre-build` bundles every app config var into an
+  ENV_DIR inside the build **[src]**, so the Vaadin offline key is a plain `dokku config:set` with no
+  `--build-arg` plumbing. The flip side is that every *runtime* secret is visible to the build too.
+- **The `.m2` cache now lives in a Docker volume that nothing garbage-collects.** buildkitd's GC, the
+  ~48 h mount eviction and the whole `--cache-to type=local` apparatus stop applying. Housekeeping
+  becomes one lever — `repo:purge-cache <app>` — and the successor to `shepherd-clearcache` prunes
+  *volumes*, not buildx caches. Punch-list item 1 (does `--cache-to type=local` export at all) is moot
+  and has been struck.
+- **The frontend half of a Vaadin build is the one thing this decision does not solve,** and it is not
+  a herokuish weakness — the frontend is driven by Maven, so it is invisible to the node buildpack
+  that would otherwise have cached it, on any builder. What the decision *does* give is the place to
+  put the fix: `/cache` is a per-app volume that the build can write to, so
+  `dokku config:set <app> npm_config_cache=/cache/npm` warms npm across rebuilds with no new
+  machinery and no loss of isolation. Vaadin's pre-compiled production bundle (24.1+) removes the
+  frontend build entirely for apps with no custom frontend or add-ons, which is likely most of the
+  farm. What is *not* solved is Vaadin's own node download into `~/.vaadin`. Tracked in
+  `ideas/vaadin-build-under-herokuish.md`; punch-list items 13–17.
+- **A `heroku/nodejs` + `heroku/java` multi-buildpack is not the answer to that**, and the reason is
+  worth recording so nobody re-derives it: the node buildpack's cache bracket opens and closes inside
+  *its own* compile, which runs before Maven, so anything Maven creates is saved by nobody; it prunes
+  devDependencies unconditionally at the end of that compile, removing exactly the Vite that Vaadin
+  then reinstalls; and it writes no `export` file beyond a pnpm store line **[src]**, so
+  `heroku-buildpack-multi` propagates no `PATH` and the node it installed is not visibly on `PATH`
+  when Maven runs. It also makes the build *fail* outright if its `detect` finds no `package.json`,
+  since multi exits when any listed buildpack fails to detect **[src]**.
+- **`ideas/build-cache.md` is deleted.** Its fork was conditional on the Dockerfile builder and is moot;
+  its surviving Dokku facts went to `RESEARCH.md`, and the unpinned poll interval it flagged moved to
+  `F_poll_rebuild` in the feature survey.
+- **`D_dokku_is_truth` is unaffected and slightly strengthened** — the builder choice is `builder:report`
+  state, not a file of ours, and the cache is a Docker volume Dokku names. Still no descriptor.

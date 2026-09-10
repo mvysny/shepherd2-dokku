@@ -50,7 +50,115 @@ unless noted; re-check before relying on a version-sensitive claim.
 
 ## Deploying: builders and git
 
+### The builders, and how one is chosen
+
+**Seven builders ship in core** at v0.38.27 — `plugins/builder-{dockerfile,herokuish,lambda,nixpacks,null,pack,railpack}`. **[src]**
+The docs' *Builder Management* page still says "five built-in builders" and omits nixpacks and
+railpack, both of which have their own docs pages and their own plugin directories. **[docs]** vs **[src]**
+
+| builder | auto-detected by | extra binary on the box |
+|---|---|---|
+| `dockerfile` | `Dockerfile` at repo root | none |
+| `herokuish` | `.buildpacks`, a `BUILDPACK_URL`, or **nothing else matching** (it is the fallback) | none — ships in the herokuish image |
+| `pack` | `project.toml` at repo root | `pack` CLI |
+| `nixpacks` | `nixpacks.toml` at repo root | `nixpacks` CLI |
+| `railpack` | `railpack.json` at repo root | `railpack` CLI **and a privileged `moby/buildkit` container** + a global `BUILDKIT_HOST` |
+| `lambda` | `lambda.yml` at repo root | yes; builds AWS Lambda artifacts, irrelevant to a long-running web app |
+| `null` | never auto-detected — explicit only | none |
+
+Selection, from `plugins/git/functions` and `plugins/builder/triggers.go`: **[src]**
+
+```bash
+BUILDER="$(plugn trigger builder-detect "$APP" "$TMP_WORK_DIR" | head -n1 || true)"
+if [[ -z "$BUILDER" ]]; then
+  BUILDER="herokuish"   # …unless arm64 and herokuish is not allowed, then "pack"
+fi
+```
+
+- **`head -n1` plus alphabetical plugin order decides ties.** The plugin named plain `builder` sorts
+  before every `builder-*`, and its `TriggerBuilderDetect` prints the per-app `selected` property and
+  then the `--global` one — so an explicit selection always wins, and setting it **short-circuits
+  detection entirely**. `dokku builder:set --global selected <name>` is therefore a hard box-wide
+  override, not a default. **[src]**
+- **The Dockerfile detect defers to two builders only.** `builder-dockerfile/builder-detect` force-runs
+  the *herokuish* and *pack* detects first and stays silent if either claims the app — the source
+  comment calls it a hack and says "such is life". It does **not** defer to nixpacks, railpack or
+  lambda, and `builder-dockerfile` sorts before all three. So `Dockerfile` + `nixpacks.toml` builds as
+  **dockerfile**, while `Dockerfile` + `project.toml` builds as **pack**. **[src]**
+- **herokuish is the fallback**, not merely one detected option: a repo matching nothing at all is
+  handed to herokuish, which then runs its own buildpack detection and fails *there* if nothing fits. **[src]**
+- Other `builder` properties: `build-dir <subdir>` for monorepos, `skip-cleanup`, and
+  `builder:report <app>` to see what was detected. **[docs]**
+
+### The herokuish builder
+
+Heroku v2a buildpacks, run inside the `gliderlabs/herokuish` image, which is built `FROM
+heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no build instructions**.
+
+- **Bundled buildpacks, in detection order:** `multi, ruby, nodejs, clojure, python, java, gradle,
+  scala, php, go, static, null`, each pinned — e.g. `heroku/heroku-buildpack-java v81`,
+  `heroku/heroku-buildpack-nodejs v366`, `dokku/heroku-buildpack-multi v1.2.0`. **[src]**
+  **Note `nodejs` is detected before `java`**, so a Java repo with a committed root `package.json`
+  is built as a Node app unless the buildpack is pinned.
+- **Buildpack selection is app state, and it beats the repo.** `dokku buildpacks:set <app> <url>`
+  (also `:add --index`, `:remove`, `:clear`, `:list`, `:report`) stores a property; the plugin's
+  `post-extract` trigger then **writes a `.buildpacks` file into the extracted source**, and
+  `getBuildpacks` returns the app property *before* consulting `app.json` or anything in the repo —
+  so the property overrides a committed `.buildpacks`. **[src]** The function's own doc comment claims
+  the reverse order (`.buildpacks` first) and is stale.
+- **`.buildpacks` with exactly one entry is treated as `BUILDPACK_URL`**, bypassing
+  `heroku-buildpack-multi` entirely; two or more entries go through multi. `BUILDPACK_URL` always
+  wins over both. **[src]**
+- **`heroku-buildpack-multi` runs each buildpack's `bin/compile` with the same `BUILD_DIR CACHE_DIR
+  ENV_DIR`**, sources each buildpack's `export` file afterwards if it has one, and **exits the whole
+  build if any listed buildpack fails to detect**. **[src]**
+- **Config vars are available at build time.** `builder-herokuish/pre-build` bundles every app config
+  var into an ENV_DIR at `/tmp/env` inside the build ("Adding BUILD_ENV to build environment…"). **[src]**
+  This is the opposite of the Dockerfile builder, where config vars are runtime-only.
+- **Build-phase `docker-options` are genuine container options here, unfiltered.** The trigger output
+  is split and passed straight to `docker container create` with **no allowlist** — unlike the
+  Dockerfile builder, which filters against a flag list. So `-v`, `--cpus` and anything else
+  `docker container create` accepts reach the build. **[src]** This is what the docs' warning that
+  "`build` options are container options" is actually describing.
+
+### The pack (Cloud Native Buildpacks) builder
+
+- **Default stack is `heroku/builder:24`**, overridable with
+  `dokku buildpacks:set-property <app> stack <image>`; the invocation is
+  `pack build "$IMAGE" --builder "$DOKKU_CNB_BUILDER" --path … --default-process web`. **[src]**
+- **The docs understate it.** They say specific buildpacks "cannot currently be specified" and there is
+  "no way to inject extra `pack` CLI arguments" **[docs]** — but `builder-pack/builder-build`
+  allowlists `-b/--buildpack`, `--buildpack-registry`, `--cache`, `--cache-image`, `--volume`,
+  `--env`, `--env-file`, `--extension`, `--network`, `--platform`, `--pull-policy`, `--run-image`,
+  `--previous-image`, `--clear-cache`, `--trust-builder`, `--uid`/`--gid`, `--workspace` and more. **[src]**
+- **`pack` is not installed by Dokku** and must be installed and version-managed separately. **[docs]**
+- `dokku repo:purge-cache` "currently has no effect" with this builder. **[docs]** — confirmed by
+  source, since that command only removes `cache-<app>`.
+
+### nixpacks and railpack
+
+Both are Railway's; both are core Dokku plugins whose CLI must be installed separately. **[docs]**
+Neither passes `docker-options` to `docker`: each has its own allowlist translating them into *its
+own* CLI's flags. **[src]**
+
+- **nixpacks' default cache identifier is a hash of the absolute build-directory path** **[docs]**,
+  and Dokku builds in `mktemp -d "/tmp/dokku-${DOKKU_PID}-…XXXXXX"` **[src]** — a fresh random path
+  per build. The consequence, which nothing in either set of docs states: **a nixpacks build on Dokku
+  should be cache-cold every time unless `--cache-key` is passed** through
+  `docker-options:add <app> build '--cache-key <app>'`. **[unverified]** — inference from two sourced
+  facts, not yet run.
+- **railpack requires a long-running privileged `moby/buildkit` container** plus
+  `BUILDKIT_HOST='docker-container://buildkit'` in `/etc/default/dokku`. **[docs]** Its `--cache-key`
+  is documented as "unique id to prefix to cache keys" **[docs]**, so without it cache keys are
+  unprefixed and therefore box-wide.
+- Railpack's Java support detects `pom.xml` or `gradlew`, defaults to JDK 21, and caches `~/.gradle`
+  and `.m2/repository`. **[docs]**
+
 ### The Dockerfile builder
+
+**Prohibited on this box** — see `D_builder`; the install sets `builder:set --global selected
+herokuish`, which means the detection below never runs. Kept here because it is what both predecessors
+used and what a reader coming from Dokku's own docs will expect.
 
 - **Auto-detected** when a `Dockerfile` exists at the repo root — but only if `herokuish` and `pack`
   builders do not claim the app first. **[docs]**
@@ -122,9 +230,52 @@ dokku docker-options:report [<app>] [<flag>] [--format json|stdout]
 
 ### Build caching
 
-Two independent mechanisms, and Dokku exposes both. The short version: **Dokku is the one product in
-the survey that lets the *platform* name a per-app build cache**, so shepherd-traefik's per-project
-`type=local` cache directory migrates rather than being lost.
+**Which mechanism you get is a property of the builder, and so is whether the *platform* or the *app*
+names the cache.** That is the fact `D_builder` turns on.
+
+| builder | cache mechanism | named by |
+|---|---|---|
+| herokuish | Docker volume `cache-$APP`, mounted at `/cache`, `CACHE_PATH=/cache` | **Dokku** |
+| pack | `pack-cache-<sanitized image ref>-<sha256[:6]>.build` volume; or `--cache …` | **pack**, or us |
+| nixpacks / railpack | BuildKit mount caches keyed by `--cache-key` | **us**, if we pass it |
+| dockerfile | `RUN --mount=type=cache,id=…` in the repo; plus `--cache-to`/`--cache-from` | **the app**, for mounts |
+
+#### The herokuish cache volume — what this box actually uses
+
+- `fn-builder-herokuish-ensure-cache` runs `docker volume create … cache-$APP` (labelled
+  `com.dokku.app-name` / `com.dokku.builder-type=herokuish`), and the build container is created with
+  `-v "cache-$APP:/cache" --env=CACHE_PATH=/cache`. Buildpacks receive it as Heroku's `CACHE_DIR`.
+  The app never learns the volume's name, and with no Dockerfile it has no syntax in which to open a
+  different mount. **[src]**
+- **`dokku repo:purge-cache <app>` is literally `docker volume rm -f cache-<app>`** **[src]** — per-app
+  purge granularity, and the only cache lever needed under herokuish. Documented as scoped to
+  buildpack builds; a no-op under `pack`, which names its volume differently.
+- **The Heroku Java buildpack puts the Maven repository inside that volume**: `lib/maven.sh` exports
+  `MAVEN_OPTS="… -Duser.home=${build_dir} -Dmaven.repo.local=${cache_dir}/.m2/repository"`, and caches
+  `.m2/wrapper` and the downloaded Maven under `${cache_dir}/.maven`. Its **default goals are
+  `clean dependency:list install`** and default opts `-DskipTests`, overridable with
+  `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`; `MAVEN_SETTINGS_PATH` / `MAVEN_SETTINGS_URL` supply a
+  `settings.xml`. **[src]**
+- **Note what `-Duser.home=${build_dir}` implies:** during the Maven build `~` is the fresh source
+  checkout, not the cache volume — so anything a build writes under `$HOME` other than `.m2`
+  (Vaadin's `~/.vaadin`, for instance) is **not** cached. **[src]**
+- **The Heroku Node.js buildpack caches into the same `CACHE_DIR`** — npm/pnpm/yarn caches and
+  `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
+  `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
+  control, and honours `NODE_MODULES_CACHE=false`. It **prunes devDependencies** at the end of its
+  own compile. **[src]**
+- **Nothing garbage-collects this volume.** Unlike a BuildKit mount cache it has no TTL and no GC
+  policy; it grows until `repo:purge-cache` or a volume prune removes it.
+- **The CNB equivalent, for when `pack` is revisited:** Heroku's CNB Maven buildpack creates a
+  `CachedLayerDefinition` named `repository`, points `-Dmaven.repo.local` at it and restores it with
+  `KeepLayer` **[src, heroku/buildpacks-jvm]**. Paketo's Java buildpack, by contrast, does **not**
+  cache Maven dependencies between builds and documents bind-mounting `$HOME/.m2` instead **[docs]** —
+  so "CNB caches Maven" is true of the stack, not of CNB.
+
+#### The Dockerfile-builder mechanisms (not in use here — see `D_builder`)
+
+The short version of why they lost: **Dokku lets the platform name a per-app *layer* cache, but not a
+per-app *mount* cache.**
 
 - **Cache mounts** — `RUN --mount=type=cache,target=…` in the app's own Dockerfile, documented by Dokku
   under *BuildKit directory caching*. Zero glue, and it survives changes that invalidate every layer.
@@ -146,15 +297,14 @@ the survey that lets the *platform* name a per-app build cache**, so shepherd-tr
 - **The hinge is `docker image build` routing to buildx**, which is where `type=local` export comes
   from. That holds on Docker Engine 23+, but it is a property of the *engine*, not of Dokku, and it has
   not been run on our box. **[unverified]**
-- **The buildpack builders solve it a different way, and completely.** `builder-herokuish` runs
-  `docker volume create cache-$APP`, mounts it with `-v "cache-$APP:/cache"` and sets
-  `--env=CACHE_PATH=/cache`, so the app never learns the cache's name and cannot address another's;
-  `dokku repo:purge-cache <app>` clears exactly that one, and the docs scope that command to buildpack
-  builds. The price is that with a buildpack there is no Dockerfile, which is the whole build contract.
-  **[src]** / **[docs]**
-- **buildkitd runs its own GC**, independently of Dokku and of any prune cron of ours; the defaults are
-  reported to evict unused entries after roughly 48 h. A cache mount is therefore not a durable store,
-  and an explicit buildkitd GC policy belongs in the install guide. **[unverified]**
+- **buildkitd runs its own GC**, independently of Dokku and of any prune cron; the defaults are
+  reported to evict unused entries after roughly 48 h, so a cache mount is not a durable store. **[unverified]**
+  Moot under herokuish, whose cache is a plain Docker volume with no TTL — but the thing to re-read
+  if a BuildKit-based builder is ever revisited.
+- **`--builder` is on the allowlist but is a dead end**: a `docker-container` driver builder needs
+  `--load` or `--output` to land the image in the daemon, neither is allowlisted, and both would be
+  dropped silently. Only the default `docker` driver builder is reachable. *(Reasoning, not tested.)*
+  Recorded so nobody spots `--builder` and re-derives "one buildx builder per project".
 
 ### `git:sync` — the SCM poll
 
@@ -236,6 +386,13 @@ timezone (usually UTC). **[docs]**
 Not an in-product feature.
 
 ## Ports — the `EXPOSE` trap
+
+**This whole section is a *Dockerfile-builder* problem, and `D_builder` removes it from our box.**
+Both buildpack builders end their build with
+`plugn trigger ports-set-detected "$APP" "http:<proxy-port>:5000"` **[src]**, and the buildpack tells
+the app to listen on `$PORT`. So a buildpack app is wired correctly with no `ports:set` at all; what
+follows applies to a `Dockerfile` app and is kept because the commands are still the ones to reach for
+when a mapping *is* wrong.
 
 ```bash
 dokku ports:list <app>
@@ -965,9 +1122,10 @@ The honest gap list, for the feature discussion:
 The `[unverified]` claims above, plus the ones that decide the design. This is the punch list for the
 first throwaway VPS:
 
-1. Does the box's Docker route `docker image build` to buildx, so that a `--cache-to type=local` passed
-   through `docker-options` actually *exports* a cache rather than being accepted and ignored? The
-   allowlist gets the flag to the build command (`[src]`); the engine decides whether it means anything.
+1. ~~Does the box's Docker route `docker image build` to buildx, so that a `--cache-to type=local`
+   passed through `docker-options` actually *exports* a cache?~~ **Moot** — `D_builder` prohibits the
+   Dockerfile builder, so no `--cache-to` is ever passed. Number retained so existing references
+   don't shift.
 2. Does `network:create` + `network:set <app> initial-network` actually isolate apps *and* leave
    host-nginx routing intact? Concretely, from inside app A's container: can it reach app B's
    unpublished port by container IP before the change, and not after; and does `curl` through nginx
@@ -982,15 +1140,18 @@ first throwaway VPS:
    reloads nginx without dropped connections; and an app created but never deployed serves the global
    cert on its first successful deploy. (The earlier question here — whether `dokku-letsencrypt` can
    issue and share a wildcard — is moot for v1 and only matters if `F_custom_domains` returns.)
-5. Are cache mounts, and a per-app `type=local` cache directory, actually preserved across
-   `git:sync --build` runs, and for how long, given buildkitd's own GC (reported to evict unused
-   entries after ~48 h)?
+5. ~~Are cache mounts, and a per-app `type=local` cache directory, preserved across `git:sync --build`
+   runs, and for how long?~~ **Superseded by 13** — under `D_builder` the cache is the `cache-$APP`
+   Docker volume, which has no TTL and no GC.
 6. **The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
    Vaadin-Boot app, commit trivially, redeploy — timed. Then deploy a second app sharing Maven
-   coordinates with the first and check whether it resolves the first one's `1.0-SNAPSHOT` jar.
+   coordinates with the first and check whether it resolves the first one's `1.0-SNAPSHOT` jar. Under
+   `D_builder` this should be **impossible by construction** (each app's `.m2` is its own
+   `cache-$APP` volume); run it anyway, once, as the demonstration.
 7. What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?
-8. Does `EXPOSE 8080` + `ports:set http:80:8080 https:443:8080` behave as documented, and does it
-   survive a rebuild?
+8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
+   it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
+   Dockerfile-builder question, moot under `D_builder`.)
 9. **Does `postgres:link` still work when the app is on a per-app network?** The link is a legacy
    default-bridge `--link`; on a user-defined bridge the app resolves the service by DNS name
    (`dokku-postgres-<svc>`), so it plausibly works *because* both sit on the per-app network rather than
@@ -1007,6 +1168,26 @@ first throwaway VPS:
     network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Worth ten
     minutes on the same box as item 2, because it is the evidence under `D_proxy`'s strongest reason and
     the thing to re-check if anyone ever proposes switching proxies.
+13. **Does a Vaadin app's second build come back warm under herokuish?** Deploy one, commit trivially,
+    `git:sync --build` again, and split the timing: is Maven resolving from `/cache/.m2/repository`
+    (expected yes), and is the *frontend* half — `~/.vaadin` node download, `node_modules`, npm
+    fetches — re-done from scratch (expected yes, and this is the question that decides items 14–16).
+14. **Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across rebuilds?**
+    It should: config vars reach the build via the ENV_DIR `[src]` and `/cache` is the per-app volume.
+    Confirm npm honours it under whatever package manager Vaadin picks (npm vs pnpm — pnpm reads
+    `store-dir`, not `npm_config_cache`).
+15. **Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
+    no custom frontend and no add-ons (Vaadin 24.1+)? If yes, items 13–14 stop mattering for most of
+    the farm, and the recipe is "keep apps on the default bundle" rather than "cache node".
+16. **Can `~/.vaadin` be relocated into the cache volume?** During the Maven build `$HOME` is the
+    source checkout, because the Java buildpack sets `-Duser.home=${build_dir}` `[src]`. Two things to
+    try: `MAVEN_CUSTOM_OPTS="… -Duser.home=/cache/home"` (does a Maven CLI `-D` override the
+    `MAVEN_OPTS` one for `System.getProperty`?), and a build-phase
+    `docker-options:add <app> build '-v …'` bind mount, which the herokuish path passes to
+    `docker container create` unfiltered `[src]`.
+17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
+    `docker-options:add <app> build '--cpus 2'`. If it does, `F_build_cpu_limit` is not a gap after
+    all, and the feature survey's `🕳️` was a Dockerfile-builder artefact.
 
 ## Sources
 

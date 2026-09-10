@@ -183,7 +183,7 @@ What remains in this section is only confirming the `F_reserved_ids` drop.
 | `F_app_stats` | Per-app CPU / memory | Web Admin / `shepherd-cli stats`, from `docker` | Dokku won't do monitoring by design — but apps are plain containers, so `docker stats` / `lazydocker` / `ctop`, zero code | ✅ |
 | `F_admin_iface` | Create, deploy, restart, inspect | Web Admin + `shepherd-cli` | Dokku's CLI over SSH; `*:report --format json` makes it a structured interface, not screen-scraping | ✅ |
 | `F_web_admin` | A **browser** UI | shepherd-web (Vaadin) | Dokku Pro (paid, proprietary); third-party UIs are a graveyard with one survivor | ✂️ |
-| `F_multi_user` ⁿᵉʷ | **An admin adds users; each user sees, creates, edits and deletes only their own projects** | `UserRoles.USER`/`ADMIN`; the project list filters on `owner.email` unless you're admin | **Nothing in core** — an authorised SSH key may do anything to any app. Buildable on the `user-auth` trigger; `dokku-acl` is the stale community attempt | 🕳️ |
+| `F_multi_user` ⁿᵉʷ | **An admin adds users; each user sees, creates, edits and deletes only their own projects** | `UserRoles.USER`/`ADMIN`; the project list filters on `owner.email` unless you're admin | **Nothing in core** — an authorised SSH key may do anything to any app. Buildable on the `user-auth` trigger; `dokku-acl` is the stale community attempt. **Deferred to v2 — `D_single_operator`** | 🕳️ |
 | `F_user_login` ⁿᵉʷ | **Log in with a password or Google SSO**, SSO self-provisioning a user whose email ends with an allowed domain | `webadmin-users.json` + hashed passwords; `googleSSOClientId`, `ssoOnlyAllowEmailsEndingWith` | **Nothing** — no password, no SSO, no OIDC, and no HTTP API to attach one to. SSH keys are the sole authentication | ✂️ |
 
 `F_web_admin` is decided in principle by `D_retire_shepherd_java`, but that entry's `Status:` says the
@@ -201,12 +201,15 @@ naive Dokku successor gives every keyholder the whole box. `RESEARCH.md` → *Us
 has the detail.
 
 `F_user_login` is proposed as a straight drop rather than a gap, because nothing short of Dokku Pro
-(paid, and its reverse-proxy auth) could ever provide it and there is no browser UI left to log in to.
-`F_multi_user` is a real fork, with four positions:
+(paid, and its reverse-proxy auth) could ever provide it and there is no browser UI left to log in to —
+unless v2 takes `Q_web_admin`'s option 3, the reworked Vaadin admin, which is the one route that brings
+Google SSO back. `F_multi_user` is a real fork, with four positions; **position 1 is v1, decided
+2026-09-10 as `D_single_operator`**, and the other three are the v2 candidates:
 
 1. **Single-operator box.** Only the operator holds a key. User management evaporates; `F_project_owner`
-   becomes a contact field in the descriptor, not an ACL. Cheapest, and the honest reading of "no web
-   admin". The question this turns on is simply *who else gets a key*.
+   is a contact field (`SHEPHERD_OWNER`), not an ACL. Cheapest, and the honest reading of "no web
+   admin". The one thing v1 must get right for v2's sake is storing the owner in a form a `user-auth`
+   hook can match against `$SSH_NAME` — see the entry's *Consequences*.
 2. **Our own `user-auth` hook.** `SHEPHERD_OWNER` already names an owner per app (`D_dokku_is_truth`),
    so the check is "is `$SSH_NAME` the app's owner" — one `config:get`, a small Bash hook, no third-party
    dependency, and squarely "the answer is a wrapper script". Buys per-user push / restart / logs;
@@ -271,13 +274,13 @@ Roughly in the order they need answering; each becomes a `D_` entry once settled
   shared default bridge and the `enable_icc=false` variant are recorded there as roads not taken. What
   remains open is only the axis that was never this question's — app-to-host and egress, now
   `ideas/harden-container-egress.md`.
-- **`Q_multi_user`** — is Shepherd2 a single-operator box, or does it keep per-user project ownership?
-  Really the question *who else gets an SSH key*, because in core Dokku a key is unrestricted: there is
-  no ownership to scope it with. Answering "only me" deletes `F_multi_user` and `F_user_login` outright
-  and makes `F_project_owner` a contact field; answering "the team" costs a `user-auth` hook of our own
-  (cheap — `SHEPHERD_OWNER` exists per `D_dokku_is_truth`) or an unmaintained plugin in the authorization
-  path.
-  *(Section E.)*
+- **`Q_multi_user`** — **answered for v1 2026-09-10: single operator, see `D_single_operator`.** Stays
+  open as the **v2** question: how does per-user project ownership come back? Really the question *who
+  else gets an SSH key*, because in core Dokku a key is unrestricted: there is no ownership to scope it
+  with. The candidates are a `user-auth` hook of our own (cheap — `SHEPHERD_OWNER` exists per
+  `D_dokku_is_truth`, and matching it against `$SSH_NAME` is the whole hook), `dokku-acl` in the
+  authorization path, or Dokku Pro. Whether `F_user_login` returns with it depends on `Q_web_admin`'s
+  option 3. *(Section E.)*
 - **`Q_web_admin`** — **answered for the first version 2026-09-10: no UI.** The admin interface is an
   SSH login to the box and `dokku` / `shepherd2` commands issued by hand, with `README.md` documenting
   every common scenario (build log, runtime log, restart, config change, extra domain, build-arg change,

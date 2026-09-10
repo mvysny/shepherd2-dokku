@@ -164,8 +164,8 @@ box.
   (`dokku ssh-keys:add`, where a key name containing `admin` is privileged) — and that is *less* than it
   sounds: core Dokku has no app ownership, so every authorised key may run every command against every
   app. Per-user scoping would have to be built on the `user-auth` trigger. See *Users and access
-  control* in `RESEARCH.md`, and `F_multi_user` / `Q_multi_user` in `ideas/features-to-preserve.md` for
-  whether we want it at all.
+  control* in `RESEARCH.md`; `D_single_operator` scopes v1 to one keyholder and leaves per-user
+  ownership to v2 (`Q_multi_user` in `ideas/features-to-preserve.md`).
 - **Five behaviours lose their only home** and must each be re-provided, re-scoped or consciously
   dropped: the project descriptor, the box-wide memory quota, reserved ids, the smart-update logic, and
   the graceful "safe to reboot" wait. None has a Dokku counterpart. `D_dokku_is_truth` settles the first,
@@ -456,3 +456,45 @@ became whether to keep a second one on top of it.
   holding no server-side state, so its death costs nothing; that is the property `D_retire_shepherd_java`
   found missing in the class. Whether any browser UI returns is still `Q_web_admin`.
 - **`D_retire_shepherd_java`'s open "shape of the replacement" is closed for the CLI half** by this entry.
+
+## D_single_operator — v1 has one keyholder; per-user project ownership is v2 (2026-09-10)
+
+**Status:** Accepted 2026-09-10 for the first version. Deliberately scoped: this decides *v1*, and it
+defers rather than drops multi-user. `Q_multi_user` in `ideas/features-to-preserve.md` stays open as
+the v2 question.
+
+**Context.** Shepherd today has users: an admin adds them, and each sees, creates, edits and deletes only
+their own projects, filtered on `owner.email`. Core Dokku has nothing of the kind — an authorised SSH key
+may run every command against every app, the only privilege distinction being the substring `admin` in a
+key name. So "access control becomes SSH keys" is not a mapping of the old model; it is its removal. Any
+per-user model would be built on the `user-auth` trigger, by us or by the stale `dokku-acl` plugin.
+`RESEARCH.md` → *Users and access control* has the detail.
+
+**Decision.** **In v1 exactly one person holds a key: the operator.** They log into the box as an admin
+user and run `dokku` and `shepherd2` from one shell (`Q_web_admin`). No `user-auth` hook, no `dokku-acl`,
+no `ssh dokku@host` remote access for anyone else. `SHEPHERD_OWNER` is a contact field, not an ACL.
+
+**Why.** Every multi-user option costs a security-critical component in the authorization path — our own
+hook, an unaudited plugin, or Dokku Pro — and none of it is needed to get a box building and serving
+projects. Deciding it later costs nothing *provided* v1 stores the one input v2 needs, which is the owner
+per app; `D_dokku_is_truth` already does.
+
+**Alternatives rejected** (for v1 only; all remain v2 candidates and are argued in `Q_multi_user`).
+
+- *Our own `user-auth` hook* — "is `$SSH_NAME` the app's `SHEPHERD_OWNER`", one `config:get`. Cheap, and
+  the likely v2 shape, but a hook we would own in the authorization path before the box even exists.
+- *`dokku-acl`.* Stale (last commit 2024-01, adapting to a trigger rename), self-described as not
+  security-audited; on a Dokku trigger rename it silently stops enforcing.
+- *Dokku Pro.* Teams and SSO, paid and proprietary; already rejected in `D_retire_shepherd_java`.
+
+**Consequences.**
+
+- **`F_multi_user` and `F_user_login` are deferred, not dropped.** They stay in the ideas file as the v2
+  fork. The only v2 route to `F_user_login` (Google SSO) is the reworked Vaadin admin, option 3 of
+  `Q_web_admin`.
+- **Store `SHEPHERD_OWNER` in a form v2 can match against a key name.** The `user-auth` trigger sees the
+  key's `$SSH_NAME`, so if v1 records an email, v2 either names keys by email (`ssh-keys:add
+  alice@example.com …`) or adds a mapping. Naming keys by email is the cheap answer; note it in
+  `create-app`'s header when it is written.
+- **Nothing in v1 may assume more than one keyholder** — no per-user paths, no owner checks in
+  `shepherd2` — so that v2 adds the hook without unpicking anything.

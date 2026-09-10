@@ -9,8 +9,9 @@ and deploys them as Docker containers at `https://PROJECTID.<domain>` on a singl
 the building, running, routing and TLS; this repo is the **glue** — host setup, per-project
 convergence, the periodic-rebuild trigger, the wildcard-certificate story, and housekeeping.
 
-**Status: the design is agreed and the first code has landed** — `shepherd2-install` exists; the CLI,
-`uninstall` and the tests do not. **`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
+**Status: the design is agreed and the code is landing** — `shepherd2-install`, the `shepherd2` CLI and
+its tests exist; `shepherd2-uninstall` does not, and **no box has been installed from any of it yet**.
+**`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
 throwaway VPS. The feature survey that decided *what* the rebuilt thing does has graduated and is gone
@@ -124,8 +125,9 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 |---|---|
 | `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
 | `shepherd2-uninstall` | *not written yet.* Bash. The inverse, driven by `SHEPHERD_TLS_MODE` |
-| `shepherd2` | *not written yet.* Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache` |
-| `test/` | *not written yet.* minitest from `ruby-minitest` (apt, dev-only — **no `Gemfile`**, `D_ruby`), run as `ruby test/run` |
+| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache`. Its process-running seams (`Dokku`, `Docker`, `BuildLock`) are constructor arguments — that is the test surface |
+| `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`) |
+| `.github/workflows/test.yml` | the suite plus shellcheck, in an `ubuntu:24.04` container so it runs on the box's Ruby |
 
 ## Conventions when editing
 

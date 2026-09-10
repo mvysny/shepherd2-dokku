@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# The whole suite: `ruby test/run`, or `test/run` once it is executable.
+#
+# Needs minitest, which is not part of Ubuntu's `ruby` package: `apt install ruby-minitest`. That is a
+# dev-only dependency and must never appear in shepherd2-install — the box runs the CLI, not the tests
+# (D_ruby: no Gemfile, no bundler, no gem to pin).
+
+Dir[File.expand_path('*_test.rb', __dir__)].sort.each { |test| require test }

@@ -1,7 +1,8 @@
 # SOLUTION.md — the v1 box, assembled
 
 > **This describes the box we intend to build, not one that has ever been run.** `shepherd2-install`
-> exists; nothing else does, and no box has been installed from it yet. Everything here is decided (each claim names the `D_` entry that decided it), but the parts
+> and the `shepherd2` CLI exist; `shepherd2-uninstall` does not, and no box has been installed from any
+> of it yet. Everything here is decided (each claim names the `D_` entry that decided it), but the parts
 > that rest on Dokku behaviour nobody has run yet are marked `[unverified]` and point at
 > `RESEARCH.md` → *Questions only a box can answer*.
 

@@ -1,0 +1,614 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# shepherd2 — the Shepherd2 CLI: register, destroy, poll, rebuild, wait, prune.
+#
+# Every verb here exists because Dokku has no single command for it. Anything Dokku *does* have a
+# command for is used as-is and documented in README.md's cheat sheet: `dokku logs`, `ps:restart`,
+# `config:set`, `domains:add` are Dokku's, not ours, and a `shepherd2 logs` would be the shepherd-cli
+# this design deliberately retired (D_dokku_is_truth).
+#
+# USAGE
+#   shepherd2 create-app ID URL [REF] [options]   register a project and build it for the first time
+#   shepherd2 destroy-app ID [--yes]              its exact inverse
+#   shepherd2 poll                                the */5 cron: build every project whose ref moved
+#   shepherd2 rebuild ID                          force a build of an unchanged ref; the retry
+#   shepherd2 wait-idle [--timeout SECONDS]       block until no build is running
+#   shepherd2 clearcache                          the weekly prune
+#
+# create-app OPTIONS
+#   --owner EMAIL      contact address, stored as SHEPHERD_OWNER. Not an ACL (D_single_operator).
+#   --mem SIZE         runtime memory limit. Default 256m.
+#   --cpu N            runtime CPU limit. Default: none.
+#   --build-mem SIZE   build-phase memory limit. Default 2g. One build runs at a time box-wide, so
+#                      this is a peak rather than a per-app multiplier.
+#   --build-cpu N      build-phase CPU limit. Default: none. [unverified — punch-list 17]
+#   --buildpack NAME   buildpack to pin, e.g. heroku/java. Strongly recommended: herokuish detects
+#                      nodejs before java, and a Vaadin app commits a package.json, so *relying on
+#                      detection is a bug* (D_builder). Without it the repo's own .buildpacks decides.
+#   --build-dir PATH   subdirectory of the repo to build, for a monorepo.
+#
+# EXIT CODES
+#   0 success · 1 failure · 2 usage error · 3 poll/rebuild skipped because a build is already running
+#
+# PREREQUISITES
+#   Runs as root on a box built by shepherd2-install. Ruby 3.2 (Ubuntu 24.04's), standard library
+#   only — no Gemfile, no gems, nothing to reinstall after a distro upgrade (D_ruby).
+#
+# WHAT THIS STORES
+#   Two config vars per app — SHEPHERD_GIT_URL and SHEPHERD_OWNER — and one lock file. Nothing else.
+#   No project descriptor, no converger, no data directory: Dokku's state is the only source of truth,
+#   and the way to read a project fact is `dokku *:report --format json` (D_dokku_is_truth).
+#
+# SEE ALSO
+#   SOLUTION.md — the flows these verbs implement, step by step
+#   D_dokku_is_truth · D_isolation (the per-app network) · D_builder (herokuish, and the cache volume)
+#   D_admin_namespace (why `admin*` is refused) · D_ruby (why this is Ruby and the installer is not)
+
+require 'English'
+require 'json'
+require 'optparse'
+require 'open3'
+
+VERSION = '0.1.0'
+
+POLL_LOCK_PATH = '/run/lock/shepherd2-poll.lock'
+GIT_URL_VAR    = 'SHEPHERD_GIT_URL'
+OWNER_VAR      = 'SHEPHERD_OWNER'
+
+DEFAULT_MEMORY       = '256m'
+DEFAULT_BUILD_MEMORY = '2g'
+
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_USAGE = 2
+EXIT_BUSY = 3
+
+# Raised for anything the operator should read as "this went wrong", as opposed to a crash.
+class Shepherd2Error < StandardError; end
+
+# A usage mistake: wrong arguments, unknown verb, an id we refuse.
+class UsageError < Shepherd2Error; end
+
+# Runs +dokku+. Read a fact, guard on it, then mutate:
+#
+#   dokku = Dokku.new
+#   dokku.ok?('apps:exists', 'demo')                            # => false
+#   dokku.run('apps:create', 'demo')                            # output goes to the terminal
+#   dokku.capture_or_nil('config:get', 'demo', 'SHEPHERD_GIT_URL')
+#
+# Commands are given as argv, never as a command line, so an app id or a git URL is never interpreted
+# by a shell.
+class Dokku
+  # Runs a command with its output left attached to the terminal, so the operator can watch a build.
+  #
+  # @param args [Array<String>] the dokku subcommand and its arguments.
+  # @return [true]
+  # @raise [Shepherd2Error] if the command exits non-zero.
+  def run(*args)
+    ok = system('dokku', *args)
+    raise Shepherd2Error, "dokku #{args.join(' ')} failed" unless ok
+
+    true
+  end
+
+  # Runs a command for its exit status alone, output discarded — the +*:exists+ guards.
+  #
+  # @param args [Array<String>] the dokku subcommand and its arguments.
+  # @return [Boolean] whether it exited zero.
+  def ok?(*args)
+    system('dokku', *args, out: File::NULL, err: File::NULL) ? true : false
+  end
+
+  # @param args [Array<String>] the dokku subcommand and its arguments.
+  # @return [String] the command's stdout.
+  # @raise [Shepherd2Error] if the command exits non-zero.
+  def capture(*args)
+    out, err, status = Open3.capture3('dokku', *args)
+    raise Shepherd2Error, "dokku #{args.join(' ')} failed: #{err.strip}" unless status.success?
+
+    out
+  end
+
+  # Like #capture, for a read that is allowed to come up empty — a config var an app does not have.
+  #
+  # @param args [Array<String>] the dokku subcommand and its arguments.
+  # @return [String, nil] stdout, or nil if the command failed.
+  def capture_or_nil(*args)
+    out, _err, status = Open3.capture3('dokku', *args)
+    status.success? ? out : nil
+  end
+
+  # @param args [Array<String>] the dokku subcommand and its arguments, including +--format json+.
+  # @return [Hash, Array] the parsed report.
+  # @raise [Shepherd2Error] if the command exits non-zero.
+  # @raise [JSON::ParserError] if its output is not JSON.
+  def json(*args)
+    JSON.parse(capture(*args))
+  end
+end
+
+# Prunes the Docker daemon:
+#
+#   Docker.new.prune   # dangling images and stopped containers, never volumes
+#
+# Separate from Dokku so that reaching around Dokku to the daemon cannot happen by accident: this is
+# the one thing Dokku has no command for.
+class Docker
+  # @return [true]
+  # @raise [Shepherd2Error] if the prune fails.
+  def prune
+    ok = system('docker', 'system', 'prune', '-f')
+    raise Shepherd2Error, 'docker system prune failed' unless ok
+
+    true
+  end
+end
+
+# The box-wide build lock — whoever holds it is the only one building:
+#
+#   BuildLock.new.with_lock { build_every_app }   # => :busy if somebody else holds it
+#
+# Taking it is always non-blocking, and that is a design constraint rather than a convenience: at 288
+# poll ticks a day, a tick that lands on a running build has to skip rather than queue, or ticks
+# accumulate faster than they drain.
+class BuildLock
+  # @param path [String] the lock file; created if absent.
+  def initialize(path: POLL_LOCK_PATH)
+    @path = path
+  end
+
+  # Runs the block under the lock if it is free.
+  #
+  # @return [Object, :busy] the block's value, or +:busy+ if somebody else holds the lock.
+  def with_lock
+    file = File.open(@path, File::RDWR | File::CREAT, 0o644)
+    return :busy unless file.flock(File::LOCK_EX | File::LOCK_NB)
+
+    begin
+      yield
+    ensure
+      file.flock(File::LOCK_UN)
+      file.close
+    end
+  end
+
+  # @return [Boolean] whether a build is in progress somewhere else right now.
+  def held_by_somebody_else?
+    file = File.open(@path, File::RDWR | File::CREAT, 0o644)
+    taken = file.flock(File::LOCK_EX | File::LOCK_NB)
+    file.flock(File::LOCK_UN) if taken
+    !taken
+  ensure
+    file&.close
+  end
+end
+
+# The verbs, one method each:
+#
+#   shepherd = Shepherd2.new
+#   shepherd.create_app('demo', 'https://github.com/me/demo', 'main', buildpack: 'heroku/java')
+#   shepherd.poll        # => EXIT_OK, or EXIT_FAILURE if some app failed to build
+#   shepherd.wait_idle   # blocks
+#
+# Every verb returns the exit code the process should end with, and raises Shepherd2Error for anything
+# the operator should read as a failure. The seams are constructor arguments so that a test can drive
+# the whole sequence without a Dokku.
+class Shepherd2
+  # @param dokku [Dokku] runs dokku commands.
+  # @param docker [Docker] prunes the daemon, for +clearcache+ alone.
+  # @param lock [BuildLock] serialises builds box-wide.
+  # @param out [IO] where progress goes.
+  # @param err [IO] where warnings go.
+  def initialize(dokku: Dokku.new, docker: Docker.new, lock: BuildLock.new, out: $stdout, err: $stderr)
+    @dokku = dokku
+    @docker = docker
+    @lock = lock
+    @out = out
+    @err = err
+  end
+
+  # --- create-app ------------------------------------------------------------------------------
+
+  # Registers a project and builds it for the first time.
+  #
+  #   create_app('demo', 'https://github.com/me/demo', 'main', buildpack: 'heroku/java')
+  #
+  # Re-runnable, which is the point: a first build that fails is the *normal* case — the Procfile /
+  # buildpack / system.properties trio usually needs a couple of tries — so every step before the
+  # build is guarded and running this again is the fix, not destroy-and-recreate.
+  #
+  # @param id [String] the app id, which becomes the subdomain.
+  # @param url [String] a publicly cloneable git URL; the box holds no credential.
+  # @param ref [String, nil] branch or tag; Dokku's deploy-branch default of +master+ applies if nil.
+  # @param options [Hash{Symbol => String}] :owner, :mem, :cpu, :build_mem, :build_cpu, :buildpack,
+  #   :build_dir — see the header.
+  # @return [Integer] EXIT_OK.
+  # @raise [UsageError] if the id is reserved or malformed.
+  # @raise [Shepherd2Error] if any dokku command fails.
+  def create_app(id, url, ref = nil, options = {})
+    validate_id!(id)
+    raise UsageError, 'a git URL is required' if url.nil? || url.empty?
+
+    if @dokku.ok?('apps:exists', id)
+      say "app #{id} already exists"
+    else
+      @dokku.run('apps:create', id)
+    end
+
+    # Written *before* the first build, so a project whose first build fails is still in the poll and
+    # can be retried by pushing a fix.
+    config = { GIT_URL_VAR => url }
+    config[OWNER_VAR] = options[:owner] if options[:owner]
+    @dokku.run('config:set', '--no-restart', id, *config.map { |k, v| "#{k}=#{v}" })
+
+    runtime_limit = ['resource:limit', '--memory', options.fetch(:mem, DEFAULT_MEMORY)]
+    runtime_limit += ['--cpu', options[:cpu].to_s] if options[:cpu]
+    @dokku.run(*runtime_limit, id)
+
+    build_limit = ['resource:limit', '--process-type', 'build',
+                   '--memory', options.fetch(:build_mem, DEFAULT_BUILD_MEMORY)]
+    # Build CPU is expected to work on the herokuish path, which passes build options to
+    # `docker container create` unfiltered. [unverified — punch-list 17]: if it turns out not to, this
+    # flag is dropped, not worked around.
+    build_limit += ['--cpu', options[:build_cpu].to_s] if options[:build_cpu]
+    @dokku.run(*build_limit, id)
+
+    # initial-network is persisted app state that Dokku re-applies at container creation, so nothing
+    # ever has to re-attach anything afterwards (D_isolation). Set before the first build, or that
+    # build's container joins the wrong network.
+    network = network_name(id)
+    if @dokku.ok?('network:exists', network)
+      say "network #{network} already exists"
+    else
+      @dokku.run('network:create', network)
+    end
+    @dokku.run('network:set', id, 'initial-network', network)
+
+    # Pinned rather than detected: herokuish tries nodejs before java, and a Vaadin app commits a
+    # package.json (D_builder).
+    @dokku.run('buildpacks:set', id, options[:buildpack]) if options[:buildpack]
+
+    @dokku.run('builder:set', id, 'build-dir', options[:build_dir]) if options[:build_dir]
+
+    # The ref is passed explicitly because git:sync with a ref *sets* deploy-branch, which otherwise
+    # defaults to `master`; every later sync can then omit it.
+    sync = ['git:sync', '--build', id, url]
+    sync << ref if ref
+    @dokku.run(*sync)
+
+    EXIT_OK
+  end
+
+  # --- destroy-app -----------------------------------------------------------------------------
+
+  # Destroys a project: its containers, its build cache and its network.
+  #
+  # @param id [String] the app id.
+  # @param options [Hash{Symbol => Boolean}] :yes skips the confirmation prompt.
+  # @return [Integer] EXIT_OK.
+  # @raise [Shepherd2Error] if the app does not exist, or the operator declines to confirm.
+  def destroy_app(id, options = {})
+    validate_id!(id)
+    raise Shepherd2Error, "no such app: #{id}" unless @dokku.ok?('apps:exists', id)
+
+    confirm_destruction!(id) unless options[:yes]
+
+    # Whether apps:destroy also removes the cache-<app> volume is [unverified]; purging first is
+    # harmless if it does and necessary if it does not. It is literally `docker volume rm -f
+    # cache-<app>`, so it tolerates a volume that was never created — but a box where it fails is
+    # still a box we want destroyed, so this is best-effort rather than fatal.
+    begin
+      @dokku.run('repo:purge-cache', id)
+    rescue Shepherd2Error => e
+      oops "could not purge the build cache (#{e.message}); destroying anyway"
+    end
+
+    @dokku.run('apps:destroy', '--force', id)
+
+    # The second half matters, or the box leaks a Docker network per project destroyed (D_isolation).
+    # `--force` skips Dokku's own confirmation, which we have already asked for above.
+    network = network_name(id)
+    @dokku.run('network:destroy', '--force', network) if @dokku.ok?('network:exists', network)
+
+    EXIT_OK
+  end
+
+  # --- poll ------------------------------------------------------------------------------------
+
+  # Builds every registered project whose ref moved — the */5 cron.
+  #
+  # Serial, and tolerant: one project's failure must not stop the projects after it in the list.
+  #
+  # @return [Integer] EXIT_OK, including when the tick was skipped because a build was already
+  #   running; EXIT_FAILURE if any project failed.
+  def poll
+    result = @lock.with_lock do
+      failures = 0
+      registered_apps.each do |app, url|
+        say "polling #{app}"
+        begin
+          # Dokku fetches; if the ref did not move, nothing is built. A failed build is therefore not
+          # retried until upstream commits again — `shepherd2 rebuild` is the override.
+          #
+          # A no-change tick still writes a build record and a log file, which at 288 ticks a day
+          # prunes real build logs out of the 20-per-app window. Whether this should pre-check the
+          # remote ref so a no-op tick never enters git:sync is Q_poll_churn — undecided, and the
+          # only open question in this flow.
+          @dokku.run('git:sync', '--build-if-changes', app, url)
+        rescue Shepherd2Error => e
+          oops "#{app}: #{e.message}"
+          failures += 1
+        end
+      end
+      failures.zero? ? EXIT_OK : EXIT_FAILURE
+    end
+
+    if result == :busy
+      say 'a build is already running; skipping this tick'
+      return EXIT_OK # Not a failure: skipping is the designed behaviour, and cron should stay quiet.
+    end
+
+    result
+  end
+
+  # --- rebuild ---------------------------------------------------------------------------------
+
+  # Forces a build: the retry after a failure, and the only way to rebuild an unchanged ref.
+  #
+  # @param id [String] the app id.
+  # @return [Integer] EXIT_OK, or EXIT_BUSY if another build holds the lock.
+  # @raise [Shepherd2Error] if the app is unknown or was not registered by #create_app.
+  def rebuild(id)
+    validate_id!(id)
+    raise Shepherd2Error, "no such app: #{id}" unless @dokku.ok?('apps:exists', id)
+
+    url = git_url_for(id)
+    raise Shepherd2Error, "#{id} has no #{GIT_URL_VAR}; it was not registered by create-app" if url.nil?
+
+    # Takes the same lock as the poll, non-blocking: a rebuild that lands on a running build fails
+    # fast and tells the operator to retry, rather than queueing behind a five-minute cron.
+    result = @lock.with_lock { @dokku.run('git:sync', '--build', id, url) && EXIT_OK }
+
+    if result == :busy
+      oops 'a build is already running; try again when it finishes (shepherd2 wait-idle)'
+      return EXIT_BUSY
+    end
+
+    result
+  end
+
+  # --- wait-idle -------------------------------------------------------------------------------
+
+  # Blocks until no build is running, so a deliberate reboot never lands mid-build.
+  #
+  # Two conditions, because either can be true without the other: the poll lock (a tick in progress)
+  # and Dokku's own view of running builds (a +git push+ deploy, which never touches our lock).
+  #
+  # @param timeout [Integer] seconds to wait before giving up.
+  # @param interval [Integer] seconds between checks.
+  # @param clock [#now] injected for tests.
+  # @return [Integer] EXIT_OK once idle, EXIT_FAILURE on timeout.
+  def wait_idle(timeout: 3600, interval: 5, clock: Time)
+    deadline = clock.now + timeout
+    loop do
+      return EXIT_OK if idle?
+
+      if clock.now >= deadline
+        oops "still building after #{timeout}s"
+        return EXIT_FAILURE
+      end
+      sleep interval
+    end
+  end
+
+  # --- clearcache ------------------------------------------------------------------------------
+
+  # Prunes dangling images and stopped containers — the weekly cron.
+  #
+  # Never a blanket volume prune and never +--volumes+: under D_builder the build cache *is* the
+  # per-app +cache-<app>+ volume, nothing garbage-collects it, and at a five-minute poll a build is
+  # always about to want it. The per-app lever is +dokku repo:purge-cache <app>+, run deliberately.
+  #
+  # @return [Integer] EXIT_OK.
+  def clearcache
+    @docker.prune
+    EXIT_OK
+  end
+
+  # --- shared ----------------------------------------------------------------------------------
+
+  private
+
+  def network_name(id) = "app-#{id}"
+
+  def say(message) = @out.puts("shepherd2: #{message}")
+
+  def oops(message) = @err.puts("shepherd2: #{message}")
+
+  # Ours, not Dokku's: Dokku's own app-name rules (tightened in 0.38.2 against command injection)
+  # apply underneath and are its business to enforce.
+  def validate_id!(id)
+    raise UsageError, 'an app id is required' if id.nil? || id.empty?
+
+    # A namespace is far cheaper to reserve than to reclaim: reclaiming one means renaming a live app,
+    # which changes its URL and is a destroy-and-recreate (D_admin_namespace).
+    if id.start_with?('admin')
+      raise UsageError, "'#{id}' is reserved: ids beginning with `admin` are kept for a future admin " \
+                        'surface (D_admin_namespace)'
+    end
+
+    # The app name *is* the subdomain, and a wildcard certificate matches exactly one label:
+    # `foo.bar.mydomain.me` is not covered by `*.mydomain.me`. So a dotted id would produce an app
+    # that works over http and fails over https, which is the worst way to find out.
+    raise UsageError, "'#{id}' contains a dot; the app name is one DNS label under the wildcard" if id.include?('.')
+
+    return if id.match?(/\A[a-z0-9][a-z0-9-]*\z/)
+
+    raise UsageError, "'#{id}' is not a valid app id: lowercase letters, digits and dashes, " \
+                      'starting with a letter or digit'
+  end
+
+  def confirm_destruction!(id)
+    unless $stdin.tty?
+      raise Shepherd2Error, "refusing to destroy #{id} without a terminal to confirm at; pass --yes"
+    end
+
+    @out.print "Destroy #{id}, its containers, its build cache and its network? Type the id to confirm: "
+    answer = $stdin.gets&.strip
+    raise Shepherd2Error, 'aborted' unless answer == id
+  end
+
+  # Every app that create-app registered, as { app => url }. An app without SHEPHERD_GIT_URL was made
+  # by hand with `dokku apps:create` and is not ours to poll.
+  def registered_apps
+    app_names.each_with_object({}) do |app, apps|
+      url = git_url_for(app)
+      apps[app] = url if url
+    end
+  end
+
+  # `apps:list` prints a `=====>` header and then one app per line. This is the one place we read
+  # human-formatted Dokku output; everything else that needs a fact reads a `--format json` report.
+  def app_names
+    @dokku.capture('apps:list').lines.map(&:strip)
+          .reject { |line| line.empty? || line.start_with?('=====>') }
+  end
+
+  def git_url_for(app)
+    url = @dokku.capture_or_nil('config:get', app, GIT_URL_VAR)&.strip
+    url && !url.empty? ? url : nil
+  end
+
+  def idle?
+    !@lock.held_by_somebody_else? && running_builds.empty?
+  end
+
+  # `builds:list` with no app lists every build box-wide, which is what makes this catch a deploy that
+  # came from a `git push` rather than from us. [unverified] — the record schema is [src]-derived.
+  def running_builds
+    builds = @dokku.json('builds:list', '--format', 'json')
+    builds = builds.values.flatten if builds.is_a?(Hash)
+    Array(builds).select { |build| build['status'] == 'running' }
+  rescue Shepherd2Error, JSON::ParserError
+    [] # A box with no builds yet, or a Dokku that has nothing to say. Not a reason to block a reboot.
+  end
+end
+
+# --- Argument parsing ----------------------------------------------------------------------------
+
+class CLI
+  USAGE = <<~TEXT
+    usage: shepherd2 VERB [arguments]
+
+      create-app ID URL [REF]     register a project and build it
+      destroy-app ID              its exact inverse
+      poll                        build every project whose ref moved
+      rebuild ID                  force a build of an unchanged ref
+      wait-idle                   block until no build is running
+      clearcache                  weekly prune of dangling images and stopped containers
+
+    `shepherd2 VERB --help` describes one verb. Anything Dokku already has a command for — logs,
+    ps:restart, config:set, domains:add — is a `dokku` command; see README.md's cheat sheet.
+  TEXT
+
+  def initialize(shepherd: Shepherd2.new)
+    @shepherd = shepherd
+  end
+
+  def run(argv)
+    verb = argv.shift
+    case verb
+    when 'create-app'  then create_app(argv)
+    when 'destroy-app' then destroy_app(argv)
+    when 'poll'        then no_arguments!(argv, 'poll') { @shepherd.poll }
+    when 'rebuild'     then rebuild(argv)
+    when 'wait-idle'   then wait_idle(argv)
+    when 'clearcache'  then no_arguments!(argv, 'clearcache') { @shepherd.clearcache }
+    when '--version'   then puts "shepherd2 #{VERSION}"; EXIT_OK
+    when nil, '-h', '--help' then puts USAGE; EXIT_OK
+    else raise UsageError, "unknown verb: #{verb}"
+    end
+  rescue UsageError => e
+    warn "shepherd2: #{e.message}"
+    warn USAGE
+    EXIT_USAGE
+  rescue Shepherd2Error => e
+    warn "shepherd2: #{e.message}"
+    EXIT_FAILURE
+  rescue Interrupt
+    warn 'shepherd2: interrupted'
+    EXIT_FAILURE
+  end
+
+  private
+
+  def create_app(argv)
+    options = {}
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 create-app ID URL [REF] [options]'
+      o.on('--owner EMAIL', 'contact address, stored as SHEPHERD_OWNER') { |v| options[:owner] = v }
+      o.on('--mem SIZE', "runtime memory limit (default #{DEFAULT_MEMORY})") { |v| options[:mem] = v }
+      o.on('--cpu N', 'runtime CPU limit') { |v| options[:cpu] = v }
+      o.on('--build-mem SIZE', "build memory limit (default #{DEFAULT_BUILD_MEMORY})") { |v| options[:build_mem] = v }
+      o.on('--build-cpu N', 'build CPU limit') { |v| options[:build_cpu] = v }
+      o.on('--buildpack NAME', 'buildpack to pin, e.g. heroku/java') { |v| options[:buildpack] = v }
+      o.on('--build-dir PATH', 'subdirectory of the repo to build') { |v| options[:build_dir] = v }
+    end
+    rest = parse!(parser, argv)
+    raise UsageError, parser.banner if rest.size < 2 || rest.size > 3
+
+    @shepherd.create_app(rest[0], rest[1], rest[2], options)
+  end
+
+  def destroy_app(argv)
+    options = {}
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 destroy-app ID [--yes]'
+      o.on('--yes', '-y', 'do not ask for confirmation') { options[:yes] = true }
+    end
+    rest = parse!(parser, argv)
+    raise UsageError, parser.banner unless rest.size == 1
+
+    @shepherd.destroy_app(rest[0], options)
+  end
+
+  def rebuild(argv)
+    raise UsageError, 'usage: shepherd2 rebuild ID' unless argv.size == 1
+
+    @shepherd.rebuild(argv[0])
+  end
+
+  def wait_idle(argv)
+    timeout = 3600
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 wait-idle [--timeout SECONDS]'
+      o.on('--timeout SECONDS', Integer, 'give up after this long (default 3600)') { |v| timeout = v }
+    end
+    rest = parse!(parser, argv)
+    raise UsageError, parser.banner unless rest.empty?
+
+    @shepherd.wait_idle(timeout: timeout)
+  end
+
+  def no_arguments!(argv, verb)
+    raise UsageError, "#{verb} takes no arguments" unless argv.empty?
+
+    yield
+  end
+
+  def parse!(parser, argv)
+    parser.parse(argv)
+  rescue OptionParser::ParseError => e
+    raise UsageError, e.message
+  end
+end
+
+# Loaded by the tests, executed on the box. The tests need the classes above without running anything.
+if $PROGRAM_NAME == __FILE__
+  unless Process.uid.zero?
+    warn 'shepherd2: must run as root'
+    exit EXIT_FAILURE
+  end
+  exit CLI.new.run(ARGV)
+end

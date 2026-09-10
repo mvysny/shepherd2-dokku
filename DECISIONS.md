@@ -952,6 +952,86 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
   directly — `CLAUDE.md`'s *Conventions* are unchanged by the language. Ruby makes reaching around Dokku
   easier, which is the one risk this decision introduces.
 
+## D_testing — minitest from the distro, no bundler; the CLI's seams are its test surface (2026-09-10)
+
+**Status:** Accepted 2026-09-10 and applied the same day — `test/` exists and CI runs it. Follows
+`D_ruby`, which forbids a `Gemfile` for the *runtime* and left open what testing then looks like.
+
+**Context.** `D_ruby` put the CLI on the standard library alone: no `Gemfile`, no bundler, nothing to
+re-install after a distro upgrade. That settles the box and says nothing about the repository, and the
+obvious next question — "so how is it tested?" — has a tempting wrong answer, because a `Gemfile` for
+test-only gems is what almost every Ruby project does.
+
+The thing to be tested is also unusual. `create-app` is eight `dokku` invocations behind guards; its
+*sequence* is the design (`SOLUTION.md` → *Flow — registering a project*), and a reordering that put
+the first build before `network:set` would still deploy — onto the wrong network, silently.
+
+**Decision.**
+
+- **minitest, installed as `ruby-minitest` from Ubuntu's archive** (universe; 5.22.2 on noble). A
+  dev-only dependency: it is documented in `test/run`'s header and **never appears in
+  `shepherd2-install`** — the box runs the CLI, not the suite.
+- **No `Gemfile`, no bundler, no `Gemfile.lock`, no Rakefile.** The suite is `ruby test/run`.
+- **CI runs inside an `ubuntu:24.04` container**, not on the runner's toolchain, so the tests execute
+  against the box's exact Ruby (3.2) and the distro's exact minitest.
+- **The CLI takes its process-running seams as constructor arguments** — `Dokku`, `Docker`, `BuildLock`
+  — and the tests inject doubles that record calls and replay canned output. What they assert is the
+  command sequence.
+- **A `ruby --disable-gems` load test** stands guard over `D_ruby`'s constraint, so "standard library
+  only" is enforced rather than promised.
+- **Dokku's own behaviour is not tested here.** That is the punch list in `RESEARCH.md`, run on a box.
+
+**Why.**
+
+- **One dev gem, packaged by the distro, is below bundler's line.** Bundler earns its keep resolving
+  many gems and locking them; here it would exist to install a single test-only gem that `apt` already
+  has, at the cost of a lockfile, `bundle exec` on every run, and a CI cache step.
+- **Bundler would make CI *less* faithful, not more.** `bundle install` fetches from rubygems.org at
+  whatever version resolves today — not the 5.22.2 the box's archive carries. Pinning the distro's
+  exact version by hand in a `Gemfile`, forever, to recover parity we get for free, is the whole
+  argument in miniature.
+- **A `Gemfile` is the sanctioned place to add a gem.** `D_ruby`'s runtime constraint holds only while
+  adding a dependency is visibly awkward; a test-only manifest is precisely the crack through which
+  "just for tests" becomes "just for `create-app`".
+- **The sequence is the design, so the seam is what makes it assertable.** Without one there is nothing
+  to test but string building; with one, the eight-command registration flow, its guards and its
+  re-runnability are pinned by fast unit tests and a reorder goes red.
+- **Faking Dokku's *behaviour* would test our model of Dokku.** The doubles deliberately record and
+  replay rather than simulate: what Dokku actually does is `RESEARCH.md`'s job, verified on a box, and
+  a mock that "knows" how `git:sync` behaves would launder an unverified claim into a green test.
+
+**Alternatives rejected.**
+
+- *Bundler with rspec (or minitest).* The Ruby default, and right for an application with a gem
+  runtime. Rejected on all three counts above. It becomes correct the day the dev toolchain needs more
+  than one gem — see *Consequences*.
+- *A zero-dependency assertion harness of our own*, ~40 lines, so `ruby test/run` works on a box with
+  nothing but the interpreter. Genuinely tempting and matches the project's ethos; rejected because
+  minitest's failure output is worth more than the 40 lines are worth saving. **Kept as the fallback**
+  if `ruby-minitest` ever leaves the archive.
+- *bats for the installer.* A third-party dependency to test a script whose entire risk is
+  environmental — apt, debconf, a daemon restart. `bash -n` and `shellcheck` are the static half; the
+  real test is running it on a snapshot, twice, once per mode.
+- *Automated box-level integration tests* — spin a VM per run, install, deploy a real app. That is the
+  punch list, and automating it costs a VM per CI run to test somebody else's product. v2 at best.
+- *`gem install minitest` instead of the apt package.* Works, needs no bundler either, but pulls a
+  version the box does not have and puts the test toolchain outside the distro — the exact thing
+  `D_install_apt` and `D_ruby` avoid everywhere else.
+
+**Consequences.**
+
+- **The revisit trigger is a second dev gem.** If the toolchain ever wants rubocop, simplecov or a
+  fixture library, bundler stops being ceremony and this entry gets rewritten. One distro-packaged gem
+  is below that line; two is not.
+- **CI is the only thing pinning Ruby 3.2.** Development machines run newer (26.04 ships 3.3), so a
+  suite that passes locally proves nothing about the box's interpreter. That is why the workflow runs
+  in a container and prints `ruby --version` as a step.
+- **`ruby-minitest` must never enter `shepherd2-install`.** A test dependency on the box is how the
+  next person concludes the box needs gems after all.
+- **The fixtures are hand-written from `RESEARCH.md` until a box exists**, and are to be replaced with
+  real `--format json` captures the first time one does — which is itself a small item on the punch
+  list, since a fixture that never matched reality is worse than no fixture.
+
 ## D_admin_namespace — App ids beginning with `admin` are reserved (2026-09-10)
 
 **Status:** Accepted 2026-09-10. Reverses the proposed drop of shepherd-java's reserved-id check, in a

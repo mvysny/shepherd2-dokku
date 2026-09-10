@@ -80,8 +80,31 @@ real box.
 
 ## Installation
 
-Not written yet — it will be one script, `shepherd2-install`, and
-[SOLUTION.md](SOLUTION.md) lists what it does in order.
+One script, run as root from a checkout of this repository on a vanilla Ubuntu 24.04 box.
+**No box has been installed from it yet** — it is written but unproven, and the punch list in
+[RESEARCH.md](RESEARCH.md) is what proving it means.
+
+```bash
+# A real box: one wildcard certificate for *.mydomain.me, issued over DNS-01.
+export GODADDY_API_KEY=... GODADDY_API_SECRET=...     # never as arguments: argv is world-readable
+sudo -E ./shepherd2-install --mode https --domain mydomain.me \
+     --email you@example.com --ssh-key ~/.ssh/id_ed25519.pub
+
+# A throwaway test VM: no certificate, no DNS zone, no token. Apps are served over plain http.
+sudo ./shepherd2-install --mode http --domain mydomain.me --ssh-key ~/.ssh/id_ed25519.pub
+```
+
+Add `--acme-server https://acme-staging-v02.api.letsencrypt.org/directory` while testing an https
+install: Let's Encrypt caps duplicate certificates at five a week. The value is recorded in the
+renewal cron line too, so issuance and renewal always talk to the same ACME server.
+
+**The mode is chosen once and is not switchable on a running box** — HSTS makes the downgrade
+unrepairable from here ([`D_cert`](DECISIONS.md)). To change it, reinstall.
+
+Every step is guarded, so the script is safe to re-run: that is how a failed install is fixed —
+correct the script and run it again, rather than repairing the box by hand.
+`shepherd2-install --help` is the authority on its arguments; [SOLUTION.md](SOLUTION.md) lists the
+steps in order.
 
 **Dokku is installed as its authors' deb package, with apt** — no `curl | bash`, and Dokku's own
 `bootstrap.sh` is never run ([`D_install_apt`](DECISIONS.md)). That script is itself only a wrapper

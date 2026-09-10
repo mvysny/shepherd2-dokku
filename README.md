@@ -91,10 +91,20 @@ is ignored, because the box builds every app with Heroku buildpacks so that each
 cache is isolated from every other's. What it needs instead:
 
 1. A `Procfile` at the root of its git repo, naming the `web` process.
-2. For a Maven project, a `system.properties` pinning `java.runtime.version`; the buildpack runs
+2. A `.buildpacks`, also at the root, naming the buildpack — one per line, `heroku/java` shorthand
+   accepted. **Don't skip this and rely on auto-detection:** a Java project that commits a
+   `package.json` (which Vaadin tells you to do) is detected as a Node app, because `nodejs` is tried
+   before `java`.
+3. For a Maven project, a `system.properties` pinning `java.runtime.version`; the buildpack runs
    `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
    say otherwise.
-3. Build-time settings are `dokku config:set` — they are visible to the build, unlike on the old box.
+4. Optionally a committed `.env` for build-time settings — it reaches the build environment, so a
+   Vaadin project points its caches at the per-app cache volume there:
+   `npm_config_cache=/cache/npm`. `dokku config:set` does the same thing from the box side and wins.
+
+The project chooses its own buildpack, and the box does not need to know about it. If a repo can't be
+edited or picks wrongly, the operator can override it without touching the repo:
+`dokku buildpacks:set PROJECTID heroku/java`.
 
 **Pay attention to the memory limit** the container will run under (256 MB on the reference box). If
 the JVM asks for more it is hard-killed by the Linux OOM killer with no warning and no log message

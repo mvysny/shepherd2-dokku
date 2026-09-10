@@ -100,18 +100,40 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
   `heroku/heroku-buildpack-nodejs v366`, `dokku/heroku-buildpack-multi v1.2.0`. **[src]**
   **Note `nodejs` is detected before `java`**, so a Java repo with a committed root `package.json`
   is built as a Node app unless the buildpack is pinned.
-- **Buildpack selection is app state, and it beats the repo.** `dokku buildpacks:set <app> <url>`
-  (also `:add --index`, `:remove`, `:clear`, `:list`, `:report`) stores a property; the plugin's
-  `post-extract` trigger then **writes a `.buildpacks` file into the extracted source**, and
-  `getBuildpacks` returns the app property *before* consulting `app.json` or anything in the repo —
-  so the property overrides a committed `.buildpacks`. **[src]** The function's own doc comment claims
-  the reverse order (`.buildpacks` first) and is stale.
+- **Four ways to name the buildpack, in this precedence** — from `getBuildpacks` and the `buildpacks`
+  plugin's `post-extract` trigger, which materialises the winner as a `.buildpacks` file inside the
+  *extracted source* before the build runs. **[src]** The function's own doc comment states the
+  reverse order and is **stale**; the code checks the property first.
+
+  1. the **app property** — `dokku buildpacks:set <app> <url>` (also `:add --index N`, `:remove`,
+     `:clear`, `:list`, `:report`). Overwrites whatever the repo committed.
+  2. an app deployed from an image (`git:from-image`) — `git-get-property source-image` non-empty
+     short-circuits to *no* buildpacks.
+  3. **`app.json`'s `buildpacks[].url`**, read from the repo. Also overwrites `.buildpacks`.
+  4. **`.buildpacks` at the repo root**, one entry per line. Kept, but rewritten in place with every
+     line validated: `heroku/java` shorthand expands to
+     `https://github.com/heroku/heroku-buildpack-java.git`, `heroku-community/x` is rewritten to
+     `heroku/x`, blank and `#` lines are skipped, and **an unparseable line fails the build** rather
+     than being ignored. **[src]**
+
+  Below all four sits herokuish's own detection order (above), which is what runs when none of them
+  is set.
+- **`BUILDPACK_URL`** — a config var, or one in a committed `.env` — is honoured by herokuish *inside*
+  the build and "always overrides a `.buildpacks` file or the buildpacks plugin". **[docs]**
 - **`.buildpacks` with exactly one entry is treated as `BUILDPACK_URL`**, bypassing
   `heroku-buildpack-multi` entirely; two or more entries go through multi. `BUILDPACK_URL` always
   wins over both. **[src]**
 - **`heroku-buildpack-multi` runs each buildpack's `bin/compile` with the same `BUILD_DIR CACHE_DIR
   ENV_DIR`**, sources each buildpack's `export` file afterwards if it has one, and **exits the whole
   build if any listed buildpack fails to detect**. **[src]**
+- **A buildpack entry can be pinned to a ref**: `<url>#<ref>`, where multi does a full `git clone`
+  and then `git checkout "$ref"` — so a commit SHA works, not just a branch. **[src]** The bundled
+  buildpacks are already pinned inside the herokuish image; a third-party URL is not, unless pinned
+  this way.
+- **The build runs unprivileged, and `/cache` is writable.** herokuish chowns `$app_path`,
+  `$build_path`, `$cache_path`, `$env_path` and `$buildpack_path` to the unprivileged user (default
+  `herokuishuser`) and invokes `bin/compile` through `unprivileged`. The build container is created
+  with no `--privileged`, no Docker socket and no special network. **[src]**
 - **Config vars are available at build time.** `builder-herokuish/pre-build` bundles every app config
   var into an ENV_DIR at `/tmp/env` inside the build ("Adding BUILD_ENV to build environment…"). **[src]**
   This is the opposite of the Dockerfile builder, where config vars are runtime-only.

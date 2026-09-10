@@ -729,15 +729,44 @@ whole decision in one sentence.
   `system.properties`. Acceptable only because we own the apps; on a farm of repos we did not control
   this decision would not be available. Onboarding is no longer "point at the repo", and `README.md`
   owns the recipe.
-- **Buildpack *selection* stays operator-side, so a repo cannot mis-route its own build.** This matters
-  more than it looks: herokuish detects `nodejs` **before** `java` **[src]**, and Vaadin's own source-
-  control guidance says to commit `package.json` **[docs]** — so a stock Vaadin repo would be built as
-  a Node app. The fix is not a file in the repo but app state:
-  `dokku buildpacks:set <app> https://github.com/heroku/heroku-buildpack-java`. Dokku's `buildpacks`
-  plugin writes the resulting `.buildpacks` into the *extracted source* at `post-extract`, and
-  `getBuildpacks` reads the app property **before** anything in the repo, so the property wins over a
-  committed `.buildpacks` **[src]** — note the function's own doc comment claims the opposite order
-  and is stale. `create-app` therefore pins the buildpack explicitly rather than trusting detection.
+- **The buildpack must be *named*, never detected — and the repo names it.** Detection is a trap
+  here: herokuish detects `nodejs` **before** `java` **[src]**, and Vaadin's own source-control
+  guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo would build as a Node app.
+  The fix is a one-line **`.buildpacks` at the repo root** (`heroku/java` — the shorthand is expanded
+  to the full GitHub URL, and an unparseable line fails the build rather than being ignored
+  **[src]**). This is the same file the project already needs a `Procfile` and `system.properties`
+  alongside, it keeps the box free of per-app knowledge, and it is the reason `create-app` stays
+  generic. `app.json`'s `buildpacks` array works too, and outranks `.buildpacks`.
+- **`dokku buildpacks:set <app> …` remains as the operator override, one layer above the repo.** The
+  real precedence, from `getBuildpacks` and the `buildpacks` plugin's `post-extract` trigger
+  **[src]** — note the function's own doc comment states the reverse and is stale:
+
+  | | source | who controls it |
+  |---|---|---|
+  | 1 | `buildpacks:set` / `:add` app property | operator; **overwrites** the repo's `.buildpacks` in the extracted source |
+  | 2 | `app.json` `buildpacks[].url` | the repo; likewise overwrites `.buildpacks` |
+  | 3 | `.buildpacks` at the repo root | the repo; kept, with each line validated and normalised |
+  | 4 | herokuish's own detection order | nobody — the trap above |
+
+  So the default path needs no per-app state at all, and a repo we cannot edit, or one whose choice
+  turns out to be wrong, is still fixable with one command and no fork. That is the layering we want,
+  and it comes free.
+- **Letting the repo name its buildpack costs no privilege, only provenance.** Worth writing down
+  because it looks alarming and mostly isn't. A custom buildpack's `bin/compile` runs in the same
+  build container, as the same unprivileged user, with the same config vars, the same `/cache` and
+  the same network as the app's own `pom.xml` already does — and a `pom.xml` can run arbitrary
+  plugins. The build container is not privileged, mounts no Docker socket and gets no special
+  network **[src]**. So a hostile `.buildpacks` achieves nothing a hostile repo could not achieve
+  anyway; the earlier framing of this as "re-opening the door the Dockerfile prohibition closed" was
+  wrong. The prohibition was never about arbitrary build code — it was about **who names the cache**,
+  and a buildpack cannot name it: `cache-$APP` is Dokku's, always.
+
+  The real and much smaller delta is **supply chain**: a `.buildpacks` line is a URL cloned at build
+  time at whatever the ref points to *then*, so the same git SHA can build differently tomorrow, and
+  whoever controls that repo controls our builds. The bundled buildpacks don't have this property —
+  they are pinned inside the herokuish image (`heroku/heroku-buildpack-java v81`). Mitigation, if a
+  project ever needs a third-party buildpack: pin it, `https://…/repo#<commit-sha>` — multi does a
+  full `git clone` then `git checkout "$ref"` **[src]**, so a SHA works where a branch name drifts.
 - **`F_build_args` gets simpler.** `builder-herokuish/pre-build` bundles every app config var into an
   ENV_DIR inside the build **[src]**, so the Vaadin offline key is a plain `dokku config:set` with no
   `--build-arg` plumbing. The flip side is that every *runtime* secret is visible to the build too.
@@ -749,12 +778,17 @@ whole decision in one sentence.
 - **The frontend half of a Vaadin build is the one thing this decision does not solve,** and it is not
   a herokuish weakness — the frontend is driven by Maven, so it is invisible to the node buildpack
   that would otherwise have cached it, on any builder. What the decision *does* give is the place to
-  put the fix: `/cache` is a per-app volume that the build can write to, so
-  `dokku config:set <app> npm_config_cache=/cache/npm` warms npm across rebuilds with no new
-  machinery and no loss of isolation. Vaadin's pre-compiled production bundle (24.1+) removes the
-  frontend build entirely for apps with no custom frontend or add-ons, which is likely most of the
-  farm. What is *not* solved is Vaadin's own node download into `~/.vaadin`. Tracked in
-  `ideas/vaadin-build-under-herokuish.md`; punch-list items 13–17.
+  put the fix, **and the fix is app-side like the buildpack choice**: `/cache` is a per-app volume
+  that the build can write to (herokuish chowns it to the build user before `bin/compile` **[src]**),
+  and a committed `.env` reaches the build environment **[src]** — so `npm_config_cache=/cache/npm`
+  warms npm, and `MAVEN_CUSTOM_OPTS=… -Duser.home=/cache/home` should relocate `~/.vaadin` into the
+  same volume. Both are lines in the repo; the box learns nothing per-app. Vaadin's pre-compiled
+  production bundle (24.1+) removes the frontend build entirely for apps with no custom frontend or
+  add-ons, which is likely most of the farm. Note what is *not* available: **providing a system
+  Node** — it is not in `heroku/heroku:24-build` **[docs]**, `heroku/nodejs` exports no `PATH` to a
+  later buildpack **[src]**, and we do not build the herokuish image — so `~/.vaadin` must be
+  relocated rather than made unnecessary. Tracked in `ideas/vaadin-build-under-herokuish.md`;
+  punch-list items 13–17.
 - **A `heroku/nodejs` + `heroku/java` multi-buildpack is not the answer to that**, and the reason is
   worth recording so nobody re-derives it: the node buildpack's cache bracket opens and closes inside
   *its own* compile, which runs before Maven, so anything Maven creates is saved by nobody; it prunes

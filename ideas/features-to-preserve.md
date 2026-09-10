@@ -342,8 +342,8 @@ shepherd2 create-app ID URL [REF] [--mem M --cpu C --build-mem B --postgres --ow
                              #   quota check, then: apps:create, config:set SHEPHERD_GIT_URL/_OWNER
                              #   + any build-time vars (--no-restart), resource:limit,
                              #   network:create + network:set, postgres:create -N + link if asked,
-                             #   buildpacks:set <java bp> (D_builder — never trust detection),
-                             #   then git:sync --build
+                             #   then git:sync --build. NB no buildpacks:set — the repo's own
+                             #   .buildpacks names it (D_builder); the property is the override
 shepherd2 destroy-app ID     # the inverse, symmetric: apps:destroy, postgres:destroy, network:destroy
 shepherd2 rebuild ID         # git:sync --build with the app's SHEPHERD_GIT_URL — the forced variant,
                              #   and the retry after a failed build

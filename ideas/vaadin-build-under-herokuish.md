@@ -17,6 +17,23 @@ running. So today's expectation is: **Maven warm, frontend cold, every poll.**
 Everything below is a candidate fix. None is verified; the box punch list is items 13–17 in
 `RESEARCH.md`.
 
+**Two facts settled on 2026-09-10 that shape every candidate below:**
+
+- **`/cache` is writable by the build.** herokuish chowns `$cache_path` to the unprivileged build user
+  and runs `bin/compile` as that user **[src]**, so anything the build wants to put in the per-app
+  cache volume, it can.
+- **Every fix here can live in the repo, not on the box.** herokuish copies a committed `.env` into
+  the build environment and the Java buildpack exports the ENV_DIR before running Maven **[src]** — so
+  `npm_config_cache`, `MAVEN_CUSTOM_OPTS` and friends are all app-side settings. That keeps
+  `create-app` generic, the same way `.buildpacks` does. `dokku config:set` remains the override.
+
+**And one that closes a door:** *providing* a system Node is not reachable. Node is **not** in
+`heroku/heroku:24-build` — the stack ships no language runtimes, only build tooling **[docs]** — the
+`heroku/nodejs` buildpack writes no `export` file carrying `PATH` **[src]**, so a multi-buildpack
+doesn't put it on Maven's `PATH` either, and we do not build the herokuish image (`D_dokku`:
+upstream, unforked). So Vaadin's "use the Node already on `PATH`" path is closed, and `~/.vaadin` has
+to be *relocated* rather than made unnecessary. That is candidate 3, and it is a one-liner.
+
 ## The candidates, best first
 
 ### 1. Don't build the frontend at all — Vaadin's pre-compiled production bundle
@@ -30,38 +47,50 @@ rather than being rebuilt on our box.
 If most of the farm is default-bundle, this is the answer and 2–4 are contingency. **Find out first**
 (punch-list 15) — it decides how much of the rest is worth doing.
 
-### 2. Warm the npm cache — one config var, no new machinery
+### 2. Warm the npm cache — one line in the repo
 
-`/cache` is the per-app volume and the build can write to it, so:
-
-```bash
-dokku config:set demo npm_config_cache=/cache/npm
+```dotenv
+# .env, committed
+npm_config_cache=/cache/npm
 ```
 
-Config vars reach the build through herokuish's ENV_DIR **[src]**, so this needs nothing else. It
-doesn't stop `npm install` running, but it stops it going to the network — which is the expensive
-half. Watch for: Vaadin choosing **pnpm** rather than npm (pnpm reads `store-dir` /
-`PNPM_HOME`, not `npm_config_cache`), and npm's cache being useless if Vaadin passes `--no-cache`
-anywhere. Punch-list 14.
+`npm_config_*` env vars are npm configuration by definition, and `/cache` is the per-app volume. It
+doesn't stop `npm install` running, but it stops it going to the network — the expensive half.
+Punch-list 14. Watch for:
 
-### 3. Relocate `~/.vaadin` into the cache volume
+- **pnpm.** If Vaadin is configured to use pnpm, the knob is its store, not `npm_config_cache`.
+- **`.npmrc` is the tempting alternative and is worse here.** `cache=${CACHE_PATH}/npm` reads nicely
+  and npm does expand `${VAR}` — but recent pnpm deliberately **stopped** expanding env vars in a
+  repository-controlled `.npmrc` (v10.34.2 / v11.5.3) as a supply-chain fix **[docs]**, and Vaadin's
+  own recommended `.gitignore` excludes `.npmrc` anyway. Prefer `.env`.
+- Hardcoding `/cache` couples the repo to this platform. That is a real cost of doing it app-side;
+  `$CACHE_PATH` is the portable name but only usable where expansion happens.
 
-The node download is the other recurring cost. Two ways in, both unverified (punch-list 16):
+### 3. Relocate `~/.vaadin` into the cache volume — the same trick again
 
-- `dokku config:set demo MAVEN_CUSTOM_OPTS="-DskipTests -Pproduction -Duser.home=/cache/home"` — the
-  buildpack puts `-Duser.home=${build_dir}` in `MAVEN_OPTS` (JVM args) and then appends
-  `MAVEN_CUSTOM_OPTS` on the Maven command line, so the question is simply whether a Maven CLI `-D`
-  wins for `System.getProperty("user.home")`. If it does, `~/.vaadin` lands in the cache volume and
-  this is a one-liner. Check it doesn't also move the `settings.xml` lookup somewhere unhelpful.
-- A second mount: `dokku docker-options:add demo build '-v /var/cache/shepherd2/demo:/shepherd-cache'`.
-  The herokuish path passes build options to `docker container create` **unfiltered** **[src]**, so
-  arbitrary bind mounts work — and the path is set by us, per app, on the build command, so it keeps
-  the isolation property `D_builder` bought. Costs `destroy-app` a directory to remove.
+```dotenv
+# .env, committed
+MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction -Duser.home=/cache/home
+```
 
-Vaadin also only *forces* `~/.vaadin/node` when `require.home.node=true`, which is false by default —
-if a supported Node is already on `PATH`, Vaadin uses it and downloads nothing **[docs]**. Getting a
-Node onto `PATH` without the node buildpack (see below) probably means installing one on the box, in
-the herokuish image, which we don't build. Park it.
+The buildpack puts `-Duser.home=${build_dir}` in `MAVEN_OPTS` (real JVM args) and then appends
+`MAVEN_CUSTOM_OPTS` on the Maven command line, so the whole question is whether a Maven CLI `-D`
+wins for `System.getProperty("user.home")` — Maven's CLI does copy `-D` properties into system
+properties, so it should. If it does, `~/.vaadin` lands in the per-app cache volume and the node
+download happens once. Check it doesn't move the `settings.xml` lookup somewhere unhelpful.
+Punch-list 16.
+
+**If that doesn't work**, the platform-side fallback is a second mount:
+`dokku docker-options:add demo build '-v /var/cache/shepherd2/demo:/shepherd-cache'` — the herokuish
+path passes build options to `docker container create` **unfiltered** **[src]**, so arbitrary bind
+mounts work, the path is ours and per-app, and the isolation property `D_builder` bought is kept.
+Costs `destroy-app` a directory to remove, and puts per-app knowledge back on the box, which is why
+it is the fallback and not the plan.
+
+**Together, 2 and 3 are the whole fix, and both live in the app's repo** — `.buildpacks` picks the
+buildpack, `Procfile` names the process, `system.properties` pins the JDK, `.env` points the two
+caches at the volume Dokku already mounts. The box learns nothing per-app. Whether that is *enough*
+— i.e. whether a second build is actually fast — is punch-list 13.
 
 ### 4. Rejected: a `heroku/nodejs` + `heroku/java` multi-buildpack
 
@@ -86,12 +115,11 @@ save *after* the Java buildpack, this comes back.
 - **`F_build_cpu_limit` may not be a gap.** Same unfiltered path as 3:
   `dokku docker-options:add demo build '--cpus 2'`. If it works, the feature survey's `🕳️` was a
   Dockerfile-builder artefact. Punch-list 17.
-- **Pin the buildpack, never trust detection.** herokuish detects `nodejs` before `java` **[src]** and
-  Vaadin's own guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo is a Node app
-  unless `create-app` runs
-  `dokku buildpacks:set <app> https://github.com/heroku/heroku-buildpack-java`. This is settled, not
-  open — it is in `D_builder` and belongs in `create-app`. Listed here only because it will be the
-  first thing to go wrong on the box, and it looks exactly like a caching bug.
+- **Name the buildpack, never trust detection.** herokuish detects `nodejs` before `java` **[src]**
+  and Vaadin's own guidance says to commit `package.json` **[docs]**, so a stock Vaadin repo is a Node
+  app unless its repo carries a `.buildpacks` saying `heroku/java`. Settled, not open — it is in
+  `D_builder` and in the README's project contract. Listed here only because it will be the first
+  thing to go wrong on the box, and a Node build of a Java repo looks exactly like a caching bug.
 
 ## Where this graduates to
 

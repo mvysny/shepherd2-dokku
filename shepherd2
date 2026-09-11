@@ -22,8 +22,8 @@
 #   --cpu N            runtime CPU limit. Default 1. Pass `clear` for no limit.
 #   --build-mem SIZE   build-phase memory limit. Default 2g. One build runs at a time box-wide, so
 #                      this is a peak rather than a per-app multiplier.
-#   --build-cpu N      build-phase CPU limit. Default 2. Pass `clear` for no limit.
-#                      [unverified — punch-list 17] whether herokuish honours it.
+#   --build-cpu N      build-phase CPU limit. Default 2. Pass `clear` for no limit. Verified on a box:
+#                      the build container gets NanoCpus, and a build peaks at 200% of a 4-core host.
 #   --buildpack NAME   buildpack to pin, e.g. heroku/java. Strongly recommended: herokuish detects
 #                      nodejs before java, and a Vaadin app commits a package.json, so *relying on
 #                      detection is a bug* (D_builder). Without it the repo's own .buildpacks decides.
@@ -252,10 +252,11 @@ class Shepherd2
                '--memory', options.fetch(:mem, DEFAULT_MEMORY),
                '--cpu', options.fetch(:cpu, DEFAULT_CPU).to_s, id)
 
-    # Build CPU rides the herokuish path, which the docs say honours both cpu and memory against the
-    # `build` process type (RESEARCH.md, *Resource limits*). [unverified — punch-list 17] is whether
-    # that holds on a box; if it does not, the app simply builds uncapped — the flag is dropped then,
-    # not worked around.
+    # Build CPU rides the herokuish path, which honours both cpu and memory against the `build`
+    # process type (RESEARCH.md, *Resource limits*) — confirmed on a box: the build container is
+    # created with the memory limit and NanoCpus set, and a real build peaks at 200% CPU on a 4-core
+    # host. The `docker-options:add <app> build '--cpus N'` route the punch list asked about is a
+    # Dockerfile-builder artefact and is not needed.
     @dokku.run('resource:limit', '--process-type', 'build',
                '--memory', options.fetch(:build_mem, DEFAULT_BUILD_MEMORY),
                '--cpu', options.fetch(:build_cpu, DEFAULT_BUILD_CPU).to_s, id)

@@ -123,6 +123,26 @@ class WaitIdleTest < Minitest::Test
   # A `git push` deploy never touches our lock, so Dokku's own view of running builds is the second
   # condition — either can be true without the other.
   def test_a_running_build_outside_the_lock_still_counts_as_busy
+    running = JSON.generate([{ 'id' => 'x', 'app' => 'demo',
+                               'status' => 'running', 'display_status' => 'running' }])
+    dokku = DokkuDouble.new(output: { 'builds:list' => running })
+
+    assert_equal EXIT_FAILURE, shepherd(dokku).wait_idle(timeout: 0)
+  end
+
+  # Every no-op poll tick leaves a record at `status: "running"` for good, and the cron writes one
+  # every five minutes — so keying off `status` made wait-idle time out on every healthy box.
+  # `display_status` is Dokku's own liveness check on the recorded pid.
+  def test_an_abandoned_no_op_tick_does_not_count_as_busy
+    abandoned = JSON.generate([{ 'id' => 'x', 'app' => 'demo',
+                                 'status' => 'running', 'display_status' => 'abandoned' }])
+    dokku = DokkuDouble.new(output: { 'builds:list' => abandoned })
+
+    assert_equal EXIT_OK, shepherd(dokku).wait_idle(timeout: 0)
+  end
+
+  # Older records, and anything that predates the computed field, still have to be read.
+  def test_a_record_without_display_status_falls_back_to_status
     running = JSON.generate([{ 'id' => 'x', 'app' => 'demo', 'status' => 'running' }])
     dokku = DokkuDouble.new(output: { 'builds:list' => running })
 

@@ -492,11 +492,19 @@ class Shepherd2
   end
 
   # `builds:list` with no app lists every build box-wide, which is what makes this catch a deploy that
-  # came from a `git push` rather than from us. [unverified] — the record schema is [src]-derived.
+  # came from a `git push` rather than from us.
+  #
+  # `display_status`, not `status`: a no-op poll tick leaves its record at `status: "running"`
+  # *forever* — nothing ever writes a `finished_at` for a build that never started — and at a
+  # five-minute cron there is always at least one of those. Selecting on `status` therefore made
+  # wait-idle time out on every healthy box (verified on a box; 14 such records against 1 real build).
+  # Dokku computes `display_status` by checking whether the recorded pid is still alive, which is the
+  # question actually being asked: a live build reads `running`/`running`, an abandoned tick
+  # `running`/`abandoned`.
   def running_builds
     builds = @dokku.json('builds:list', '--format', 'json')
     builds = builds.values.flatten if builds.is_a?(Hash)
-    Array(builds).select { |build| build['status'] == 'running' }
+    Array(builds).select { |build| (build['display_status'] || build['status']) == 'running' }
   rescue Shepherd2Error, JSON::ParserError
     [] # A box with no builds yet, or a Dokku that has nothing to say. Not a reason to block a reboot.
   end

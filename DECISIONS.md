@@ -401,11 +401,14 @@ properties of Dokku's version make the predecessor's price disappear:
   a Docker network per project destroyed.
 - **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
   a reconciler cron. Do not switch proxies without re-reading both entries.
-- **Two things isolation does not buy.** The L7 front door stays open — any app can reach nginx by the
-  bridge gateway IP and ask for another app's vhost with a `Host:` header, which is harmless because
-  that surface is public anyway. And **the host stays reachable**: every container keeps a route to its
-  bridge gateway regardless of membership, so sshd and anything else bound on the box are reachable from
-  every app. That axis needs a `DOCKER-USER` rule and is **deferred to v2** (2026-09-10) — see
+- **Two things isolation does not buy, both now measured** (2026-09-11, `RESEARCH.md` → *Networking and
+  app isolation*). The L7 front door stays open — any app can reach nginx by the bridge gateway IP and
+  ask for another app's vhost with a `Host:` header: **200**, confirmed, and harmless because that
+  surface is public anyway. And **the host stays reachable**, with a sharper edge than this entry
+  assumed: a host service bound to `0.0.0.0` answered a container on the gateway address, one bound to
+  `127.0.0.1` did not. So the exposure is exactly "whatever the operator binds to all interfaces", and
+  the cheap half of the mitigation needs no firewall at all — bind admin things to loopback. The rest
+  of that axis needs a `DOCKER-USER` rule and is **deferred to v2** (2026-09-10) — see
   `ideas/harden-container-egress.md`, which also records the two things v1 must not do if that fix is to
   stay cheap: no firewall state on the per-app path, and a deliberately chosen address pool, since the
   pool subnet is probably what the rule matches on. It is also where the sibling's "app → admin plane"

@@ -417,7 +417,14 @@ globally in the install; have `poll` pre-check the remote ref so a no-op never e
 accept it and document `--status succeeded` as the way to read build history. The first is one line in
 `shepherd2-install` and needs no code.
 
-### FINDING — punch-list 11: what an app reaches on the host, measured
+### ~~FINDING — punch-list 11: what an app reaches on the host, measured~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Networking and app isolation*, as the table plus the one-line rule it
+supports, and explicitly carrying which two rows prove nothing; punch-list 11 struck. `D_isolation`'s
+*two things isolation does not buy* stops being inference and gains the loopback-versus-`0.0.0.0`
+distinction, which is the half an operator can act on today. The verdict went to
+`ideas/harden-container-egress.md`, which is the note that commissioned the measurement: v2 should
+bother, and if it does exactly one thing it is the metadata rule. Evidence kept below.
 
 From inside `hello.web.1` (on `app-hello`, `172.16.1.3`, gateway `172.16.1.1`). The container image
 ships `curl`, so no tooling had to be added.

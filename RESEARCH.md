@@ -1133,11 +1133,34 @@ Load-bearing for the isolation design, and it is Docker's behaviour rather than 
   build phase too, so an egress-less initial network takes the build's package downloads with it.
   **[docs + inference]**
 - **Per-app networks do not hide the host.** Every container keeps a route to its bridge gateway, so an
-  app can reach anything bound on the box (sshd included) no matter which network it is on. That is a
-  `DOCKER-USER` rule, not a membership question, and it is the whole of what the Dokploy sibling's
-  "app → admin plane" axis becomes here — Dokku's control plane is a host binary and a git remote, with
-  no dashboard container and no control-plane database to move off the wire. **[inference from the
-  bridge model; unverified on a box]**
+  app can reach anything bound on the box no matter which network it is on. That is a `DOCKER-USER`
+  rule, not a membership question, and it is the whole of what the Dokploy sibling's "app → admin
+  plane" axis becomes here — Dokku's control plane is a host binary and a git remote, with no dashboard
+  container and no control-plane database to move off the wire.
+
+  **Measured from inside a running app, with a deliberate pair of listeners rather than by inference:**
+  **[verified on a box 2026-09-11]**
+
+  | Target | Result |
+  |---|---|
+  | host service bound **`0.0.0.0:9099`**, via the bridge gateway | **200 — reachable** |
+  | host service bound **`127.0.0.1:9098`**, via the bridge gateway | 000 — not reachable |
+  | host nginx by gateway IP, with another app's `Host:` header | **200** |
+  | host nginx by the box's LAN IP, same header | **200** |
+  | outbound `https://repo.maven.apache.org/` | 200 |
+  | `169.254.169.254/` (cloud metadata) · the KVM host's `:22` | 000 — **but nothing was listening** |
+
+  > **Anything bound to `0.0.0.0` on the box is reachable from inside every app container; anything
+  > bound to loopback is not.** Nothing is firewalled — the bridge gateway is simply the host.
+
+  Read the last row carefully: the probe VM ran no sshd and KVM offers no metadata service, so those
+  zeroes mean "nobody home", not "blocked". **On a real VPS `169.254.169.254` answers**, and that is
+  the one address with a genuinely bad worst case — see `ideas/harden-container-egress.md`, which this
+  measurement was taken to size.
+- **An app can reach any other app through the front door**, by sending host nginx a spoofed `Host:`
+  header — 200, measured. That bypasses nothing (it is nginx doing its job on a surface that is public
+  anyway), but it is what makes `D_isolation` a *container-to-container* boundary specifically, never a
+  container-to-anything one. **[verified on a box 2026-09-11]**
 
 **The address-pool ceiling is an install-time line, not a design constraint.** Per-app networks are
 *bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16 plus `192.168.0.0/16`
@@ -1755,13 +1778,15 @@ https box and a real DNS zone) and the v2 items, 9 having been answered early:
     foreign network and routes, Dokku keeps it visible but unmanaged, and *both* apps on one
     `icc=false` network isolate exactly as per-app networks do. Both in *Networking and app isolation*;
     what it changes in `D_isolation` is the rejected alternative's reasoning, not the decision.
-11. **(v2, but cheap.) What can an app reach on the host?** From inside a container, on both a shared
-    and a per-app network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header
-    for another app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish
-    :3000" axis — and that rule is deferred to v2 (`ideas/harden-container-egress.md`), so this is
-    measured not to unblock v1 but to decide whether v2 should bother. Worth the ten minutes while
-    item 2 is being run anyway. Add `curl http://169.254.169.254/` to it: the metadata endpoint is the
-    one answer with a genuinely bad worst case.
+11. ~~**(v2, but cheap.) What can an app reach on the host?**~~ **Answered 2026-09-11, with a
+    deliberate pair of listeners so the result means something**: anything the box binds to `0.0.0.0`
+    is reachable from every container, anything on loopback is not, another app is reachable through
+    host nginx with a spoofed `Host:`, and outbound is open. The metadata endpoint and `:22` could
+    *not* be tested — a KVM guest has nothing listening on either, so those zeroes are "nobody home"
+    rather than "blocked", and on a real VPS the metadata address answers. In *Networking and app
+    isolation*; the verdict it was taken for — **v2 should bother, and the metadata rule is the one
+    that earns its keep** — is in `ideas/harden-container-egress.md`.
+
 12. ~~**Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
     network?** The plugin has no attachment logic `[src]`, so the expectation is a 502.~~ **Answered
     2026-09-11: it does not route, and the expectation was too kind** — the request hangs until

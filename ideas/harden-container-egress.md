@@ -4,6 +4,26 @@ Split out of the app-network-isolation note when it graduated into `D_isolation`
 decision walls app off from app; **this note is the axis it left open**, and it is the one that still
 has no decision.
 
+**Measured on a box, 2026-09-11 (punch-list 11), and the verdict is: v2 should bother.** The full table
+is in `RESEARCH.md` → *Networking and app isolation*; what it changes here is that three of the bullets
+below stop being inference:
+
+- **A host service bound to `0.0.0.0` is reachable from inside every app container; one bound to
+  `127.0.0.1` is not.** Two listeners were started on purpose to separate those cases. So the exposure
+  is precisely "what the operator binds to all interfaces", and **half of this note's value is
+  available with no firewall at all** — bind admin things to loopback.
+- **An app reaches any other app through host nginx** with a spoofed `Host:` header (200). Not a hole,
+  but it does mean `D_isolation` is a container-to-container boundary only.
+- **The metadata endpoint could not be tested here** — `169.254.169.254` returned 000 because a KVM
+  guest has nothing listening there, which is "nobody home", not "blocked". The same applies to the
+  `:22` row: that VM ran no sshd. **On a real VPS both answer**, and the metadata one is still the
+  single address with a genuinely bad worst case.
+
+So the argument that this is one rule's worth of work for the whole of its value gets *stronger*: the
+gateway-DROP rule, with its DNS caveat below, is the expensive and doubtful half, while the metadata
+DROP is cheap, unambiguous and the only one whose worst case is credential theft. **If v2 does exactly
+one thing here, it is that rule.**
+
 **Deferred to v2 (2026-09-10).** So v1 ships with what the predecessors also shipped: **egress
 unfiltered, and the host reachable from every container.** That is a deliberate scope choice, not an
 oversight, and it holds up for three reasons — the box is single-operator (`D_single_operator`), so the
@@ -90,8 +110,11 @@ time (they are not yet — every one of them is a question about *our* configura
 Dokku, so several may belong nowhere near that file):
 
 - What does a container's `/etc/resolv.conf` actually contain on a Dokku box — the gateway, or an
-  upstream resolver? Decides whether the gateway DROP is safe.
+  upstream resolver? Decides whether the gateway DROP is safe. **Still open — the 2026-09-11 run
+  measured reachability, not resolution.**
 - Does `bootstrap.sh` or Dokku install any `DOCKER-USER` rules of its own that ours must not clobber?
+  **Still open.**
+- ~~What can an app reach on the host?~~ **Answered 2026-09-11** — see the top of this note.
 
 ## Where this lands on graduation
 

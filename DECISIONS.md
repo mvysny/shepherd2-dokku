@@ -1339,13 +1339,14 @@ compares refs, and its no-change path returns without finalizing that record (`R
 tracking*, `[src]`). The `*/5` poll therefore writes 288 records and 288 log files per app per day when
 nothing at all is happening. Measured on the probe box on 2026-09-11, every step of that held:
 
-- Three no-op ticks left three records at `status: running` / `display_status: abandoned`, one 265-byte
-  log apiece.
+- Three no-op ticks left three records at `status: running` / `display_status: abandoned`, one 244-byte
+  log apiece. Reaping stamps `finished_at` at the reap moment, so a one-second no-op is later recorded
+  as a **1m29s failed build**.
 - The next real deploy reaped all three as `status: failed`, `exit_code: -1` — on disk,
   indistinguishable from a build that really failed.
-- Sixteen further ticks filled Dokku's default window of 20 and evicted the *successful* real deploy.
-  At 288 ticks a day that window is **~100 minutes**, so "why did last night's deploy fail?" was
-  unanswerable by breakfast.
+- Sixteen further ticks pushed the *successful* real deploy out of Dokku's default 20-row listing. At
+  288 ticks a day that window is **~100 minutes**, so "why did last night's deploy fail?" was
+  unanswerable by breakfast — and a later deploy is what then deletes it for good.
 
 Two things the measurement changed. First, the churn was never cosmetic: `shepherd2 wait-idle` filtered
 running builds on `status`, which an abandoned tick holds forever, so on any box that had been up five
@@ -1386,9 +1387,10 @@ the design had noticed.
 - *Retention per app, set by `create-app`.* Rejected as strictly worse: the churn rate is the same for
   every app because the cron is box-wide, so a per-app value is a global value with N places to drift.
   The per-app override stays available for an app that wants a different window.
-- *A much larger retention — 2000, say, so nothing is ever evicted.* The point of a window is that it
+- *A much larger retention — 2000, say, so nothing is ever pruned.* The point of a window is that it
   closes; a number chosen to never close is a leak with extra steps. 300 is picked to cover the
-  overnight question and nothing more.
+  overnight question and nothing more — and since `last-build` reads a filtered listing, which Dokku
+  never caps, a bigger number would buy it nothing anyway.
 - *A general build-history surface in the CLI — `shepherd2 builds`, `shepherd2 logs`.* This is
   `shepherd-cli` reincarnated and `CLAUDE.md` forbids it. `last-build` reports exactly one build and
   points at `dokku builds:list` / `builds:output` for everything else, which is the line between a
@@ -1410,11 +1412,23 @@ the design had noticed.
 - **`shepherd2 last-build` has an expiry date, stated in the script header.** Delete it when the
   upstream ordering is fixed or when the `ls-remote` guard lands. Nothing else in the CLI depends on
   it, which is the property that keeps deleting it cheap.
-- **`builds:list ID` is now ~300 rows of noise instead of ~20.** Deliberate: the log surviving matters
-  more than the listing being short, and the listing was already mostly noise at 20.
-- **The window is time-proportional to the poll, not absolute.** 300 records is ~25 hours *at the `*/5`
-  cron in `SOLUTION.md`*. Changing the poll cadence silently changes this horizon — halve the interval
-  and the day becomes twelve hours.
+- **`builds:list ID` is now ~300 rows of noise instead of ~20.** Deliberate: the record surviving
+  matters more than the listing being short, and the listing was already mostly noise at 20.
+- **Retention caps a listing; it does not delete anything — and the box corrected this entry on
+  2026-09-11.** Polling evicts nothing: records pile up on disk untouched (41 observed against a
+  retention of 20) and only the *unfiltered* listing is cut to the count. Deletion happens in
+  `PruneAppBuilds` at the end of a **real deploy**, which keeps the newest by `started_at` — so it is
+  the next deploy that removes the *older real build* while keeping the ticks that are newer than it
+  (`RESEARCH.md` → *Build tracking*). Three things follow:
+  - **A failed build's log survives until something deploys**, which under `--build-if-changes` means
+    until upstream moves. That is better than this entry first claimed, and it is the reason the
+    overnight question is answerable at all.
+  - **300 is about visibility and about the prune threshold**, not about buying time before eviction.
+    At the `*/5` cron it is ~25 hours of ticks; changing the poll cadence changes that horizon.
+  - **`last-build` must pass a filter**, because Dokku skips the cap for any filtered listing. It sends
+    `--kind build`, which is why it still finds the last real build under an app idle for days. Reading
+    the default listing — what it did first — reported "no real build" with the record and log sitting
+    on disk.
 - **`wait-idle` must key off `display_status`, not `status`**, and that is not a detail of this entry
   but its most expensive consequence: the same churn that eats build logs makes a `status`-based
   liveness check permanently true. Anything else that ever asks Dokku "is a build running?" inherits

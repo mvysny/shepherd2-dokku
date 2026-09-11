@@ -544,11 +544,14 @@ Eight things that bite, all of them documented at length in [RESEARCH.md](RESEAR
       | jq -r '[.[] | select(.exit_code != -1)][0].id')"
   ```
 
-- **A build log survives about a day, and then it is gone.** Retention is by count — the install sets
-  300 records per app, which at 288 poll ticks a day is roughly 25 hours — so last night's failure is
-  readable in the morning and last week's is not. After that `dokku logs:failed ID` (the container's
-  own output, not the build's) is what is left. `dokku builds:set ID retention 600` buys a particular
-  project more room.
+- **A build log is deleted by the next deploy, not by the passage of time.** Polling deletes nothing —
+  records pile up on disk — but a real deploy prunes the app to its newest 300 records, and since every
+  poll tick is newer than the last build, that is what removes the *previous* build's log. So a failed
+  build stays readable until something deploys, which under the poll means until someone commits. What
+  the count of 300 really bounds is what `dokku builds:list ID` will *show* you — about 25 hours of
+  ticks. `shepherd2 last-build` is unaffected by that cut (it filters the listing, which Dokku never
+  caps), so use it rather than scrolling. `dokku builds:set ID retention 600` gives one project more
+  room; `dokku logs:failed ID` (the container's own output, not the build's) is the last resort.
 
 - **`dokku builds:output ID` with no build id does not mean "the last build".** It resolves one from the
   app's deploy lock, so on an idle app it prints `App not currently deploying` rather than the failure

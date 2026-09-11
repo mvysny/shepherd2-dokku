@@ -1132,12 +1132,25 @@ dokku builds:set [--global|<app>] retention <N>  # `retention` is the only prope
   cascading to a `--global` one. Pruning removes the record *and* its log, runs at the end of every
   deploy, and never touches a live build. Deleting the app deletes its build data; renaming moves it.
   **[src]**
-- **Retention is settable, and eviction is not deletion.** `builds:set [--global|<app>] retention <N>`
-  takes effect at once — `builds:report` echoes it back as `Builds computed retention` — a per-app
-  value wins over the global one, and `builds:set --global retention` with no value reverts to 20. An
-  *evicted* record is still reachable by `builds:list <app> --status succeeded` and by
-  `builds:output <app> <id>`: the cap is on the default listing, not on what is stored. **Until
-  `builds:prune` runs**, which deletes the `.log` files for good. **[verified on a box, 2026-09-11]**
+- **Retention is settable.** `builds:set [--global|<app>] retention <N>` takes effect at once —
+  `builds:report` echoes it back as `Builds computed retention` — a per-app value wins over the global
+  one, and `builds:set --global retention` with no value reverts to 20.
+  **[verified on a box, 2026-09-11]**
+- **Retention caps a *listing*; it does not evict anything, and the two are easy to confuse.** Records
+  and their logs are deleted only by `PruneAppBuilds`, which runs from `builds-record-finalize` — i.e.
+  **at the end of a real deploy**. While an app is merely being polled nothing is deleted at all: a box
+  reached **41 records on disk against a retention of 20**, and raising retention to 300 made all 41
+  appear in the listing. What the number bounds is the rows an *unfiltered* `builds:list` prints, and
+  `sort` runs before that cut, so an app polled more than `retention` times since its last build shows
+  a window of pure churn. **Any filter lifts the cap** — `builds:list <app> --kind build` and
+  `--status succeeded` both return everything on disk, because the cut is guarded by
+  `if statusFilter == "" && kindFilter == ""`. **[src; verified on a box, 2026-09-11]**
+- **The deletion that matters happens at the *next* deploy, and it deletes the wrong thing.**
+  `PruneAppBuilds` keeps the `retention` newest by `started_at` — and since every poll tick is newer
+  than the last real build, a deploy prunes the *older real build* while keeping the ticks. Observed:
+  a second deploy deleted the first deploy's `.json` and `.log` and kept the no-op records around it.
+  Corollary worth having: `builds:prune` on an app already at the cap is a no-op.
+  **[verified on a box, 2026-09-11]**
 - **`builds:output` never validates the build id, and its journald fallback fails silently.** Given an
   id, `CommandOutput` stats the log file and on `IsNotExist` runs
   `journalctl SYSLOG_IDENTIFIER=dokku-<id>` — so a pruned build prints whatever journald still holds,
@@ -1180,23 +1193,26 @@ order they arrive: **[src]**
    `ReapAbandonedBuilds`, which finalizes every dead-PID `running` record as **`status=failed`,
    `exit_code=-1`**. `abandoned` is computed for display and never stored, so what lands on disk is
    indistinguishable from a build that really failed.
-3. **Then retention evicts the real history.** The `retention` survivors are the newest by
-   `started_at`: the build that just finished plus the most recent no-op ticks. At a 5-minute poll and
-   the default 20, that window is **~95 minutes**, and every older build's record *and* log file is
-   deleted.
+3. **And that same deploy deletes the real history.** `PruneAppBuilds` keeps the `retention` newest by
+   `started_at` — the build that just finished plus the most recent no-op ticks — so at a 5-minute poll
+   and the default 20, any real build more than ~95 minutes of ticks older loses its record *and* its
+   log file. Note where the deletion sits: it is the deploy that does it, not the passage of ticks (see
+   the retention bullets above), so an app that is only polled loses nothing.
 
 For anything reading these records that means `builds:list <app>` is mostly poll noise, `--status
 failed` no longer selects failures (`--status succeeded` is the one filter that still means what it
-says), and at the default retention of 20 a build log is reliably present only until 19 further ticks
-have passed — so "go and read why last night's build failed" does not work. **`builds:list` with no app
-is unaffected**, and so is anything built on it: it goes through `FetchRunningBuilds`, which requires a
-live PID, so a dead record can never make a box-wide "is anything building?" check block. **[src]**
+says), and at the default retention of 20 the last real build stops being *visible* once 20 further
+ticks have passed — so "go and read why last night's build failed" does not work through the default
+listing. **`builds:list` with no app is unaffected**, and so is anything built on it: it goes through
+`FetchRunningBuilds`, which requires a live PID, so a dead record can never make a box-wide "is
+anything building?" check block. **[src]**
 
-Retention is by count, so raising it converts that count into time: **Shepherd2 sets it to 300, about a
-day of ticks**, which is enough for the overnight question but is a window, not a repair. The repair is
-on the caller's side — don't enter `git:sync` at all unless the ref moved — and is deferred pending an
-upstream fix. Both halves, and the read that skips past the noise (`shepherd2 last-build`), are
-`D_poll_churn`.
+Two separate levers follow, and conflating them is the mistake to avoid (see the retention bullets
+above). Raising retention — **Shepherd2 sets it to 300** — widens the *visible* window and raises the
+threshold the next deploy prunes to. Filtering the listing (`--kind build`) lifts the cap altogether,
+which is how `shepherd2 last-build` finds a real build under an app that has been idle for days.
+Neither is a repair: the repair is on the caller's side, don't enter `git:sync` at all unless the ref
+moved, and it is deferred pending an upstream fix. All of it is `D_poll_churn`.
 
 **Sharp edge: bare `builds:output <app>` does not mean "the last build".** Given no build id (or the
 literal `current`) it resolves one from the app's `.deploy.lock`, so on an idle app it prints
@@ -1449,13 +1465,15 @@ first throwaway VPS:
     inert without a certificate, since that is why the mode is one-way.
 19. ~~**The no-op-tick record drill** — three `git:sync --build-if-changes` ticks with no upstream
     commit, then a real deploy, and watch the records.~~ **Answered 2026-09-11, and all three
-    `[src]` claims held**: three ticks → three `running`/`abandoned` records with a 265-byte log each,
-    a real deploy reaped all three as `failed` / `exit_code: -1`, and 16 further ticks filled the
-    20-record window and evicted the successful deploy. Two things the drill added, both now in
-    *Build tracking*: the window is a **knob** (`builds:set retention`, which no amount of reading had
-    turned up), and eviction is not deletion until `builds:prune` runs. And the churn turned out not to
-    be cosmetic — it broke `shepherd2 wait-idle`, which filtered on `status`, a value an abandoned tick
-    holds forever. Decided in `D_poll_churn`.
+    `[src]` claims held**: three ticks → three `running`/`abandoned` records with a 244-byte log each,
+    a real deploy reaped all three as `failed` / `exit_code: -1`, and 16 further ticks pushed the
+    successful deploy out of the 20-row listing. Three things the drill added, all now in *Build
+    tracking*: the window is a **knob** (`builds:set retention`, which no amount of reading had turned
+    up); that window caps a *listing* and deletes nothing, while the next real deploy is what prunes
+    the older real build off the disk; and **any filter lifts the cap**, which is what lets
+    `shepherd2 last-build` read past days of churn. And the churn turned out not to be cosmetic — it
+    broke `shepherd2 wait-idle`, which filtered on `status`, a value an abandoned tick holds forever.
+    Decided in `D_poll_churn`.
 20. **Does a Vaadin *Gradle* app build under `heroku/gradle` at all?** Everything above quietly assumes
     Maven, and roughly half the farm is Gradle (`ideas/production-cutover.md`), so this is a hole rather
     than a detail. Three parts, all `[unverified]` because nothing in this file covers that buildpack

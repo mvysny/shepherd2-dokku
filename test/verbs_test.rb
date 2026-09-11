@@ -218,6 +218,17 @@ class LastBuildTest < Minitest::Test
     [out.string, exit_code]
   end
 
+  # The cap on `builds:list` is skipped for any *filtered* listing, so `--kind build` is what keeps an
+  # idle app's real build visible once poll ticks outnumber the retention count — invisible in the
+  # output, so it is pinned here. Verified on a box: without it, 21 ticks at retention 20 hid a build
+  # whose record and log were still on disk.
+  def test_the_listing_is_filtered_so_the_retention_cap_never_applies
+    dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
+    report(dokku)
+
+    assert_includes dokku.commands, 'builds:list demo --kind build --format json'
+  end
+
   def test_reports_the_newest_real_build_past_the_churn
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: records(abandoned('t3'), reaped('t2'), reaped('t1'), real('b1')))
@@ -264,7 +275,7 @@ class LastBuildTest < Minitest::Test
     output, exit_code = report(dokku)
 
     assert_equal EXIT_OK, exit_code
-    assert_includes output, 'no real build in the retained window'
+    assert_includes output, 'no real build on record'
   end
 
   def test_the_log_is_printed_only_when_asked_for
@@ -329,7 +340,7 @@ class LastBuildTest < Minitest::Test
 
     assert_equal EXIT_OK, exit_code
     assert_includes out.string, 'demo: succeeded · id b1'
-    assert_includes out.string, 'other: no real build in the retained window'
+    assert_includes out.string, 'other: no real build on record'
     refute_includes out.string, 'handmade'
   end
 

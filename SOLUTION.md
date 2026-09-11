@@ -259,11 +259,14 @@ ever asks "is a build running?" inherits the same trap.
 shepherd2 destroy-app demo
 ```
 
-`apps:destroy --force demo`, then `network:destroy app-demo` — the second half matters, or the box
-leaks a Docker network per project destroyed (`D_isolation`). Whether `apps:destroy` also removes the
-`cache-demo` volume is `[unverified]`; if it does not, `destroy-app` removes it via
-`repo:purge-cache` before destroying the app. There is nothing else per project: no file, no
-certificate, no service, no firewall rule.
+`apps:destroy --force demo`, then `network:destroy app-demo`, then `nginx:reload` — and each of the
+two tails matters. Without the network destroy the box leaks a Docker network per project destroyed
+(`D_isolation`). Without the reload the *running* nginx keeps serving `demo.mydomain.me` from a config
+it still holds in memory, so requests to a destroyed project hang for 60s each rather than being
+refused: `apps:destroy` removes the vhost file without signalling nginx (`RESEARCH.md` → *nginx*).
+Whether `apps:destroy` also removes the `cache-demo` volume is `[unverified]`; if it does not,
+`destroy-app` removes it via `repo:purge-cache` before destroying the app. There is nothing else per
+project: no file, no certificate, no service, no firewall rule.
 
 ## Housekeeping
 

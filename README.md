@@ -531,7 +531,7 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` |
 | see what the box has been doing | `dokku events -t` |
 
-Eight things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Nine things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
 
 - **Most build records are poll ticks, so don't ask Dokku which build was the last one — ask
   `shepherd2 last-build`.** Every five-minute poll writes a record even when there is nothing to build,
@@ -580,6 +580,15 @@ Eight things that bite, all of them documented at length in [RESEARCH.md](RESEAR
 - **A second hostname gets no https in v1.** The one wildcard certificate covers `*.<domain>` and
   nothing else; custom and apex domains are a v2 feature ([`D_cert`](DECISIONS.md)). Don't reach for
   `dokku-letsencrypt` to patch one app.
+- **Destroy a project with `shepherd2 destroy-app`, not `dokku apps:destroy`.** Dokku deletes the
+  app's vhost file but never tells the running nginx, which keeps serving that hostname from memory and
+  proxying to a container that is gone — so requests to it **hang for 60 seconds each** instead of
+  being refused, until some unrelated deploy reloads nginx. Nothing you can inspect shows why: the
+  config is off the disk, `nginx -T` has no trace of the app, and the hostname misbehaves anyway.
+  `shepherd2 destroy-app` ends with `dokku nginx:reload` for exactly this reason. If you have already
+  destroyed an app the raw way, `sudo dokku nginx:reload` fixes it — allow it a second to take effect,
+  because that command returns before the new config is live.
+
 - **Never prune volumes.** Not `docker volume prune`, not `docker system prune --volumes`: the build
   cache *is* the per-app `cache-ID` volume, nothing garbage-collects it, and at a five-minute poll a
   build is always about to want it ([`D_builder`](DECISIONS.md)). `repo:purge-cache` is the per-app

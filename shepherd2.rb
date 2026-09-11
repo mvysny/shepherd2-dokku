@@ -97,6 +97,28 @@ class Shepherd2
   # because a front-end answers it differently: it is the caller's mistake, not the box's.
   class UsageError < Error; end
 
+  # What `create_app` did — +app_created+ and +network_created+ are false on a re-run over something
+  # that was already there, which is the ordinary retry after a failed first build.
+  Registration = Data.define(:app, :network, :app_created, :network_created)
+
+  # What `destroy_app` removed. +network_destroyed+ is false when there was no network to remove.
+  Teardown = Data.define(:app, :network, :network_destroyed)
+
+  # One project's turn in a `poll`. +error+ is Dokku's message when +ok+ is false, nil otherwise.
+  PollResult = Data.define(:app, :ok, :error)
+
+  # A project's last *real* build, past the poll's churn.
+  #
+  # +build+ is Dokku's own record, string-keyed as it parsed out of `builds:list --format json`, and
+  # **nil when there is no real build to report** — either the project has never built, or a later
+  # deploy pruned the last one (D_poll_churn). +error+ is set only where a project's records could not
+  # be read at all.
+  #
+  # The four log members are filled by `last_build(log: true)`; +log_status+ says which of them mean
+  # anything, and is +:not_requested+ otherwise.
+  BuildReport = Data.define(:app, :build, :live, :error,
+                            :log_path, :log_path_exists, :log_status, :log)
+
   # Runs `dokku` commands — guard with #ok?, mutate with #run, read with #json:
   #
   #   dokku = Shepherd2::Dokku.new                                # discards output
@@ -359,7 +381,8 @@ class Shepherd2
   # Registers a project and builds it for the first time.
   #
   #   create_app('demo', 'https://github.com/me/demo', 'main', buildpack: 'heroku/java')
-  #   # => {app: 'demo', network: 'app-demo', app_created: true, network_created: true}
+  #   # => #<data Shepherd2::Registration app='demo', network='app-demo',
+  #   #           app_created=true, network_created=true>
   #
   # Re-runnable, which is the point: a first build that fails is the *normal* case — the Procfile /
   # buildpack / system.properties trio usually needs a couple of tries — so every step before the
@@ -374,8 +397,7 @@ class Shepherd2
   # @param options [Hash{Symbol => String}] +:owner+ (stored as SHEPHERD_OWNER), +:mem+, +:cpu+,
   #   +:build_mem+, +:build_cpu+ (a limit, or `clear` for none), +:buildpack+ (pinned rather than
   #   detected, which matters — see D_builder), +:build_dir+ (a subdirectory, for a monorepo).
-  # @return [Hash{Symbol => Object}] +:app+, +:network+, and the booleans +:app_created+ /
-  #   +:network_created+, false on a re-run over something that was already there.
+  # @return [Registration] what it registered, and whether this run was the first one.
   # @raise [UsageError] if the id is reserved or malformed, or the URL is missing.
   # @raise [Error] if any dokku command fails.
   def create_app(id, url, ref = nil, options = {})
@@ -435,7 +457,8 @@ class Shepherd2
     sync << ref if ref
     @dokku.run(*sync)
 
-    { app: id, network: network, app_created: app_created, network_created: network_created }
+    Registration.new(app: id, network: network,
+                     app_created: app_created, network_created: network_created)
   end
 
   # --- destroy-app -----------------------------------------------------------------------------
@@ -443,14 +466,14 @@ class Shepherd2
   # Destroys a project: its containers, its build cache and its network.
   #
   #   destroy_app('demo', yes: true)
-  #   # => {app: 'demo', network: 'app-demo', network_destroyed: true}
+  #   # => #<data Shepherd2::Teardown app='demo', network='app-demo', network_destroyed=true>
   #
   # Emits +:cache_purge_failed+ and +:nginx_reload_failed+ — both steps are best-effort, because an
   # app that is already gone is not worth failing the teardown over.
   #
   # @param id [String] the app id.
   # @param options [Hash{Symbol => Boolean}] +:yes+ proceeds without calling +confirm+.
-  # @return [Hash{Symbol => Object}] +:app+, +:network+, +:network_destroyed+.
+  # @return [Teardown] what it removed.
   # @raise [Error] if the app does not exist, or consent was neither given nor obtainable.
   def destroy_app(id, options = {})
     validate_id!(id)
@@ -494,14 +517,15 @@ class Shepherd2
       emit(:nginx_reload_failed, app: id, error: e.message)
     end
 
-    { app: id, network: network, network_destroyed: network_destroyed }
+    Teardown.new(app: id, network: network, network_destroyed: network_destroyed)
   end
 
   # --- poll ------------------------------------------------------------------------------------
 
   # Builds every registered project whose ref moved — the */5 cron.
   #
-  #   poll   # => [{app: 'demo', ok: true, error: nil}, {app: 'x', ok: false, error: '…'}]
+  #   poll   # => [#<data Shepherd2::PollResult app='demo', ok=true, error=nil>,
+  #          #     #<data Shepherd2::PollResult app='x', ok=false, error='…'>]
   #          # => :busy
   #
   # Serial, and tolerant: one project's failure must not stop the projects after it in the list.
@@ -511,8 +535,8 @@ class Shepherd2
   # Emits +:polling+ before each project and +:polled+ after it, so a front-end need not wait for the
   # return value to know how the first project went.
   #
-  # @return [Array<Hash>, :busy] one +{app:, ok:, error:}+ per registered project, in the order they
-  #   were polled; or +:busy+ when a build already holds the lock, which is not a failure.
+  # @return [Array<PollResult>, :busy] one per registered project, in the order they were polled; or
+  #   +:busy+ when a build already holds the lock, which is not a failure.
   def poll
     @lock.with_lock do
       registered_apps.map do |app, url|
@@ -526,11 +550,13 @@ class Shepherd2
           # find the real build among them (D_poll_churn). Pre-checking the remote ref here, so a
           # no-op never enters git:sync at all, is that decision's deferred half.
           @dokku.run('git:sync', '--build-if-changes', app, url)
-          { app: app, ok: true, error: nil }
+          PollResult.new(app: app, ok: true, error: nil)
         rescue Error => e
-          { app: app, ok: false, error: e.message }
+          PollResult.new(app: app, ok: false, error: e.message)
         end
-        emit(:polled, **result)
+        # Events carry a Hash whatever the verb returns, so that a listener reads every kind the same
+        # way.
+        emit(:polled, **result.to_h)
         result
       end
     end
@@ -563,11 +589,14 @@ class Shepherd2
   # A project's last *real* build — the newest record that is not poll churn.
   #
   #   last_build('demo')
-  #   # => {app: 'demo', build: {'id' => 'mtwslbpulbzlek', 'status' => 'failed', …}, live: false,
-  #   #     log_path: '/var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log', log_status: :not_requested,
-  #   #     log: nil}
+  #   # => #<data Shepherd2::BuildReport app='demo', build={'id' => 'mtwslbpulbzlek', …}, live=false,
+  #   #           error=nil, log_path='/var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log',
+  #   #           log_path_exists=true, log_status=:not_requested, log=nil>
   #
-  #   last_build           # => [{app: 'demo', build: {…}, error: nil}, …], every registered project
+  #   last_build   # one BuildReport per registered project
+  #
+  # A project with nothing but churn on record comes back as a report whose +build+ is nil, rather
+  # than as nothing at all — so both forms answer in the same shape and neither needs a nil check.
   #
   # One build, never a history: +dokku builds:list ID+ lists them and +builds:output ID current+ tails
   # a live one.
@@ -579,10 +608,7 @@ class Shepherd2
   #
   # @param id [String, nil] the app id, or +nil+ for every registered project.
   # @param log [Boolean] also read that build's output. Needs an id.
-  # @return [Hash, nil, Array<Hash>] for one app: +:app+, +:build+, +:live+, +:log_path+,
-  #   +:log_path_exists+, +:log+ and +:log_status+ (+:not_requested+, +:running+, +:file+, +:syslog+,
-  #   +:rotated+, +:not_recorded+) — or nil when no real build is on record. For every app: one
-  #   +{app:, build:, live:, error:}+ each, +:build+ nil where there is none.
+  # @return [BuildReport, Array<BuildReport>] one report, or one per registered project.
   # @raise [Error] if the named app does not exist.
   # @raise [UsageError] if the id is malformed.
   def last_build(id = nil, log: false)
@@ -591,17 +617,7 @@ class Shepherd2
     validate_id!(id)
     raise Error, "no such app: #{id}" unless @dokku.ok?('apps:exists', id)
 
-    build = notable_build(build_records(id))
-    return nil if build.nil?
-
-    live = live_build?(build)
-    path = build['log_path'].to_s
-    path = nil if path.empty?
-    exists = !path.nil? && File.exist?(path)
-    contents, status = log ? read_build_log(id, build, live, path, exists) : [nil, :not_requested]
-
-    { app: id, build: build, live: live, log_path: path, log_path_exists: exists,
-      log_status: status, log: contents }
+    build_report(id, notable_build(build_records(id)), log: log)
   end
 
   # --- wait-idle -------------------------------------------------------------------------------
@@ -746,11 +762,27 @@ class Shepherd2
   # so it has no churn to see past either.
   def last_build_everywhere
     registered_apps.keys.map do |app|
-      build = notable_build(build_records(app))
-      { app: app, build: build, live: !build.nil? && live_build?(build), error: nil }
+      build_report(app, notable_build(build_records(app)))
     rescue Error => e
-      { app: app, build: nil, live: false, error: e.message }
+      build_report(app, nil, error: e.message)
     end
+  end
+
+  # The one place a BuildReport is built, so that both forms of #last_build answer in the same shape.
+  def build_report(app, build, log: false, error: nil)
+    if build.nil?
+      return BuildReport.new(app: app, build: nil, live: false, error: error, log_path: nil,
+                             log_path_exists: false, log_status: :not_requested, log: nil)
+    end
+
+    live = live_build?(build)
+    path = build['log_path'].to_s
+    path = nil if path.empty?
+    exists = !path.nil? && File.exist?(path)
+    contents, status = log ? read_build_log(app, build, live, path, exists) : [nil, :not_requested]
+
+    BuildReport.new(app: app, build: build, live: live, error: error, log_path: path,
+                    log_path_exists: exists, log_status: status, log: contents)
   end
 
   # `--kind build` is load-bearing twice over, and the first reason is not obvious. An unfiltered

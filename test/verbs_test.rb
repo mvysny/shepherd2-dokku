@@ -32,7 +32,7 @@ class DestroyAppTest < Minitest::Test
     events = EventLog.new
     result = shepherd(dokku, events: events).destroy_app('demo', yes: true)
 
-    assert_equal 'demo', result[:app]
+    assert_equal 'demo', result.app
     assert_includes dokku.mutations, 'apps:destroy --force demo'
     assert_equal 'demo', events[:nginx_reload_failed].first[:app]
   end
@@ -52,7 +52,7 @@ class DestroyAppTest < Minitest::Test
     result = shepherd(dokku).destroy_app('demo', yes: true)
 
     assert_empty dokku.mutations.grep(/network:destroy/)
-    refute result[:network_destroyed]
+    refute result.network_destroyed
   end
 
   def test_an_unknown_app_is_refused_before_anything_is_destroyed
@@ -105,7 +105,8 @@ class PollTest < Minitest::Test
                             },
                             fail_on: ['config:get handmade'])
 
-    assert_equal [{ app: 'demo', ok: true, error: nil }, { app: 'other', ok: true, error: nil }],
+    assert_equal [Shepherd2::PollResult.new(app: 'demo', ok: true, error: nil),
+                  Shepherd2::PollResult.new(app: 'other', ok: true, error: nil)],
                  shepherd(dokku).poll
     assert_equal [
       'git:sync --build-if-changes demo https://github.com/me/demo',
@@ -124,8 +125,8 @@ class PollTest < Minitest::Test
                             fail_on: ['git:sync --build-if-changes demo'])
     result = shepherd(dokku).poll
 
-    refute result.find { |app| app[:app] == 'demo' }[:ok]
-    assert result.find { |app| app[:app] == 'other' }[:ok]
+    refute result.find { |entry| entry.app == 'demo' }.ok
+    assert result.find { |entry| entry.app == 'other' }.ok
     assert_includes dokku.mutations, 'git:sync --build-if-changes other https://github.com/me/other'
     assert_includes dokku.mutations, 'git:sync --build-if-changes handmade https://github.com/me/handmade'
   end
@@ -281,9 +282,9 @@ class LastBuildTest < Minitest::Test
                             output: records(abandoned('t3'), reaped('t2'), reaped('t1'), real('b1')))
     result = last_build(dokku)
 
-    assert_equal 'b1', result[:build]['id']
-    assert_equal '1m43s', result[:build]['duration']
-    refute result[:live]
+    assert_equal 'b1', result.build['id']
+    assert_equal '1m43s', result.build['duration']
+    refute result.live
   end
 
   # The whole point: a reaped tick must never be reported as the last build, which is exactly what
@@ -291,13 +292,13 @@ class LastBuildTest < Minitest::Test
   def test_a_reaped_tick_is_never_reported_as_a_failure
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(reaped('t1'), real('b1')))
 
-    assert_equal 'b1', last_build(dokku)[:build]['id']
+    assert_equal 'b1', last_build(dokku).build['id']
   end
 
   def test_a_real_failure_keeps_its_exit_code
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: records(reaped('t1'), real('b1', status: 'failed', exit_code: 1)))
-    build = last_build(dokku)[:build]
+    build = last_build(dokku).build
 
     assert_equal 'failed', build['status']
     assert_equal 1, build['exit_code']
@@ -310,14 +311,19 @@ class LastBuildTest < Minitest::Test
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(live, real('b1')))
     result = last_build(dokku)
 
-    assert_equal 'now', result[:build]['id']
-    assert result[:live]
+    assert_equal 'now', result.build['id']
+    assert result.live
   end
 
-  def test_an_app_with_nothing_but_churn_is_nil_rather_than_a_lie
+  # A report with no build in it, rather than no report — so a caller reads +build+ either way and
+  # the two forms of the verb answer in one shape.
+  def test_an_app_with_nothing_but_churn_reports_no_build_rather_than_lying
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(abandoned('t2'), reaped('t1')))
+    result = last_build(dokku)
 
-    assert_nil last_build(dokku)
+    assert_equal 'demo', result.app
+    assert_nil result.build
+    assert_nil result.error
   end
 
   def test_the_log_is_read_only_when_asked_for
@@ -325,8 +331,8 @@ class LastBuildTest < Minitest::Test
     result = last_build(dokku)
 
     assert_empty dokku.commands.grep(/builds:output/)
-    assert_equal :not_requested, result[:log_status]
-    assert_nil result[:log]
+    assert_equal :not_requested, result.log_status
+    assert_nil result.log
 
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
     last_build(dokku, log: true)
@@ -342,9 +348,9 @@ class LastBuildTest < Minitest::Test
                                         'builds:output' => "compiling…\n" })
       result = last_build(dokku, log: true)
 
-      assert result[:log_path_exists]
-      assert_equal :file, result[:log_status]
-      assert_equal "compiling…\n", result[:log]
+      assert result.log_path_exists
+      assert_equal :file, result.log_status
+      assert_equal "compiling…\n", result.log
     end
   end
 
@@ -355,9 +361,9 @@ class LastBuildTest < Minitest::Test
                             output: records(real('b1')).merge('builds:output' => "from journald\n"))
     result = last_build(dokku, log: true)
 
-    refute result[:log_path_exists]
-    assert_equal :syslog, result[:log_status]
-    assert_equal "from journald\n", result[:log]
+    refute result.log_path_exists
+    assert_equal :syslog, result.log_status
+    assert_equal "from journald\n", result.log
   end
 
   # dokku#9031: `builds:output` exits 0 having printed nothing for a pruned or mistyped id, so an
@@ -367,8 +373,8 @@ class LastBuildTest < Minitest::Test
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
     gone = last_build(dokku, log: true)
 
-    assert_equal :rotated, gone[:log_status]
-    assert_nil gone[:log]
+    assert_equal :rotated, gone.log_status
+    assert_nil gone.log
 
     Tempfile.create('build.log') do |file|
       build = real('b1').merge('log_path' => file.path)
@@ -376,8 +382,8 @@ class LastBuildTest < Minitest::Test
                               output: { 'builds:list demo' => JSON.generate([build]) })
       empty = last_build(dokku, log: true)
 
-      assert_equal :file, empty[:log_status]
-      assert_equal '', empty[:log]
+      assert_equal :file, empty.log_status
+      assert_equal '', empty.log
     end
   end
 
@@ -387,7 +393,7 @@ class LastBuildTest < Minitest::Test
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(live))
     result = last_build(dokku, log: true)
 
-    assert_equal :running, result[:log_status]
+    assert_equal :running, result.log_status
     assert_empty dokku.commands.grep(/builds:output/)
   end
 
@@ -417,9 +423,9 @@ class LastBuildTest < Minitest::Test
                             fail_on: ['config:get handmade'])
     results = shepherd(dokku).last_build
 
-    assert_equal %w[demo other], results.map { |result| result[:app] }
-    assert_equal 'b1', results.first[:build]['id']
-    assert_nil results.last[:build]
+    assert_equal %w[demo other], results.map(&:app)
+    assert_equal 'b1', results.first.build['id']
+    assert_nil results.last.build
   end
 
   def test_one_unreadable_project_does_not_hide_the_others
@@ -434,9 +440,9 @@ class LastBuildTest < Minitest::Test
                             fail_on: ['builds:list demo'])
     results = shepherd(dokku).last_build
 
-    assert_match(/failed/, results.find { |result| result[:app] == 'demo' }[:error])
-    assert_equal 'b1', results.find { |result| result[:app] == 'other' }[:build]['id']
-    assert_equal 'b2', results.find { |result| result[:app] == 'handmade' }[:build]['id']
+    assert_match(/failed/, results.find { |result| result.app == 'demo' }.error)
+    assert_equal 'b1', results.find { |result| result.app == 'other' }.build['id']
+    assert_equal 'b2', results.find { |result| result.app == 'handmade' }.build['id']
   end
 
   def test_records_that_are_not_json_are_a_failure_not_a_crash

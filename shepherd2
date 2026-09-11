@@ -322,6 +322,11 @@ class Shepherd2
     # on serving the destroyed app's hostname from a config it still holds in memory — proxying to a
     # container that no longer exists. Requests then hang for proxy_connect_timeout (60s) instead of
     # being refused, until some unrelated deploy happens to reload nginx. Verified on a box.
+    # `apps:destroy` removes the file synchronously — it is gone the instant the command returns — so
+    # there is no race to lose here; it simply never signals nginx. The reload itself *is*
+    # asynchronous, though: it returns 0 immediately and the old config is still being served for
+    # about a second afterwards. That is fine for a destroy, but do not write a test that asserts the
+    # hostname is dead the moment this returns.
     # Best-effort: the app is already gone, and a box whose nginx will not reload is a bigger problem
     # than a stale vhost.
     begin

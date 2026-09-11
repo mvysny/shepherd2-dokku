@@ -651,7 +651,35 @@ vbm-c.shepherd2.test     -> code=000 time=0.000386     # instant
 the *running* nginx, not on disk — which is exactly the failure the operator would never diagnose,
 because every tool that inspects config says the app is gone.
 
+The mechanism, pinned down without a build by using an app that was created and never deployed — such
+an app gets a `return 502` vhost, which is enough to see the effect:
+
+```
+$ dokku apps:create probe-vhost            → "Creating http nginx.conf / Reloading nginx"
+  Host: probe-vhost.shepherd2.test         → 502          (served)
+$ dokku apps:destroy --force probe-vhost
+  /home/dokku/probe-vhost/nginx.conf       → gone         (removed synchronously)
+  Host: probe-vhost.shepherd2.test         → 502          (still served, from memory)
+```
+
+So `apps:create` reloads nginx and `apps:destroy` does not. **There is no race** — the file is gone
+before anything of ours runs; Dokku simply never signals nginx on the way out.
+
 Fixed with Dokku's own command rather than a reach-around: `destroy_app` now ends with
-`dokku nginx:reload`, best-effort. Note this is **not** a Dokku bug to report upstream so much as a
-consequence of `apps:destroy` being designed for a box where the next deploy reloads nginx soon
-anyway; on Shepherd2 a destroyed project may be the last thing that happens for days.
+`dokku nginx:reload`, best-effort. End to end, with the fix:
+
+```
+before destroy: 502
+t+0s: 502      ← still stale
+t+1s: 000      ← catch-all; cleared
+t+2s … t+6s: 000
+```
+
+**`dokku nginx:reload` is asynchronous** — it returns 0 immediately and the old config is served for
+about another second. That cost an hour of confusion here: the first verification curled instantly
+after `destroy-app` returned, saw the old vhost, and looked like the fix had failed. It had not. Worth
+knowing before anyone writes a test that asserts a hostname is dead the moment a destroy returns.
+
+This is **not** a Dokku bug to report upstream so much as a consequence of `apps:destroy` being
+designed for a box where the next deploy reloads nginx soon anyway; on Shepherd2 a destroyed project
+may be the last thing that happens for days.

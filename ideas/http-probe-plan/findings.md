@@ -106,7 +106,12 @@ Everything *before* the clone in `create-app` ran correctly on the first attempt
 leaves a registered project behind. Re-running `create-app` after the fix is the documented repair
 and is what was done.
 
-### FINDING — punch-list 17: build limits *are* honoured. The item was mis-framed, and the documented route works
+### ~~FINDING — punch-list 17: build limits *are* honoured. The item was mis-framed, and the documented route works~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Resource limits*, under the builder table whose herokuish row it confirms,
+with punch-list 17 struck and re-framed: the documented `resource:limit --process-type build` route is
+what works, and the `docker-options` hack the item asked about was never needed. The CLI header's
+`--build-cpu` line already carried the result. Evidence kept below.
 
 `create-app` emits `resource:limit --process-type build --cpu 2 --memory 2g`, and the build container
 Dokku creates carries exactly that — read straight off the daemon, mid-build:
@@ -124,7 +129,13 @@ $ docker stats   MEM 146.3MiB / 2GiB
 `--build-mem 2g` are *defaults*, this was load-bearing: had it not held, every app on the box would
 build uncapped.
 
-### FINDING — punch-list 7: container naming, plus something better than names
+### ~~FINDING — punch-list 7: container naming, plus something better than names~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Observability*, next to the `lazydocker` / `ctop` stance the item was really
+about: the `<app>.<process-type>.<index>` name, the rename-on-success, the random build-container name
+and the `com.dokku.*` label table. Punch-list 7 struck; `README.md`'s cheat sheet gains the two
+`--filter label=` queries. The build-container-on-the-app-network half went earlier, with finding E.
+Evidence kept below.
 
 **Deployed app containers are named `<app>.<process-type>.<index>` — `hello.web.1`.** Dokku creates
 them under a transient name and renames on success: `Renaming container hello.web.1.upcoming-8948
@@ -151,7 +162,11 @@ So `docker ps --filter label=com.dokku.app-name=hello` selects everything of an 
 **And a bonus that matters to `D_isolation`: the build container is on the app's own network** —
 `app-hello (172.16.1.2)`. `initial-network` covers the build, not just the runtime container.
 
-### FINDING — punch-list 8: ports are auto-wired, and before the first deploy at that
+### ~~FINDING — punch-list 8: ports are auto-wired, and before the first deploy at that~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Ports — the `EXPOSE` trap*, on the paragraph that already said a buildpack
+app needs no `ports:set`: it now carries the report output, the before-first-deploy timing and the
+detected-never-promoted behaviour across three builds. Punch-list 8 struck. Evidence kept below.
 
 ```
 $ dokku ports:report hello          # app created, never deployed

@@ -569,7 +569,8 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | add another hostname (http only — see below) | `dokku domains:add ID host.example.com` |
 | allow a bigger upload · a slower endpoint | `dokku nginx:set ID client-max-body-size 20m` · `dokku nginx:set ID proxy-read-timeout 300s` |
 | check the generated vhost | `dokku nginx:show-config ID`, `dokku nginx:validate-config` |
-| see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` |
+| see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` — app containers are named `ID.web.1` |
+| pick out one app's containers · the build in flight | `docker ps --filter label=com.dokku.app-name=ID` · `docker ps --filter label=com.dokku.image-stage=build` |
 | see what the box has been doing | `dokku events -t` |
 
 Nine things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):

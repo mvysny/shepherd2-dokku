@@ -615,6 +615,19 @@ the app to listen on `$PORT`. So a buildpack app is wired correctly with no `por
 follows applies to a `Dockerfile` app and is kept because the commands are still the ones to reach for
 when a mapping *is* wrong.
 
+**Confirmed on a box, and earlier than expected — the mapping is detected before the first deploy.**
+On an app created and never built: **[verified on a box 2026-09-11]**
+
+```
+$ dokku ports:report hello
+Ports map:                  (empty)          Ports map json:          null
+Ports map detected:         http:80:5000     Ports map detected json: [{"container_port":5000,…}]
+```
+
+It then survived three further builds and two successful deploys with `Ports map` still empty and
+`Ports map json` still `null` — so the detected mapping is *not* promoted into set state, and there is
+nothing of ours to write or re-assert. Punch-list 8 closed.
+
 ```bash
 dokku ports:list <app>
 dokku ports:add   <app> <scheme>:<host-port>:<container-port>
@@ -1145,6 +1158,21 @@ suffixes), `memory-swap` → `--memory-swap`, `nvidia-gpus` → `--gpus`; reserv
 **So with the Dockerfile builder, build *memory* can be capped and build *CPU* cannot.** That is a
 direct, documented regression against shepherd-traefik, which limits both.
 
+**The herokuish row is confirmed on a box, and it is the documented route that works — not the
+`docker-options` hack.** `resource:limit --process-type build --cpu 2 --memory 2g` reaches the build
+container as real Docker limits, read off the daemon mid-build: **[verified on a box 2026-09-11]**
+
+```
+$ docker inspect <build container>     mem=2147483648   nanocpus=2000000000
+$ docker stats                         MEM 146.3MiB / 2GiB
+```
+
+2147483648 is 2 GiB and 2000000000 nanocpus is 2 CPUs, and a real Maven build peaked at **202 % CPU on
+a 4-core host** — capped, and demonstrably using the cap. Nothing needed
+`docker-options:add <app> build '--cpus 2'`; that question was a Dockerfile-builder artefact
+(punch-list 17). It mattered more than it looks: Shepherd2 passes these limits by *default*, so had
+the documented route been inert, every app on the box would have built uncapped.
+
 ## Processes, restarts and reboot
 
 ```bash
@@ -1282,6 +1310,26 @@ fixed `postgres-service` with a hardcoded password.
 - **No metrics, by design.** Dokku does not manage monitoring. Because apps are plain Docker
   containers with stable names, `docker stats`, `lazydocker` (52.8k★, MIT) or `ctop` (17.8k★, MIT)
   cover it for zero code. **[docs for the stance]**
+- **What those names actually are: `<app>.<process-type>.<index>`** — `hello.web.1`. Dokku creates the
+  container under a transient name and renames it once the deploy succeeds (`Renaming container
+  hello.web.1.upcoming-8948 (37d0f33c73cb) to hello.web.1`), so a container-list tool shows something
+  meaningful with no help from us. The image is `dokku/<app>:latest`. **Build containers get a random
+  Docker name** instead (`optimistic_rosalind`), because they are transient and never renamed.
+  **[verified on a box 2026-09-11]**
+- **Labels are the reliable handle, and they beat names for anything scripted.** Both build and
+  deployed containers carry them: **[verified on a box 2026-09-11]**
+
+  ```
+  com.dokku.app-name=hello   com.dokku.builder-type=herokuish   com.dokku.image-stage=build
+  com.gliderlabs.herokuish/stack=heroku-24   org.label-schema.vendor=dokku
+  # the deployed container adds:
+  com.dokku.container-type=deploy   com.dokku.dyno=web.1   com.dokku.process-type=web
+  com.dokku.image-stage=release
+  ```
+
+  So `docker ps --filter label=com.dokku.app-name=hello` selects everything of one app's, and
+  `--filter label=com.dokku.image-stage=build` isolates a build in flight — which is the query a name
+  cannot express, since that container's name is random.
 - **Event log:** Dokku writes events to `/var/log/syslog` and `/var/log/dokku/events.log`, with
   `dokku events [-t]`, `events:list`, `events:on`, `events:off`. (A separate third-party
   `alessio/dokku-events` logs to `/var/log/dokku.log` — don't confuse the two.) **[docs]**
@@ -1616,10 +1664,15 @@ first throwaway VPS:
    deployed under two ids so the coordinates were guaranteed to collide: 924 downloads from Central
    each, nothing shared.** In *The herokuish cache volume*, along with the measured volume sizes. The
    timing half is item 13.
-7. What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?
-8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
-   it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
-   Dockerfile-builder question, moot under `D_builder`.)
+7. ~~What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?~~
+   **Answered 2026-09-11: `<app>.<process-type>.<index>`, so yes** — and the better answer is the
+   `com.dokku.*` labels, which also select a build container that has no meaningful name. In
+   *Observability*.
+8. ~~Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
+   it survive a rebuild?~~ **Answered 2026-09-11: yes, and it is detected before the first deploy**,
+   staying detected-not-set across three builds and two deploys. In *Ports — the `EXPOSE` trap*. (Was:
+   does `EXPOSE 8080` + `ports:set` behave as documented — a Dockerfile-builder question, moot under
+   `D_builder`.)
 9. ~~**(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work
    when the app is on a per-app network?** … Check that `postgres:create -N app-<id>` + `postgres:link`
    leaves `DATABASE_URL` connectable, and whether the `--link` flag errors, warns, or is silently
@@ -1685,9 +1738,12 @@ first throwaway VPS:
     `docker container create` unfiltered `[src]`~~ — **the bind mount was confirmed on a box
     2026-09-11** (*The herokuish builder*), so the mechanism is settled and only the Maven `-D`
     question is left, which is a Maven question rather than a box one.
-17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
-    `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
-    all, and the gap the feature survey recorded was a Dockerfile-builder artefact.
+17. ~~**Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
+    `docker-options:add <app> build '--cpus 2'`.~~ **Mis-framed, and answered 2026-09-11 without the
+    hack:** the *documented* route — `resource:limit --process-type build`, which is what `create-app`
+    already emits — reaches the build container as `mem` and `nanocpus`, and a real build peaked at
+    202 % CPU on a 4-core host. In *Resource limits*. The gap the feature survey recorded was indeed a
+    Dockerfile-builder artefact.
 18. **What exactly does an app look like on a box with no certificate?** The http-only install mode
     (`D_cert`) is defined by *absence* — no lego, no `global-cert` — so what needs confirming is that
     absence behaves: an app on a `domains:set-global`'d box serves plain http on port 80, emits **no**

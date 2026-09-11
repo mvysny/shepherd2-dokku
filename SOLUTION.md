@@ -245,7 +245,11 @@ major version behind upstream's dynamic default. Nothing runs per app, ever.
 ## Flow — reboot, and staying out of a build's way
 
 Unattended: Docker's `always` policy plus Dokku's `ps:restore` from the init service bring every app
-back after a reboot, skipping any that was manually stopped.
+back after a reboot, skipping any that was manually stopped. A **daemon** restart is gentler than that
+and was run on a live box: `live-restore` — set by Dokku's own postinst — means the containers are
+never stopped at all, `ps:restore` still fires and briefly leaves a duplicate container that exits 143
+on its own within ~17 s, and nginx's upstreams still match afterwards (`RESEARCH.md` → *Processes,
+restarts and reboot*). **A true power cycle remains untested**; see *What is not yet proven on a box*.
 
 Deliberate: `shepherd2 wait-idle` first. It blocks on the same poll lock and on `builds:list` with no
 app, which lists every running build box-wide, and exits when both are clear. That is the whole of the

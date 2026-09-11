@@ -90,7 +90,10 @@ script and running it again — the workflow the header claims — works.
 
 ## Phase 3 — the build-dependent half
 
-### Note, not a finding — `file://` sources must be readable *as the dokku user*
+### ~~Note, not a finding — `file://` sources must be readable *as the dokku user*~~ — **GRADUATED 2026-09-11**
+
+Landed on the `git:sync` bullet list in `RESEARCH.md` → *`git:sync` — the SCM poll*, phrased as
+ownership rather than readability. The second sitting hit it again from a different direction.
 
 `git:sync` clones as `dokku`, and git refuses a repo owned by someone else:
 `fatal: detected dubious ownership in repository at '/srv/probe-repos/…/.git'`. Fixed by
@@ -869,3 +872,111 @@ That is worth keeping for two reasons: it retires a caution this repo has repeat
 
 *(Verified on Docker 29.1.3, Ubuntu's `docker.io`. Older Docker may not have skipped it; this is not a
 claim about the version the plan was written against.)*
+
+---
+
+## Second sitting, 2026-09-11 — the v2 leftovers, on the box as it stands
+
+The first sitting closed everything the http box could reach and paused. This one picks up the four
+things left that need *no* new mode and no new app: items **9**, **14**, **16**'s mechanism half, and
+the unnumbered `[unverified]` at `RESEARCH.md`'s *An app named as an FQDN* bullet. Item **4** was
+offered and declined — it needs the https mode, which `D_cert` will not let this box have.
+
+Everything below ran against the box in its post-uninstall, reinstalled state: http mode, Dokku
+0.38.27, Docker 29.1.3, one app `demo` (`heroku/node-js-getting-started`, `heroku/nodejs`) on
+`app-demo` with a `cache-demo` volume. **The box was returned to exactly that state afterwards** —
+every probe app, network, service, plugin, domain, config var and `/etc/hosts` line was removed, and
+`demo` still answers 200.
+
+### The probe rig — an inline buildpack, which is worth stealing for later runs
+
+Three of the four questions are "what does the build container actually see?", and building a Vaadin
+app to find out costs minutes per attempt. Instead: a four-file app on the **`heroku-community/inline`**
+buildpack, whose entire job is to run `bin/compile` out of the app's own repo. The build takes about
+five seconds and can print anything.
+
+```
+bin/detect    echo probe
+bin/compile   dumps $ENV_DIR, $CACHE_DIR, /proc/self/mountinfo, cgroup limits, env
+bin/release   default_process_types: web: sleep infinity
+Procfile      web: sleep infinity
+```
+
+Registered with `buildpacks:set probe heroku-community/inline` and deployed from a `file://` source.
+Two incidental facts came out of the rig itself:
+
+- **`heroku-community/x` is rewritten to `heroku/heroku-buildpack-x`** — the `community` org is a
+  fiction of the shorthand `[src]`, `plugins/buildpacks/functions.go:98`. And `validBuildpackURL`
+  accepts only `http`, `https` and `git` schemes, so a buildpack cannot be served from `file://` the
+  way an *app* can.
+- **A `file://` app source must be *owned* by the `dokku` user**, not merely readable by it. A
+  root-owned repo fails the clone with git's `fatal: detected dubious ownership` — the same wall the
+  first sitting hit from the other direction, and now recorded in `RESEARCH.md`.
+
+### ~~FINDING — punch-list 14, second half: a `--global` config var reaches the build's ENV_DIR~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *The herokuish builder*, on the existing "Config vars are available at build
+time" bullet, which now says the ENV_DIR carries the **merged** view and marks it
+`[src; verified on a box]`; punch-list 14's global half is struck. Nothing else owns any of it — it is
+a Dokku fact and nothing about it changes a choice of ours.
+
+### ~~FINDING — punch-list 14, first half: it is `NPM_CONFIG_CACHE`, uppercase~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *The herokuish cache volume*: the Node buildpack bullet now records that a
+Node app needs no cache configuration at all, and a new bullet under it carries the uppercase-only
+relocation, the `mv`-based restore/save, and the two traps. Punch-list 14 is struck down to the one
+piece still open — the Java buildpack's unmanaged npm cache, which needs an app that customises its
+frontend.
+
+### ~~FINDING — punch-list 16, mechanism half: a build-phase `-v` bind mount reaches the build container~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *The herokuish builder*, on the "Build-phase `docker-options` are genuine
+container options here, unfiltered" bullet, which now carries the `-v` confirmation and the point that
+it generalises past `~/.vaadin`. Punch-list 16's second idea is struck; only the Maven `-Duser.home`
+question is left there, and it is a Maven question rather than a box one.
+
+The same build's incidental readings — `$CACHE_DIR` is `/cache` on the `cache-$APP` volume, `HOME=/app`,
+`PWD=/tmp/build` — are already in `RESEARCH.md`. Its uncapped `memory.max` / `cpu.max` are likewise
+already covered by *Resource limits*: "only limits explicitly set against the `build` process type are
+applied at build time".
+
+### ~~FINDING — punch-list 9: `postgres:link` works on a per-app network, and the `--link` is redundant~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Networking and app isolation*, replacing the `[unverified]` on the
+`postgres:link` caveat under *Datastore plugins* with the whole result: what the legacy `--link` does
+(accepted, network-scoped, no warning), why the connection actually works (`-N` plus Docker's embedded
+DNS serving the service alias), and the corollary that isolation covers services too. Punch-list 9 is
+struck. *Services: Postgres* already defers to that section for the caveat, so it needed no edit, and
+`D_isolation` already prescribes `postgres:create --initial-network` as the flag that must not be
+forgotten — the research now says why, and the decision links rather than restates.
+
+### ~~FINDING — a wildcard app domain is accepted, and it routes~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Config, env vars and app metadata*, replacing the `[unverified]` bullet that
+said the behaviour was undocumented.
+
+### ~~FINDING — off the punch list: `apps:destroy` removes the `cache-<app>` volume~~ — **GRADUATED 2026-09-11**
+
+Chased because `shepherd2:320` carried an `[unverified]` about it. Built a throwaway app on the probe
+rig, confirmed `cache-cachetest` existed with the build's marker file in it, then destroyed the app
+with plain `dokku apps:destroy` — no `repo:purge-cache` first. The volume and its directory under
+`/var/lib/docker/volumes` were both gone. Repeated once to be sure.
+
+So `destroy_app`'s `repo:purge-cache` call is belt-and-braces rather than load-bearing, and a destroyed
+app leaks no disk. Landed in `RESEARCH.md` → *The herokuish cache volume*, and the `[unverified]` in
+`shepherd2`'s `destroy_app` comment is replaced by the result. Which hook does the removal was not
+chased down and is not recorded as if it were.
+
+### ~~The probe rig's two incidental facts~~ — **GRADUATED / already known, 2026-09-11**
+
+- The `heroku-community/x` → `heroku/heroku-buildpack-x` rewrite was **already** in `RESEARCH.md`
+  (*Buildpacks*), recorded when `validBuildpackURL` was read on 2026-09-11. Nothing to land.
+- The `file://`-source ownership requirement — the clone runs as `dokku`, so a root-owned tree fails
+  git's dubious-ownership check — landed on the `git:sync` bullet list in *`git:sync` — the SCM poll*.
+  That supersedes the *Note, not a finding* earlier in this file, which said only "readable".
+
+The rig itself — a four-file `heroku-community/inline` app that builds in five seconds and prints
+whatever the build container sees — is a **technique, not a finding**, and belongs with the plan note
+rather than in the durable docs. It is described under *The probe rig* above and dies with this file.
+Worth re-reading before the next box run: three of the four questions in this sitting fell out of one
+five-second build.

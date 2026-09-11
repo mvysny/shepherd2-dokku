@@ -18,8 +18,7 @@ box, and the dev VM is now ready to be one (`ideas/http-probe-plan.md`). The fea
 *what* the rebuilt thing does has graduated and is gone (`D_no_feature_list`); what is left in `ideas/`
 is five open questions carrying `Q_` slugs and two pieces of deferred work — **all of it v2** now that
 `Q_poll_churn`, the one v1 gap among them, has graduated into `D_poll_churn` — plus two plans for
-running the punch list, one per TLS mode, since `D_cert` means no single box can answer all of it, and
-the two unfiled upstream bug reports `D_poll_churn` owes.
+running the punch list, one per TLS mode, since `D_cert` means no single box can answer all of it.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:

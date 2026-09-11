@@ -236,14 +236,24 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
   `$build_path`, `$cache_path`, `$env_path` and `$buildpack_path` to the unprivileged user (default
   `herokuishuser`) and invokes `bin/compile` through `unprivileged`. The build container is created
   with no `--privileged`, no Docker socket and no special network. **[src]**
-- **Config vars are available at build time.** `builder-herokuish/pre-build` bundles every app config
-  var into an ENV_DIR at `/tmp/env` inside the build ("Adding BUILD_ENV to build environment…"). **[src]**
-  This is the opposite of the Dockerfile builder, where config vars are runtime-only.
+- **Config vars are available at build time, and the ENV_DIR carries the *merged* view.**
+  `builder-herokuish/pre-build` bundles config vars into an ENV_DIR at `/tmp/env` inside the build
+  ("Adding BUILD_ENV to build environment…") **[src]**, and what lands there is global + app rather
+  than the app's own alone: with one var set by `config:set --global` and another set on the app,
+  `ls $ENV_DIR` inside a build shows both, alongside Dokku's own `CURL_CONNECT_TIMEOUT` / `CURL_TIMEOUT`
+  and `GIT_REV`. **[src; verified on a box, 2026-09-11]** So a build-time setting can be applied
+  box-wide with `config:set --global` and never touch a repo — worth knowing before adding a config var
+  to nine repositories. The same mechanism puts `SHEPHERD_TLS_MODE` into every build; nothing reads it
+  there. This is the opposite of the Dockerfile builder, where config vars are runtime-only.
 - **Build-phase `docker-options` are genuine container options here, unfiltered.** The trigger output
   is split and passed straight to `docker container create` with **no allowlist** — unlike the
   Dockerfile builder, which filters against a flag list. So `-v`, `--cpus` and anything else
   `docker container create` accepts reach the build. **[src]** This is what the docs' warning that
-  "`build` options are container options" is actually describing.
+  "`build` options are container options" is actually describing. Confirmed for `-v`:
+  `docker-options:add <app> build '-v /opt/src:/probe-mount'` put the host directory inside the build
+  container, readable, with the host's file in place. **[verified on a box, 2026-09-11]** So **any**
+  build-time directory can be pointed at host storage, which is a general escape hatch and not a
+  Vaadin-specific one — see punch-list 16.
 
 ### The pack (Cloud Native Buildpacks) builder
 
@@ -406,9 +416,25 @@ names the cache.** That is the fact `D_builder` turns on.
   `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
   `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
   control, and honours `NODE_MODULES_CACHE=false`. It **prunes devDependencies** at the end of its
-  own compile. **[src]**
+  own compile. **[src]** So a Node app needs no cache configuration of any kind: one deploy of
+  `heroku/node-js-getting-started` left a 45 MB `node/cache/npm` in the volume with nothing set.
+  **[verified on a box, 2026-09-11]**
+- **Its npm cache is relocatable, but only under the *uppercase* name.** `bin/compile` does
+  `[[ -z "${NPM_CONFIG_CACHE}" ]] && NPM_CONFIG_CACHE=$(mktemp -d …)`, and `lib/cache.sh` then **`mv`s**
+  `${CACHE_DIR}/node/cache/npm` to whatever that names on restore and back again on save — so the
+  variable *relocates* the buildpack's own cache rather than adding one. The lowercase
+  `npm_config_cache`, which is the spelling npm itself reads, is never consulted by the buildpack and
+  has no effect. **[src at v367; verified on a box, 2026-09-11]** Two traps if anyone reaches for it:
+  pointing it inside `/cache` makes the buildpack move a directory to a sibling of itself and back, and
+  npm then recreates the emptied path during the devDependency prune that follows, leaving a decoy
+  directory holding only `_logs`.
 - **Nothing garbage-collects this volume.** Unlike a BuildKit mount cache it has no TTL and no GC
   policy; it grows until `repo:purge-cache` or a volume prune removes it.
+- **`apps:destroy` does remove it**, so a destroyed app leaves no cache volume behind and there is no
+  disk leak to clean up after one. Checked twice by building a throwaway app, confirming
+  `cache-<app>` and its contents existed, then destroying the app with plain `dokku apps:destroy`:
+  the volume and its directory under `/var/lib/docker/volumes` were both gone.
+  **[verified on a box, 2026-09-11]** Which hook does the removal was not chased down.
 - **The CNB equivalent, for when `pack` is revisited:** Heroku's CNB Maven buildpack creates a
   `CachedLayerDefinition` named `repository`, points `-Dmaven.repo.local` at it and restores it with
   `KeepLayer` **[src, heroku/buildpacks-jvm]**. Paketo's Java buildpack, by contrast, does **not**
@@ -458,7 +484,11 @@ dokku git:sync [--build|--build-if-changes] [--skip-deploy-branch] <app> <reposi
 dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git main
 ```
 
-- Clones or fetches from a remote URL; takes an optional branch, tag or commit SHA.
+- Clones or fetches from a remote URL; takes an optional branch, tag or commit SHA. A local
+  `file:///path` works too — useful for rehearsing a repo's herokuish onboarding before committing it
+  upstream — but the repository must be **owned by the `dokku` user**, not merely readable by it: the
+  clone runs as `dokku` and a root-owned tree fails it with git's
+  `fatal: detected dubious ownership`. **[verified on a box, 2026-09-11]**
 - `--build` always builds; **`--build-if-changes` builds only when the fetch moved the ref** — exactly
   the poll-SCM semantics.
 - The app must already exist (`apps:create`).
@@ -861,8 +891,23 @@ shared bridge; reachability is unchanged. **[docs]**
 values are settable afterwards with e.g. `dokku postgres:set <service> post-create-network <net>`.
 **[docs]** So an app and its own Postgres can share one per-project network with no raw-Docker escape
 hatch — see *Services: Postgres*. Note `postgres:link` "will use native docker links via the
-docker-options plugin", i.e. it adds a `--link`, which is a *legacy default-bridge* mechanism; what the
-link flag does to a container whose `initial-network` is a user-defined bridge is **[unverified]**.
+docker-options plugin", i.e. it adds a `--link`, which is a *legacy default-bridge* mechanism.
+
+**What that legacy `--link` does on a user-defined bridge: nothing that matters.** Run end to end —
+`postgres:create <svc> -N app-<id>` then `postgres:link <svc> <app>` — it neither errors nor warns; it
+sets `DATABASE_URL`, adds `--link dokku.postgres.<svc>:dokku-postgres-<svc>` to *all three*
+docker-options phases (build, deploy and run) and redeploys the app. Docker accepts the flag and
+records it **network-scoped** — `HostConfig.Links` stays `null` while
+`NetworkSettings.Networks[<net>].Links` carries it — and the app connects.
+
+But it is **redundant rather than inert**, and the difference matters for the design: a throwaway
+container on the same network with *no link at all* runs a query against the same DSN quite happily,
+because `postgres:create -N` gives the service container the network alias `dokku-postgres-<svc>` and
+Docker's embedded DNS serves it. **`-N` is the load-bearing flag; `postgres:link` only writes
+`DATABASE_URL`.** The same container on a *different* network cannot even resolve the name
+(`could not translate host name … Temporary failure in name resolution`) — so per-app isolation covers
+services as well as apps, and a service on app A's network is not merely unreachable from app B but
+invisible to it. **[verified on a box, 2026-09-11, dokku-postgres against postgres:18.4]**
 
 `network:rebuild <app>` / `network:rebuildall` re-apply network config to running containers — a
 first-party re-assert, so keeping isolation true after drift does not need a tool of ours. **[docs]**
@@ -1054,8 +1099,12 @@ dokku domains:report [<app>|--global] [<flag>]
 - **An app named as an FQDN takes that FQDN**: "the global virtualhost will be ignored and the resulting
   vhost URL for that application will be `dokku.org`" — the mechanism for publishing one project on the
   apex domain. **[docs]**
-- Whether a **wildcard** app domain (`domains:add app '*.example.com'`) is accepted is not documented.
-  **[unverified]**
+- A **wildcard** app domain (`domains:add app '*.example.com'`) is undocumented but works: it is
+  accepted without complaint, passed through to nginx's `server_name` verbatim
+  (`server_name demo.example.com *.wild.example.com;`) and an arbitrary label under it routes to the
+  app. Adding one to an app with no web listeners warns `No web listeners specified` and configures the
+  vhost anyway. **[verified on a box, 2026-09-11]** Nothing in v1 wants it — the box is one hostname per
+  app — but it is the mechanism a per-app custom-domain story would reach for.
 - **There is no user-settable per-app metadata slot.** `apps:set` accepts exactly one key,
   `disable-autocreation`, and only globally; every other `apps:report` field (`deploy-source`,
   `deploy-source-metadata`, `created-at`, …) is read-only and system-written. **[docs + src]** Anything
@@ -1448,12 +1497,13 @@ first throwaway VPS:
 8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
    it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
    Dockerfile-builder question, moot under `D_builder`.)
-9. **(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work when
-   the app is on a per-app network?** The link is a legacy
-   default-bridge `--link`; on a user-defined bridge the app resolves the service by DNS name
-   (`dokku-postgres-<svc>`), so it plausibly works *because* both sit on the per-app network rather than
-   because of the link. Check that `postgres:create -N app-<id>` + `postgres:link` leaves `DATABASE_URL`
-   connectable, and whether the `--link` flag errors, warns, or is silently inert.
+9. ~~**(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work
+   when the app is on a per-app network?** … Check that `postgres:create -N app-<id>` + `postgres:link`
+   leaves `DATABASE_URL` connectable, and whether the `--link` flag errors, warns, or is silently
+   inert.~~ **Answered 2026-09-11**, and the item's own guess was right: it works, and it works
+   *because* both containers sit on the per-app network, not because of the link. The `--link` is
+   accepted silently and is **redundant rather than inert**. Isolation covers services too — from
+   another network the service name does not even resolve. See *Networking and app isolation*.
 10. **Can `initial-network` point at a network Dokku did not create** — one made with
     `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
     deploy and route? Only matters if `D_isolation` is ever revisited — it decides whether that entry's
@@ -1479,13 +1529,17 @@ first throwaway VPS:
     wrapper's Gradle distribution *and* the JDK. No frontend build ran at all, so the frontend half of
     the question is still open and still needs an app that customises its frontend. The Maven half is
     untouched by this.
-14. **(v2.) Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
-    rebuilds?** It should: config vars reach the build via the ENV_DIR `[src]` and `/cache` is the
-    per-app volume. Confirm npm honours it under whatever package manager Vaadin picks (npm vs pnpm —
-    pnpm reads `store-dir`, not `npm_config_cache`). And the variant that would keep the setting off
-    the app's repo entirely: does a **`config:set --global`** var reach the build's ENV_DIR too? The
-    `pre-build` trigger bundles the *app's* config `[src]`, and whether that is the merged view
-    (`config:keys --merged`) is `[unverified]`.
+14. **(v2.) ~~Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
+    rebuilds?~~** **Answered 2026-09-11, and the premise was wrong twice over** — both halves are in
+    *The herokuish cache volume*. The Node buildpack already caches npm into `cache-$APP` with nothing
+    set, so a Node app needs none of this; and the variable it honours is **`NPM_CONFIG_CACHE`**,
+    uppercase, the lowercase spelling named here being npm's own and ignored by the buildpack.
+    ~~And the variant that would keep the setting off the app's repo entirely: does a
+    **`config:set --global`** var reach the build's ENV_DIR too?~~ **Also answered: yes — the ENV_DIR
+    is the merged view**, so a global var reaches every build (*The herokuish builder*). What survives
+    is the half the item was really aimed at: the **Java** buildpack manages no npm cache, so nothing
+    caches a Vaadin frontend build's npm traffic, and whether `NPM_CONFIG_CACHE` — or pnpm's
+    `store-dir` — reaches it needs an app that customises its frontend, the same app 13 and 15 want.
 15. **Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
     no custom frontend and no add-ons (Vaadin 24.1+)? **Answered for this farm on 2026-09-10, not on a
     box**: the operator confirms every app here uses that bundle, so items 13, 14 and 16 stop mattering
@@ -1495,9 +1549,11 @@ first throwaway VPS:
     source checkout, because the Java buildpack sets `-Duser.home=${build_dir}` `[src]`, and Vaadin
     offers no property for that directory's location — `require.home.node` only forces the app to use
     it `[docs]`. Two things to try: `MAVEN_CUSTOM_OPTS="… -Duser.home=/cache/home"` (does a Maven CLI
-    `-D` override the `MAVEN_OPTS` one for `System.getProperty`?), and a build-phase
+    `-D` override the `MAVEN_OPTS` one for `System.getProperty`?), and ~~a build-phase
     `docker-options:add <app> build '-v …'` bind mount, which the herokuish path passes to
-    `docker container create` unfiltered `[src]`.
+    `docker container create` unfiltered `[src]`~~ — **the bind mount was confirmed on a box
+    2026-09-11** (*The herokuish builder*), so the mechanism is settled and only the Maven `-D`
+    question is left, which is a Maven question rather than a box one.
 17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
     `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
     all, and the gap the feature survey recorded was a Dockerfile-builder artefact.

@@ -317,10 +317,11 @@ class Shepherd2
 
     confirm_destruction!(id) unless options[:yes]
 
-    # Whether apps:destroy also removes the cache-<app> volume is [unverified]; purging first is
-    # harmless if it does and necessary if it does not. It is literally `docker volume rm -f
-    # cache-<app>`, so it tolerates a volume that was never created — but a box where it fails is
-    # still a box we want destroyed, so this is best-effort rather than fatal.
+    # apps:destroy does remove the cache-<app> volume by itself (verified on a box 2026-09-11, see
+    # RESEARCH.md), so this purge is belt-and-braces rather than load-bearing. Kept because it is
+    # literally `docker volume rm -f cache-<app>` — it costs one call, tolerates a volume that was
+    # never created, and keeps the teardown correct if that behaviour ever changes. A box where it
+    # fails is still a box we want destroyed, so this is best-effort rather than fatal.
     begin
       @dokku.run('repo:purge-cache', id)
     rescue Shepherd2Error => e

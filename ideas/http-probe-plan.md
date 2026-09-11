@@ -30,7 +30,11 @@ does, this folder is its only record — and it is complete enough to graduate f
 | 18 http-only mode | **closed** — both the 502 and 200 paths |
 | 19 no-op tick churn | **closed**, and **graduated** → `D_poll_churn` (retention 300 + `shepherd2 last-build`) |
 | 20 Gradle buildpack | **closed** — all three parts |
-| 4, 9, 14, 16 | out of scope here, as planned |
+| 9 `postgres:link` | **closed**, and **graduated** → `RESEARCH.md` *Networking and app isolation* |
+| 14 build env / npm cache | **closed**, and **graduated** → `RESEARCH.md` *The herokuish builder* and *The herokuish cache volume* |
+| 16 relocating a build dir | **half closed**, and that half **graduated** → `RESEARCH.md` *The herokuish builder*; the Maven `-Duser.home` half is untouched |
+| wildcard app domain | **closed**, and **graduated** → `RESEARCH.md` *Config, env vars and app metadata* |
+| 4 | out of scope here — needs the https mode, which `D_cert` will not let this box have |
 
 **Three v1 bugs in our own code came out of it, all fixed and all verified on the box** — none of
 which any amount of reading would have found. See *Bugs the box found in our own code* in
@@ -218,11 +222,16 @@ this one and is unblocked.
 
 ## Out of scope here
 
+**Revised 2026-09-11 after the second sitting**: items 9, 14 and 16's mechanism half were run here
+after all — none of them needed a new mode or a new app, only a five-second inline-buildpack probe
+app. What is left below is genuinely out of reach.
+
 - **Item 4, the `D_cert` chain** — needs a real DNS zone and an https-mode box; `D_cert` forbids
   converting this one. → `ideas/production-cutover.md`.
 - **Item 15** — answered off-box on 2026-09-10 by the operator, not something a VM can add to.
-- **Items 9, 14, 16** — v2 (managed Postgres, npm cache warming, relocating `~/.vaadin`). Cheap if the
-  box is already up and there is appetite, but nothing in v1 waits on them.
+- **Items 9, 14, 16** — ~~v2, cheap if the box is already up~~ **run on 2026-09-11**, see the second
+  sitting in `findings.md`. What remains of 16 is the Maven `-Duser.home` question, which needs a
+  Maven build rather than a box.
 
 ## Where the findings go
 

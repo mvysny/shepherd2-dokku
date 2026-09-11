@@ -1,8 +1,10 @@
 # Upstream bug reports to file against `dokku/dokku`
 
-Drafted 2026-09-11, **not filed** — the operator reviews first. Graduation: file them, put the issue
-numbers into `D_poll_churn` (report #1) and `RESEARCH.md` → *Build tracking* (report #2), delete this
-note. Nothing waits on either; `D_poll_churn` ships the workaround regardless.
+**Report #1 is filed: [dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030)** (2026-09-11),
+and `D_poll_churn` carries the number. **Report #2 is still a draft** awaiting review. Graduation: file
+#2, put its number into `RESEARCH.md` → *Build tracking*, and delete this note — the evidence in
+`ideas/upstream-bug-reports/` goes with it, so anything durable must be in `RESEARCH.md` by then.
+Nothing waits on either; `D_poll_churn` ships the workaround regardless.
 
 **Searched first, nothing on point.** `gh search issues --repo dokku/dokku` for `build-if-changes`,
 `abandoned build record`, `builds:list retention`, `git:sync record` and `builds plugin` — open and
@@ -105,7 +107,7 @@ sudo sed -i 's|^#\*/5|*/5|' /etc/cron.d/shepherd2
 
 ---
 
-## Report #1 — `git:sync` opens a build record it never closes when there is nothing to build
+## Report #1 — FILED as [dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030)
 
 *Our framing, not for the body:* `--build-if-changes` is the flag whose entire purpose is periodic
 polling, and it is the one path that leaves the record unfinalized — so the feature systematically
@@ -132,8 +134,9 @@ the no-change path without ever finalizing it:
 
 The same leak affects a **plain `dokku git:sync <app> <remote>`** with no `--build*` flag: `SHOULD_BUILD`
 stays `false`, the function falls off the end, and the record started at the top is never finalized
-either. It is not specific to `--build-if-changes`; that flag just makes it happen 288 times a day. A
-`--build` whose *clone* fails leaks identically — a wrong `deploy-branch` produced one here.
+either. It is not specific to `--build-if-changes`; that flag is simply the one people put on a timer,
+and a five-minute timer means 288 of these a day per app. A `--build` whose *clone* fails leaks
+identically — a wrong `deploy-branch` produced one here.
 
 **What I expected:** a run that builds nothing leaves no build record, or leaves one marked as
 "nothing to build". **What happens instead**, in the order it arrives:

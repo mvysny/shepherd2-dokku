@@ -1367,7 +1367,9 @@ the design had noticed.
 3. **The ordering gets reported upstream.** `CLAUDE.md`'s *Dokku stays upstream and unforked* makes a
    bug report the sanctioned move, and this looks like a plain bug rather than a design position: a
    record is opened for a run that may never build, and the no-change path is the only exit that skips
-   finalization. A fix upstream retires all three parts of this decision.
+   finalization. Filed 2026-09-11 as
+   [dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030). A fix upstream retires all three
+   parts of this decision.
 
 **Alternatives rejected.**
 

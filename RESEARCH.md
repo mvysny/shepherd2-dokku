@@ -384,6 +384,35 @@ names the cache.** That is the fact `D_builder` turns on.
 - **`dokku repo:purge-cache <app>` is literally `docker volume rm -f cache-<app>`** **[src]** — per-app
   purge granularity, and the only cache lever needed under herokuish. Documented as scoped to
   buildpack builds; a no-op under `pack`, which names its volume differently.
+- **Two apps built from the same repo share nothing — demonstrated rather than reasoned.** The
+  hardest case available was run on purpose: one repository deployed under two ids, so both builds
+  install `com.example:vaadin-boot-example-maven:1.0-SNAPSHOT`. The first finished and put its jar,
+  tarball and `maven-metadata-local.xml` where a shared cache would have exposed them; the second was
+  registered minutes later and resolved **none** of it. **[verified on a box 2026-09-11]**
+
+  | | `vbm-a` | `vbm-b` |
+  |---|---|---|
+  | Maven `Total time`, cold | 1:00 min | 1:02 min |
+  | `Downloaded from central` lines | **924** | **924** |
+  | cache volume | `cache-vbm-a`, 205.2 MB | `cache-vbm-b`, 205.2 MB |
+
+  924 downloads each, right down to the artifact. There is no arrangement of app ids, coordinates or
+  timing that lets one project see another's `.m2`: the volume name is Dokku's and the app never
+  learns it. The duplication is the price, and it is exact — two ids on one repo cost two full copies.
+- **Volume sizes, measured, for capacity planning: Gradle costs about 4.5× Maven.**
+  **[verified on a box 2026-09-11]**
+
+  ```
+  cache-hello     282.1M   (Maven + the Kotlin compiler)
+  cache-vbm-a     205.2M   (Maven)
+  cache-vbm-b     205.2M   (Maven, an exact duplicate of vbm-a's by construction)
+  cache-gradle-a    1.3G   (Gradle: 787.5M .gradle/wrapper — the distribution and the JDK — plus
+                            560.3M .gradle/caches)
+  ```
+
+  The Gradle figure is the one to plan against, and it is the direct cost of that buildpack's better
+  cache story: it keeps Gradle itself and the JDK, not just dependencies. Four apps took the box from
+  18 GB to 20 GB used of 62 GB.
 - **The Heroku Java buildpack puts the Maven repository inside that volume**: `lib/maven.sh` exports
   `MAVEN_OPTS="… -Duser.home=${build_dir} -Dmaven.repo.local=${cache_dir}/.m2/repository"`, and caches
   `.m2/wrapper` and the downloaded Maven under `${cache_dir}/.maven`. Its **default goals are
@@ -1579,11 +1608,14 @@ first throwaway VPS:
 5. ~~Are cache mounts, and a per-app `type=local` cache directory, preserved across `git:sync --build`
    runs, and for how long?~~ **Superseded by 13** — under `D_builder` the cache is the `cache-$APP`
    Docker volume, which has no TTL and no GC.
-6. **The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
+6. ~~**The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
    Vaadin-Boot app, commit trivially, redeploy — timed. Then deploy a second app sharing Maven
    coordinates with the first and check whether it resolves the first one's `1.0-SNAPSHOT` jar. Under
    `D_builder` this should be **impossible by construction** (each app's `.m2` is its own
-   `cache-$APP` volume); run it anyway, once, as the demonstration.
+   `cache-$APP` volume); run it anyway, once, as the demonstration.~~ **Done 2026-09-11, with one repo
+   deployed under two ids so the coordinates were guaranteed to collide: 924 downloads from Central
+   each, nothing shared.** In *The herokuish cache volume*, along with the measured volume sizes. The
+   timing half is item 13.
 7. What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?
 8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
    it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a

@@ -367,6 +367,26 @@ dokku docker-options:report [<app>] [<flag>] [--format json|stdout]
 **Which mechanism you get is a property of the builder, and so is whether the *platform* or the *app*
 names the cache.** That is the fact `D_builder` turns on.
 
+**What it is worth, measured end to end on a box** — a trivial commit, then the same app rebuilt
+against its warm `cache-$APP` volume. The tool's own time is the cache's doing; the rest is clone,
+slug and deploy, which no cache touches: **[verified on a box 2026-09-11]**
+
+| App | cold, whole `git:sync --build` | warm | build tool alone, cold → warm |
+|---|---|---|---|
+| `hello` (Maven) | 3m02s | **1m05s** | 2m12s → **15.0s** |
+| `gradle-a` (Gradle) | 3m15s | **1m37s** | 46s → **33s** |
+
+Two things to read out of it. Maven's dependency resolution is the whole of its cold cost — warm, it
+is 15 seconds, and `Installing … to /cache/.m2/repository/…` confirms where the artifacts go. Gradle's
+own time moves far less, because its cold number never included a dependency download in the first
+place: the wrapper distribution, the JDK and the dependency cache all live in the volume, and the warm
+build shows the *build* cache working too (`> Task :compileKotlin FROM-CACHE`). Either way a warm
+rebuild is around a minute, most of it not the build.
+
+**The frontend half of the question did not arise**, because every app here is on Vaadin's
+pre-compiled production bundle and runs no frontend build at all — the measurement that would answer
+it needs an app that customises its frontend (punch-list 13, 14 and 16 all wait on the same app).
+
 | builder | cache mechanism | named by |
 |---|---|---|
 | herokuish | Docker volume `cache-$APP`, mounted at `/cache`, `CACHE_PATH=/cache` | **Dokku** |
@@ -441,6 +461,18 @@ names the cache.** That is the fact `D_builder` turns on.
   for those same four frameworks, so **anything else must commit a `Procfile`**, and a committed
   `Procfile` short-circuits `bin/release` entirely. **[src]** A committed `gradlew` is mandatory —
   the buildpack stopped shipping a fallback wrapper. **[src]**
+- **All of that ran on a box, against an unmodified public repo** (`mvysny/karibu-helloworld-application`,
+  a Vaadin Boot + Karibu-DSL app — not a Spring Boot / Micronaut / Quarkus / Ratpack project, so
+  nothing about it is guessed for it). **[verified on a box 2026-09-11]**
+  - **`GRADLE_TASK` from a committed `.env` reaches the build verbatim** — the log echoes
+    `$ ./gradlew clean installDist -Pvaadin.productionMode`, flags and all. That confirms the ENV_DIR
+    path for the *app's own* files, as distinct from config vars the operator sets.
+  - **`-Pvaadin.productionMode` is how a Gradle project reaches a production build**, there being no
+    Maven profile to activate: `> Task :vaadinBuildFrontend` ran and the app reported
+    `Vaadin is running in production mode` at startup.
+  - **`GRADLE_USER_HOME` really does land in the cache volume** — `1.3G /cache/.gradle`, of which
+    787.5 MB is `.gradle/wrapper` (the Gradle distribution and the JDK) and 560.3 MB `.gradle/caches`,
+    plus a 480 KB `.gradle-project`. See *The herokuish cache volume* for what that costs per app.
 - **The Heroku Node.js buildpack caches into the same `CACHE_DIR`** — npm/pnpm/yarn caches and
   `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
   `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
@@ -1737,16 +1769,13 @@ https box and a real DNS zone) and the v2 items, 9 having been answered early:
     dropped rather than refused. Two things came free: `traefik-vhosts` is a *core* plugin, so the
     experiment installs nothing, and its compose file wants host port 80, so running it stops every app
     on the box. All in *Traefik (official plugin)*.
-13. **Does a Vaadin app's second build come back warm under herokuish?** Deploy one, commit trivially,
-    `git:sync --build` again, and split the timing: is Maven resolving from `/cache/.m2/repository`
-    (expected yes), and is the *frontend* half — `~/.vaadin` node download, `node_modules`, npm
-    fetches — re-done from scratch (expected yes, and this is the question that decides items 14–16).
-    **Answered for the Gradle half off-box on 2026-09-11**, by running `gliderlabs/herokuish:latest-24`
-    under plain Docker against a Vaadin Boot + Karibu-DSL app on the pre-compiled bundle: cold **2m13s**,
-    warm **21s**, with the cache volume holding the dependency cache, the Gradle build cache, the
-    wrapper's Gradle distribution *and* the JDK. No frontend build ran at all, so the frontend half of
-    the question is still open and still needs an app that customises its frontend. The Maven half is
-    untouched by this.
+13. ~~**Does a Vaadin app's second build come back warm under herokuish?**~~ **Answered 2026-09-11 on
+    a box, for both build tools**: Maven 2m12s cold → **15.0s** warm, Gradle 46s → 33s, and a whole
+    warm `git:sync --build` about a minute end to end. The table is in *Build caching*. The **frontend**
+    half of the question did not arise — no app here runs a frontend build at all (item 15) — so it is
+    still open, and still waits on an app that customises its frontend, as do 14's Java half and 16.
+    The earlier off-box Gradle measurement (cold 2m13s, warm 21s under plain Docker) stands and agrees.
+
 14. **(v2.) ~~Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
     rebuilds?~~** **Answered 2026-09-11, and the premise was wrong twice over** — both halves are in
     *The herokuish cache volume*. The Node buildpack already caches npm into `cache-$APP` with nothing
@@ -1800,14 +1829,13 @@ https box and a real DNS zone) and the v2 items, 9 having been answered early:
     `shepherd2 last-build` read past days of churn. And the churn turned out not to be cosmetic — it
     broke `shepherd2 wait-idle`, which filtered on `status`, a value an abandoned tick holds forever.
     Decided in `D_poll_churn`.
-20. **Does a Vaadin *Gradle* app build under `heroku/gradle` at all?** Everything above quietly assumes
-    Maven, and roughly half the farm is Gradle (`ideas/production-cutover.md`), so this is a hole rather
-    than a detail. Three parts, all `[unverified]` because nothing in this file covers that buildpack
-    beyond its place in the detection order: which task it runs with no configuration (Heroku's
-    convention is a `stage` task, overridable with a `GRADLE_TASK` config var); whether Vaadin's
-    `-Pvaadin.productionMode` is the way to reach a production build, there being no Maven profile to
-    activate; and whether `~/.gradle` lands in the `cache-$APP` volume the way `.m2/repository` does,
-    since if it does not, every Gradle build re-downloads its dependency tree.
+20. ~~**Does a Vaadin *Gradle* app build under `heroku/gradle` at all?**~~ **Answered 2026-09-11: yes,
+    all three parts, against an unmodified public repo** — which doubles as the confirmation that
+    `README.md` §4's four-file recipe is complete, since that repo carries exactly those four files and
+    needed nothing else. `GRADLE_TASK` from a committed `.env` reaches the build verbatim;
+    `-Pvaadin.productionMode` is the way to a production build; and `GRADLE_USER_HOME` lands in the
+    cache volume — 1.3 GB of it, the Gradle distribution and the JDK included. In *The herokuish cache
+    volume*; the cost per app is in *Build caching* and `D_builder`.
 
 ## Sources
 

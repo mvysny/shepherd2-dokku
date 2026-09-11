@@ -64,7 +64,8 @@ makes the downgrade unrepairable from here (`D_cert`).
 
 `domains:set-global` is identical in both, and so is everything about building and running apps. The
 http mode is defined by *absence*: an app with no certificate is served over port 80 by the same nginx,
-with no redirect and no HSTS header `[unverified — punch-list 18]`.
+with no redirect and no HSTS header — confirmed on a box, along with the fact that `hsts` is *inert*
+rather than unset there, which is what makes the choice one-way (`RESEARCH.md` → *nginx*).
 
 ## `shepherd2-install`, in order
 
@@ -156,8 +157,8 @@ shepherd2 create-app demo https://github.com/me/demo main --owner me@example.com
    Shepherd2 owns, and the URL is written **before** the first build, so a project whose first build
    fails is still in the poll (`D_dokku_is_truth`).
 4. `resource:limit --memory … --cpu … demo`, and `resource:limit --process-type build --memory … demo`.
-   Build CPU (`--cpus` at build time) is expected to work on the herokuish path
-   `[unverified — punch-list 17]`; if it does not, the flag is dropped, not worked around.
+   Build CPU and memory both take effect on the herokuish path — measured, `nanocpus` and `mem` on
+   the build container, with a real build peaking at 202 % of a 4-core host.
 5. `network:create app-demo` — guarded by `network:exists` — then
    `network:set demo initial-network app-demo` (`D_isolation`).
 6. `buildpacks:set demo heroku/java`, if `--buildpack` was given. Otherwise the repo's own
@@ -199,11 +200,12 @@ to that ref, and every later sync can then omit it.
 4. **If it moved:** herokuish builds in a container with the app's own `cache-$APP` volume mounted at
    `/cache`, where the Heroku Java buildpack keeps `maven.repo.local`. Another project's artifacts are
    unreachable by construction — Dokku names the volume and the app has no Dockerfile in which to name
-   another — while whether the second build actually comes back *warm* is `[unverified — punch-list
-   13]`. Build-phase resource limits apply here.
+   another, demonstrated by two ids on one repo downloading 924 artifacts from Central each. The second
+   build comes back warm: Maven 2m12s → 15s, Gradle 46s → 33s. Build-phase resource limits apply here.
 5. **Release:** a new container on the app's own `app-<id>` network with `restart-policy always`, the
-   proxy port wired from the buildpack's `$PORT` with nothing in `ports:set`
-   `[unverified — punch-list 8]`, nginx's vhost regenerated, the old container stopped.
+   proxy port wired from the buildpack's `$PORT` with nothing in `ports:set` — detected before the
+   first deploy and never promoted into set state — nginx's vhost regenerated, the old container
+   stopped.
 6. **Dokku records it itself** — a build record and a log per deploy, `builds:list` / `builds:output`,
    300 per app, captured whether the deploy came from a push or from `git:sync`. The poll tees nothing
    and writes no log of its own. The record carries no git SHA, but

@@ -180,3 +180,28 @@ The DNS-01 property above is what makes this safe, so keep the flip last:
 One thing to check at step 5 rather than discover at step 6: **whether the old farm already serves
 HSTS** for these hostnames. If it does, browsers will refuse plain http on the new box — which is fine,
 since the new box is https, but it also means there is no falling back to an http box mid-cutover.
+
+## The probe rig, worth reusing for item 4
+
+The http run's most useful tool, kept here because this is the next run that will want it. When the
+question is *"what does the build container actually see?"*, building a Vaadin app to find out costs
+minutes per attempt; a four-file app on the **`heroku-community/inline`** buildpack — whose whole job
+is to run `bin/compile` out of the app's own repo — answers in about five seconds and can print
+anything.
+
+```
+bin/detect    echo probe
+bin/compile   dumps $ENV_DIR, $CACHE_DIR, /proc/self/mountinfo, cgroup limits, env
+bin/release   default_process_types: web: sleep infinity
+Procfile      web: sleep infinity
+```
+
+`buildpacks:set probe heroku-community/inline`, deployed from a `file://` source. Two things the rig
+itself taught, both now in `RESEARCH.md`: the `heroku-community/x` shorthand is rewritten to
+`heroku/heroku-buildpack-x` (the org is a fiction of the shorthand) and a buildpack URL cannot be
+`file://` the way an app source can; and a `file://` app source must be **owned** by the `dokku` user,
+not merely readable by it.
+
+For item 4 the equivalent question is "what does the renew hook see?", which is a shell script rather
+than a buildpack — but the same instinct applies: exercise the hook with a trivial script before
+trusting it with `global-cert:set`.

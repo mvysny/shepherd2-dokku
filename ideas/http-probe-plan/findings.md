@@ -82,7 +82,10 @@ $ docker network create probe0 && docker network inspect probe0 → IPAM.Config
 [{'Subnet': '172.16.0.0/24', 'IPRange': '', 'Gateway': '172.16.0.1'}]
 ```
 
-### FINDING — the install is re-runnable, as designed
+### ~~FINDING — the install is re-runnable, as designed~~ — **GRADUATED 2026-09-11**
+
+Landed as a half-sentence in `README.md` → *Installation*, which already claimed re-runnability as the
+repair workflow and now says it has been done. Evidence kept below.
 
 The second run reported `(already done)` for the packagecloud key, the apt source, the dokku package
 and the address pools, and re-applied the rest idempotently. Fixing a failed install by editing the
@@ -303,7 +306,14 @@ question **did not arise at all** — there is no frontend build to be cold, bec
 pre-compiled bundle. For this farm, item 13 is answered: builds come back warm and the expensive half
 does not exist.
 
-### Not a box finding — `karibu-helloworld-application-maven` did not produce a runnable distribution
+### ~~Not a box finding — `karibu-helloworld-application-maven` did not produce a runnable distribution~~ — **GRADUATED 2026-09-11**
+
+Landed in `README.md` → *Coming from a Dockerfile*, as two traps that belong to the repo rather than to
+the box — the `provided`-scope `jakarta.servlet-api` and the archive-only assembly — since that is the
+section a migrating project reads and both would have failed identically under the repo's own
+`Dockerfile`. The upstream fix to `karibu-helloworld-application-maven` is the operator's commit
+`1f65117`; `vaadin-boot-example-maven` carries the same shape and needs the same one-line override.
+Evidence kept below.
 
 **Fixed upstream on 2026-09-11** by the operator, in `1f65117 fix jakarta.servlet-api missing at
 runtime`: the pom now declares `jakarta.servlet:jakarta.servlet-api` at `compile` scope explicitly,
@@ -986,7 +996,10 @@ Everything below ran against the box in its post-uninstall, reinstalled state: h
 every probe app, network, service, plugin, domain, config var and `/etc/hosts` line was removed, and
 `demo` still answers 200.
 
-### The probe rig — an inline buildpack, which is worth stealing for later runs
+### ~~The probe rig — an inline buildpack, which is worth stealing for later runs~~ — **GRADUATED 2026-09-11**
+
+Moved to `ideas/production-cutover.md`, which is the next run that will want it; its two incidental
+facts were already in `RESEARCH.md`. Evidence kept below.
 
 Three of the four questions are "what does the build container actually see?", and building a Vaadin
 app to find out costs minutes per attempt. Instead: a four-file app on the **`heroku-community/inline`**

@@ -116,7 +116,9 @@ renewal cron line too, so issuance and renewal always talk to the same ACME serv
 unrepairable from here ([`D_cert`](DECISIONS.md)). To change it, reinstall.
 
 Every step is guarded, so the script is safe to re-run: that is how a failed install is fixed —
-correct the script and run it again, rather than repairing the box by hand.
+correct the script and run it again, rather than repairing the box by hand. That workflow has been
+used in anger: a first run failed at the admin-key step, and the second reported `(already done)` for
+the packagecloud key, the apt source, the `dokku` package and the address pools before carrying on.
 `shepherd2-install --help` is the authority on its arguments; [SOLUTION.md](SOLUTION.md) lists the
 steps in order.
 
@@ -283,6 +285,29 @@ appassembler `bin/run` script or an exploded directory. Three things about it th
   them. When a process needs a variable, put `env` in front of it:
   `web: env SERVER_PORT=$PORT ./bin/myapp`.
 - **Keep `-Xmx` under the memory limit** (256 MB by default), for the reason at the end of this section.
+
+**Two traps that are your repository's, not the box's.** Both were hit by real Vaadin Boot + Maven
+repos on the probe run, and **both would have failed identically under the repo's own `Dockerfile`** —
+they are simply things a `Dockerfile` build had never been asked to survive.
+
+- **`jakarta.servlet-api` is managed to `provided` scope by `vaadin-bom`, and Vaadin Boot needs it at
+  runtime.** Correct for a WAR dropped into a servlet container that supplies the API; wrong for an app
+  that embeds Jetty. `maven-assembly-plugin`'s `dependencySet` defaults to runtime scope, so the jar
+  lands in neither `lib/` nor the archive, the build passes, and the app crash-loops on startup:
+
+  ```
+  Exception in thread "main" java.lang.NoClassDefFoundError: jakarta/servlet/ServletContext
+  	at com.github.mvysny.vaadinboot.common.JettyWebServer.createWebAppContext
+  ```
+
+  The fix is one dependency in your `pom.xml`, declaring `jakarta.servlet:jakarta.servlet-api` at
+  `compile` scope to override the BOM. Check `target/mvn-dependency-list.log` — which the buildpack's
+  default goals produce for you — if you want to see the scope before you deploy.
+
+- **An assembly that emits only archives gives the `Procfile` nothing to name.** Both of the Maven
+  repos here produced just `zip` + `tar.gz`, and a `Procfile` line has no shell (above), so it cannot
+  untar anything. Add `<format>dir</format>` to `src/main/assembly/*.xml`: you get an exploded
+  `target/<finalName>-zip/` to point at, and the `dir` format preserves the `0755` on `bin/<app>`.
 
 ### Vaadin under herokuish
 

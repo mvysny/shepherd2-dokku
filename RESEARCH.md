@@ -242,7 +242,11 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
   is split and passed straight to `docker container create` with **no allowlist** — unlike the
   Dockerfile builder, which filters against a flag list. So `-v`, `--cpus` and anything else
   `docker container create` accepts reach the build. **[src]** This is what the docs' warning that
-  "`build` options are container options" is actually describing.
+  "`build` options are container options" is actually describing. Confirmed for `-v`:
+  `docker-options:add <app> build '-v /opt/src:/probe-mount'` put the host directory inside the build
+  container, readable, with the host's file in place. **[verified on a box, 2026-09-11]** So **any**
+  build-time directory can be pointed at host storage, which is a general escape hatch and not a
+  Vaadin-specific one — see punch-list 16.
 
 ### The pack (Cloud Native Buildpacks) builder
 
@@ -1474,9 +1478,11 @@ first throwaway VPS:
     source checkout, because the Java buildpack sets `-Duser.home=${build_dir}` `[src]`, and Vaadin
     offers no property for that directory's location — `require.home.node` only forces the app to use
     it `[docs]`. Two things to try: `MAVEN_CUSTOM_OPTS="… -Duser.home=/cache/home"` (does a Maven CLI
-    `-D` override the `MAVEN_OPTS` one for `System.getProperty`?), and a build-phase
+    `-D` override the `MAVEN_OPTS` one for `System.getProperty`?), and ~~a build-phase
     `docker-options:add <app> build '-v …'` bind mount, which the herokuish path passes to
-    `docker container create` unfiltered `[src]`.
+    `docker container create` unfiltered `[src]`~~ — **the bind mount was confirmed on a box
+    2026-09-11** (*The herokuish builder*), so the mechanism is settled and only the Maven `-D`
+    question is left, which is a Maven question rather than a box one.
 17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
     `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
     all, and the gap the feature survey recorded was a Dockerfile-builder artefact.

@@ -901,32 +901,17 @@ relocation, the `mv`-based restore/save, and the two traps. Punch-list 14 is str
 piece still open — the Java buildpack's unmanaged npm cache, which needs an app that customises its
 frontend.
 
-### FINDING — punch-list 16, mechanism half: **a build-phase `docker-options -v` bind mount does reach the herokuish build container**
+### ~~FINDING — punch-list 16, mechanism half: a build-phase `-v` bind mount reaches the build container~~ — **GRADUATED 2026-09-11**
 
-The item's second idea, and the generic one — it is not really about Vaadin.
+Landed in `RESEARCH.md` → *The herokuish builder*, on the "Build-phase `docker-options` are genuine
+container options here, unfiltered" bullet, which now carries the `-v` confirmation and the point that
+it generalises past `~/.vaadin`. Punch-list 16's second idea is struck; only the Maven `-Duser.home`
+question is left there, and it is a Maven question rather than a box one.
 
-```bash
-dokku docker-options:add probe build '-v /opt/probe-bindsrc:/probe-mount'
-```
-
-The build container has it, readable, with the host's file in place:
-
-```
-663 653 253:2 /opt/probe-bindsrc /probe-mount rw,relatime - ext4 /dev/vda2 rw
--rw-r--r-- 1 root root 31 marker.txt   ->  hello-from-the-host-bind-mount
-```
-
-That confirms the `[src]` reading that the herokuish path passes build `docker-options` to
-`docker container create` unfiltered, and it means **any** build-time directory — not just
-`~/.vaadin` — can be pointed at host storage. The item's *other* idea (whether a Maven CLI `-D`
-overrides the `MAVEN_OPTS` `-Duser.home`) is untouched; it needs a Maven build and is a Maven
-question, not a Dokku one.
-
-Same build also showed `$CACHE_DIR` is `/cache` backed by the `cache-$APP` volume
-(`/var/lib/docker/volumes/cache-probe/_data`), `HOME=/app`, `PWD=/tmp/build`, and — with no
-`resource:limit` set on this app — `memory.max: max`, `cpu.max: max 100000`, `nproc 4`. **Build limits
-are not defaulted by Dokku**, which is the flip side of the item-17 finding: they apply because
-`create-app` emits them, and an app registered by hand builds uncapped.
+The same build's incidental readings — `$CACHE_DIR` is `/cache` on the `cache-$APP` volume, `HOME=/app`,
+`PWD=/tmp/build` — are already in `RESEARCH.md`. Its uncapped `memory.max` / `cpu.max` are likewise
+already covered by *Resource limits*: "only limits explicitly set against the `build` process type are
+applied at build time".
 
 ### FINDING — punch-list 9: `postgres:link` works on a per-app network, and the `--link` is redundant rather than inert
 

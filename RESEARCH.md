@@ -1636,11 +1636,14 @@ first throwaway VPS:
     is the half the item was really aimed at: the **Java** buildpack manages no npm cache, so nothing
     caches a Vaadin frontend build's npm traffic, and whether `NPM_CONFIG_CACHE` — or pnpm's
     `store-dir` — reaches it needs an app that customises its frontend, the same app 13 and 15 want.
-15. **Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
-    no custom frontend and no add-ons (Vaadin 24.1+)? **Answered for this farm on 2026-09-10, not on a
-    box**: the operator confirms every app here uses that bundle, so items 13, 14 and 16 stop mattering
-    in v1 and the recipe is "keep apps on the default bundle" rather than "cache node". Still worth one
-    measurement whenever an app does customise its frontend.
+15. ~~**Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
+    no custom frontend and no add-ons (Vaadin 24.1+)?~~ **Answered on the box 2026-09-11**, having been
+    answered off it the day before: a Vaadin 25.2 app built with the Java buildpack's default goals
+    pulled `vaadin-prod-bundle-25.2.6.jar`, ran **no npm, no Vite and no `~/.vaadin` download**, and
+    reported production mode at runtime. So items 13, 14 and 16 stop mattering in v1 and the recipe is
+    "keep apps on the default bundle" rather than "cache node". Still worth one measurement whenever an
+    app does customise its frontend — that app is what 13's frontend half, 14's Java half and 16 all
+    wait on.
 16. **(v2.) Can `~/.vaadin` be relocated into the cache volume?** During the Maven build `$HOME` is the
     source checkout, because the Java buildpack sets `-Duser.home=${build_dir}` `[src]`, and Vaadin
     offers no property for that directory's location — `require.home.node` only forces the app to use

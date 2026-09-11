@@ -16,8 +16,8 @@ does, this folder is its only record — and it is complete enough to graduate f
 | Item | Status |
 |---|---|
 | 2 isolation + routing | **closed** — both halves, with a self-reach control |
-| 3 `daemon.json` | **closed** (first half) — Dokku's postinst writes it; the merge branch is the live one |
-| 3 the ~30-network wall | **closed** — 29 networks, 30th fails; run after the uninstall, on genuinely stock pools |
+| 3 `daemon.json` | **closed** (first half) — Dokku's postinst writes it; the merge arm is the live one — and **graduated** (+ the `--keep-pools` uninstall fix it exposed) |
+| 3 the ~30-network wall | **closed** — 29 networks, 30th fails; run after the uninstall, on genuinely stock pools — and **graduated** |
 | 6 two-build drill | **closed** — 924 downloads from central each, nothing shared |
 | 7 container naming | **closed** — `hello.web.1`; build containers get random names; `com.dokku.*` labels |
 | 8 ports auto-wired | **closed** — `http:80:5000`, detected, survives rebuilds |

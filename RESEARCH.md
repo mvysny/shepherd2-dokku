@@ -102,6 +102,13 @@ unless noted; re-check before relying on a version-sensitive claim.
   `procfile-util`, `docker-container-healthchecker`, `docker-image-labeler`, `lambda-builder`.
   `herokuish`, `dokku-update`, `dokku-event-listener` and `bash-completion` are **Recommends**, not
   Depends — so an install with `--no-install-recommends` would omit the builder image's package. **[src]**
+- **The `dokku` deb writes `/etc/docker/daemon.json` itself, at package-configure time.** Its
+  `postinst` creates the file if it is absent and `jq`-merges `"live-restore": true` into it, then
+  reloads Docker. So on any install that puts Docker in first, that file exists *and has content* by
+  the time anything else wants to write to it: a `default-address-pools` stanza has to be merged into
+  an existing object, never written as a fresh file. **[src — `/var/lib/dpkg/info/dokku.postinst` at
+  0.38.27; verified on a box 2026-09-11, where Ubuntu's `docker.io` had left no `/etc/docker`
+  directory at all and the file appeared only once `dokku` was configured]**
 - **Post-install, two steps:** authorise an admin SSH key and set the global domain. **[docs]**
 
   ```bash
@@ -892,18 +899,31 @@ Load-bearing for the isolation design, and it is Docker's behaviour rather than 
 
 **The address-pool ceiling is an install-time line, not a design constraint.** Per-app networks are
 *bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16 plus `192.168.0.0/16`
-at size 20, so ~31 networks total, minus `docker0` — call it **~30 apps** on a stock daemon before
-allocation fails. Enlarging `default-address-pools` in `/etc/docker/daemon.json` lifts it, and
-shepherd-traefik already does exactly this, so it is precedent rather than a new cost: one stanza in
-`shepherd2-install` and a `README.md` requirement. The only property worth remembering is *when* — it
-needs a daemon restart, so it belongs in the install, not in a later fix. Dokku's bootstrap is not
-documented as writing `daemon.json`. **[docs for the pools; unverified — whether bootstrap.sh touches
-daemon.json needs reading or a box]**
+at size 20. **Measured on a stock daemon: 29 user-defined networks succeed and the 30th fails**, with
+`all predefined address pools have been fully subnetted`. The allocator walks the pools in order —
+14 × `/16` out of the first (`172.18` … `172.31`; `172.17` is `docker0`'s), then `/20`s out of the
+second — so under `D_isolation`, one network per app, a stock box walls at 29 apps.
+**[verified 2026-09-11 on Docker 29.1.3, Ubuntu's `docker.io`, with `daemon.json` absent]**
 
-(For the record, since the number moved twice: the `~29` that used to sit in this file was this same
-local pool, miscounted with a `docker_gwbridge` that a non-Swarm box does not have. Swarm's
-*global*-scope overlay pool, which shepherd2-dokploy draws on, is a different pool entirely —
-`10.0.0.0/8` at mask 24, 65 536 subnets — so that repo has no equivalent line to write.)
+**Docker itself refuses to allocate over an existing host route**, which retires the hazard that made
+the drill look dangerous to run. The test box lives on `192.168.122.0/24`, and the allocation sequence
+went `192.168.96.0/20` → `192.168.128.0/20`: `192.168.112.0/20` was skipped on its own and
+connectivity was intact throughout. So the stock-pool objection is about *count*, never about a
+network allocation cutting the box off its own subnet. **[verified on 29.1.3; not a claim about older
+daemons]**
+
+Enlarging `default-address-pools` in `/etc/docker/daemon.json` lifts the ceiling (`172.16.0.0/12` at
+size 24 is 4096 networks), and shepherd-traefik already does exactly this, so it is precedent rather
+than a new cost. Two properties are worth remembering. *When*: the pools are read at daemon start, so
+this belongs in an installer with a restart, not in a later fix. And *how*: the file already exists,
+because the `dokku` deb's postinst wrote `live-restore` into it (*Versions, platform, install*), so
+the stanza must be merged into an existing JSON object rather than written fresh.
+
+(For the record, since the number moved twice before it was measured: an earlier `~29` in this file
+was this same local pool, miscounted with a `docker_gwbridge` that a non-Swarm box does not have —
+right number, wrong arithmetic. Swarm's *global*-scope overlay pool, which shepherd2-dokploy draws on,
+is a different pool entirely — `10.0.0.0/8` at mask 24, 65 536 subnets — so that repo has no
+equivalent line to write.)
 
 ### Nobody has to re-attach anything — and why that is two facts, not one
 
@@ -1380,11 +1400,18 @@ first throwaway VPS:
    host-nginx routing intact? Concretely, from inside app A's container: can it reach app B's
    unpublished port by container IP before the change, and not after; and does `curl` through nginx
    still work for both apps after it.
-3. Does anything in the install write `/etc/docker/daemon.json` before we do — Docker's own package
+3. ~~Does anything in the install write `/etc/docker/daemon.json` before we do — Docker's own package
    being the candidate, since `bootstrap.sh` never runs (`D_install_apt`) — and does what it writes
-   survive our enlarged `default-address-pools`?
-   - And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch for
-     the allocation failure, so we know the real number rather than the arithmetic.
+   survive our enlarged `default-address-pools`?~~ **Answered 2026-09-11: yes, but it is not Docker's
+   package — it is Dokku's own postinst**, writing `live-restore` (*Versions, platform, install*).
+   Ubuntu's `docker.io` leaves no `/etc/docker` at all. The merge keeps both keys and the pools are in
+   effect after the restart, so `python3` is a hard prerequisite of the install rather than a fallback
+   — and of the uninstall, which has to delete one key out of a file it does not own.
+   - ~~And confirm the wall it protects against: `network:create` ~30 times on a stock box and watch
+     for the allocation failure, so we know the real number rather than the arithmetic.~~
+     **29, with the 30th failing** — run on genuinely stock pools after the box was torn down. Docker
+     also skips a pool range overlapping a host route by itself, so the drill is not the hazard it was
+     held to be. Both in *Networking and app isolation*.
 4. **The `D_cert` chain, end to end** — run it against **Let's Encrypt staging first**
    (`shepherd2-install --acme-server https://acme-staging-v02.api.letsencrypt.org/directory`):
    production caps duplicate certificates at 5/week and the forced-renewal drill below burns through

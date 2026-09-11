@@ -49,11 +49,17 @@ Fix, now in `shepherd2-install` → `configure_admin_and_domain`: pipe it, blank
 grep -v '^[[:space:]]*$' "$SSH_KEY_FILE" | dokku ssh-keys:add admin
 ```
 
-### FINDING — punch-list 3, first half: the merge branch is the live one, and it works
+### ~~FINDING — punch-list 3, first half: the merge branch is the live one, and it works~~ — **GRADUATED 2026-09-11**
 
-The installer has three branches for `/etc/docker/daemon.json`. The one that fired was the third —
-**`merged default-address-pools into the existing /etc/docker/daemon.json`** — not the "nothing got
-there first" branch the script's comment called expected. The writer is **Dokku's own deb**:
+Landed: the Dokku fact (the deb's postinst writes `daemon.json` to set `live-restore`) in `RESEARCH.md`
+→ *Versions, platform, install*, with punch-list 3 struck; the merge-not-create consequence in
+`SOLUTION.md` step 5 and in `D_isolation`'s address-pool bullet; `python3` as a stated prerequisite in
+`README.md` → *Minimum requirements* and in `shepherd2-uninstall`'s header. The corrected comment in
+`configure_address_pools` was already on the box. Evidence kept below.
+
+The installer has three arms in its `if` for `/etc/docker/daemon.json`. The one that fired was the
+third — **`merged default-address-pools into the existing /etc/docker/daemon.json`** — not the
+"nothing got there first" arm the script's comment called expected. The writer is **Dokku's own deb**:
 `/var/lib/dpkg/info/dokku.postinst` creates the file if absent and `jq`-merges `"live-restore": true`
 into it, then reloads Docker. The pre-install baseline confirms it is not Ubuntu's `docker.io`: that
 box had no `/etc/docker` at all.
@@ -71,10 +77,6 @@ The merge did the right thing — it kept `live-restore` and added the pools:
 $ docker network create probe0 && docker network inspect probe0 → IPAM.Config
 [{'Subnet': '172.16.0.0/24', 'IPRange': '', 'Gateway': '172.16.0.1'}]
 ```
-
-Two consequences: the `[unverified — punch-list 3]` comment in `configure_address_pools` was pointing
-at the wrong branch and has been corrected, and **the previously-untested python3 merge path is the
-one every install takes** — so `python3` is a hard prerequisite of the install, not a fallback.
 
 ### FINDING — the install is re-runnable, as designed
 
@@ -785,7 +787,14 @@ Leftovers, all of them reported by the script rather than silently left:
 4.0K  /var/lib/docker
 ```
 
-### FINDING — the `--keep-pools` default is unreachable on any real box *(v1 gap)*
+### ~~FINDING — the `--keep-pools` default is unreachable on any real box~~ *(v1 gap)* — **FIXED + GRADUATED 2026-09-11**
+
+`restore_address_pools` in `shepherd2-uninstall` now deletes the `default-address-pools` key with
+`python3` and writes the rest of the file back, removing the file only if that key was all it held;
+`installed_daemon_json()` is gone, and the header, `SOLUTION.md`'s asymmetries paragraph and
+`README.md`'s uninstall paragraph all say so. Not re-run on a box — the box is gone — but the three
+file shapes (ours + `live-restore`, ours alone, invalid JSON) were exercised against the same heredoc.
+Evidence kept below.
 
 ```
 ==> Docker address pools
@@ -809,13 +818,19 @@ The fix is to make the uninstall symmetric with the install: parse the JSON, del
 `default-address-pools` key, keep everything else, and write the file back (removing it entirely only
 if nothing is left). That is the same `python3` dependency the install already relies on.
 
-### Smaller: `/var/lib/dokku` is left behind unmentioned
+### ~~Smaller: `/var/lib/dokku` is left behind unmentioned~~ — **FIXED + GRADUATED 2026-09-11**
 
-`apt purge dokku` leaves 148K in `/var/lib/dokku`. The script's *WHAT IT DELIBERATELY DOES NOT REMOVE*
-section and its closing summary both name `/home/dokku` and neither names this one, so an operator
-following the script's own advice cleans up one and not the other.
+`remove_dokku` now reports both directories with their sizes, and the header's *WHAT IT DELIBERATELY
+DOES NOT REMOVE*, the closing summary, `SOLUTION.md` and `README.md` all name both. Evidence: `apt
+purge dokku` left 148K in `/var/lib/dokku` (plugin data, build records and their logs), and the script
+named only `/home/dokku`, so an operator following its own advice cleaned up one and not the other.
 
-### FINDING — punch-list 3's sub-bullet: the wall is **29 networks**, and Docker guards the collision itself
+### ~~FINDING — punch-list 3's sub-bullet: the wall is **29 networks**, and Docker guards the collision itself~~ — **GRADUATED 2026-09-11**
+
+Landed: both facts in `RESEARCH.md` → *Networking and app isolation* (the measured 29, and the
+allocator skipping a range that overlaps a host route), with the sub-bullet struck in the punch list;
+the number in `D_isolation`'s address-pool bullet, which no longer argues from arithmetic; the
+operator-facing version in `README.md`. Evidence kept below.
 
 Run after the uninstall, which is the natural moment: Docker was reinstalled with no `daemon.json` at
 all, so pools were genuinely stock (confirmed — the first network got a whole `172.18.0.0/16`, where

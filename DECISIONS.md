@@ -352,10 +352,12 @@ properties of Dokku's version make the predecessor's price disappear:
 **Consequences.**
 
 - **`/etc/docker/daemon.json` needs enlarged `default-address-pools`, at install time.** A stock daemon
-  walls at ~30 bridge networks, i.e. ~30 apps. This is precedent, not a new cost — shepherd-traefik
-  already does it — but it needs a daemon restart, so it belongs in the installer and cannot be
-  retrofitted cheaply. Whether anything in the install writes that file already — Docker's own package
-  is the candidate, now that `D_install_apt` means `bootstrap.sh` never runs — is `[unverified]`.
+  walls at **29** bridge networks — measured, not estimated (`RESEARCH.md` → *Networking and app
+  isolation*) — i.e. 29 apps. This is precedent, not a new cost — shepherd-traefik already does it —
+  but it needs a daemon restart, so it belongs in the installer and cannot be retrofitted cheaply.
+  The file is **already there** when the installer reaches it: not from Docker's package, as this entry
+  once guessed, but from Dokku's own postinst setting `live-restore`. So both installers edit a file
+  they share with Dokku, which is where their `python3` dependency comes from.
 - **A project's database must be created with `--initial-network` — a v2 obligation this entry records
   in advance.** The managed database is deferred to v2 (2026-09-10), so v1 creates no services and
   this costs nothing yet; it is written down because the flag is *creation-time only*. A service
@@ -948,6 +950,11 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
 - **Nothing on the box parses `shepherd2` output.** The verbs are for a human and for cron; keeping them
   free of a machine-readable contract is what stops the CLI growing into the `shepherd-cli` that
   `D_dokku_is_truth` refused.
+- **The installers have exactly one non-Bash dependency: `python3`**, for editing
+  `/etc/docker/daemon.json` around the `live-restore` key Dokku's postinst puts there — JSON surgery
+  being the one thing on that list Bash genuinely cannot do. Ubuntu ships it; `README.md` lists it. It
+  is also the sharpest form of the chicken-and-egg above: the address pools are install step 5 and
+  `apt install ruby` is step 9, so at the moment that file is edited there is no Ruby on the box.
 - **The Ruby half still shells out to `dokku`**, never to `docker` and never to `/var/lib/dokku`
   directly — `CLAUDE.md`'s *Conventions* are unchanged by the language. Ruby makes reaching around Dokku
   easier, which is the one risk this decision introduces.

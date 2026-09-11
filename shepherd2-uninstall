@@ -18,9 +18,10 @@
 #   --keep-docker   Leave docker.io, docker-buildx and docker-compose-v2 installed. Use it when
 #                   something on this box other than Dokku uses Docker; the install assumed nothing
 #                   did, so the default is to remove what the install added.
-#   --keep-pools    Leave /etc/docker/daemon.json alone. The default removes the default-address-pools
-#                   stanza only if the file matches what the install wrote; a file that has been edited
-#                   since is always left alone and reported.
+#   --keep-pools    Leave /etc/docker/daemon.json alone. The default deletes the default-address-pools
+#                   key and writes the rest of the file back unchanged — which is what symmetry with
+#                   the install means, since the install merges into a file Dokku's postinst already
+#                   wrote. The file itself goes only if our key was all it held.
 #   -h, --help      This header, in short form.
 #
 # WHAT IT DELIBERATELY DOES NOT REMOVE
@@ -29,11 +30,15 @@
 #   - /etc/nginx/sites-enabled, which installing Dokku emptied. That was Dokku's doing on the way in
 #     and cannot be undone on the way out — whatever was there is gone and this script cannot know
 #     what it was.
-#   - Anything under /home/dokku that apt purge leaves behind is reported, not deleted, so an operator
-#     can look before losing it.
+#   - Dokku's two state directories, which apt purge leaves behind: /home/dokku (the app
+#     repositories) and /var/lib/dokku (plugin data, build records and their logs). Both are
+#     reported, not deleted, so an operator can look before losing them.
 #
 # PREREQUISITES
 #   root, on a box built by shepherd2-install.
+#   python3, for the same reason the install needs it — editing /etc/docker/daemon.json around
+#   somebody else's keys. Ubuntu ships it; without it that one step warns and leaves the file alone
+#   instead of aborting, since an uninstall that stops halfway is worse than a stanza left behind.
 #
 # SEE ALSO
 #   shepherd2-install — the steps this reverses, and the authority on what the install creates.
@@ -224,12 +229,16 @@ remove_dokku() {
     fi
   done
 
-  # apt purge does not take /home/dokku with it, and it holds the app repositories and Dokku's own
-  # state. Reported rather than deleted: an operator may want to look before losing it.
-  if [[ -d /home/dokku ]]; then
-    warn "/home/dokku still exists ($(du -sh /home/dokku 2>/dev/null | cut -f1)); remove it by hand once
-       you are sure you want none of it"
-  fi
+  # apt purge leaves both of Dokku's state directories behind — /home/dokku holds the app
+  # repositories, /var/lib/dokku the plugin data and the build records and their logs. Reported
+  # rather than deleted: an operator may want to look before losing it. Both are named because
+  # naming only the first is what sends someone away thinking the box is clean.
+  for path in /home/dokku /var/lib/dokku; do
+    if [[ -d "$path" ]]; then
+      warn "$path still exists ($(du -sh "$path" 2>/dev/null | cut -f1)); remove it by hand once you
+       are sure you want none of it"
+    fi
+  done
 }
 
 # --- Reverse of step 5: the address pools ---------------------------------------------------------
@@ -246,24 +255,53 @@ restore_address_pools() {
     return 0
   fi
 
-  # Removed only when the file is byte-for-byte what the install wrote. Anything else — a hand edit,
-  # another component's settings merged in — is somebody's configuration, and deleting it would be a
-  # surprise nobody asked for.
-  if [[ "$(cat "$DOCKER_DAEMON_JSON")" == "$(installed_daemon_json)" ]]; then
-    rm -f "$DOCKER_DAEMON_JSON"
-    log "removed $DOCKER_DAEMON_JSON"
-  else
-    warn "$DOCKER_DAEMON_JSON is not what the install wrote; leaving it alone.
-       Remove the default-address-pools stanza by hand if you want Docker's defaults back."
+  if ! grep -q 'default-address-pools' "$DOCKER_DAEMON_JSON"; then
+    skip "$DOCKER_DAEMON_JSON sets no default-address-pools"
+    return 0
   fi
-}
 
-# Exactly what shepherd2-install writes when it creates the file. These two values must track that
-# script's DOCKER_POOL_BASE and DOCKER_POOL_SIZE: the symmetry *is* this script's contract, and a
-# mismatch is not dangerous — the comparison simply fails and the file is left in place.
-installed_daemon_json() {
-  printf '{\n  "default-address-pools": [\n    { "base": "%s", "size": %s }\n  ]\n}' \
-    '172.16.0.0/12' '24'
+  # Delete our key and write the rest of the file back, which is the mirror image of the install's
+  # merge. It has to be this surgical: the install *always* merges, because Dokku's postinst creates
+  # this file to set `live-restore` before our step runs, so "the file is ours alone" is a state no
+  # real box is ever in. Whatever else is in there is somebody's configuration and stays.
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 is not available to edit $DOCKER_DAEMON_JSON; leaving it alone.
+       Remove the default-address-pools stanza by hand if you want Docker's defaults back."
+    return 0
+  fi
+
+  local outcome
+  if ! outcome="$(python3 - "$DOCKER_DAEMON_JSON" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        config = json.load(fh)
+except ValueError:
+    sys.exit(3)
+config.pop("default-address-pools", None)
+if config:
+    with open(path, "w") as fh:
+        json.dump(config, fh, indent=2)
+        fh.write("\n")
+    print("kept")
+else:
+    print("empty")
+PY
+  )"; then
+    warn "$DOCKER_DAEMON_JSON is not valid JSON; leaving it alone.
+       Remove the default-address-pools stanza by hand if you want Docker's defaults back."
+    return 0
+  fi
+
+  if [[ "$outcome" == 'empty' ]]; then
+    rm -f "$DOCKER_DAEMON_JSON"
+    log "removed $DOCKER_DAEMON_JSON — the pools were all it held"
+  else
+    log "removed the default-address-pools stanza from $DOCKER_DAEMON_JSON; the rest is untouched"
+  fi
+  # No daemon restart: Docker is purged in the next step. Under --keep-docker it stays up on the old
+  # pools until something restarts it, which is harmless — the pools are read at daemon start.
 }
 
 # --- Reverse of step 2: Docker --------------------------------------------------------------------
@@ -312,8 +350,8 @@ main() {
   remove_docker
 
   step 'Done'
-  log 'this box no longer runs Shepherd2. ruby, /home/dokku (if any) and nginx'"'"'s emptied'
-  log 'sites-enabled are what is left of it.'
+  log 'this box no longer runs Shepherd2. ruby, /home/dokku and /var/lib/dokku (if any) and'
+  log 'nginx'"'"'s emptied sites-enabled are what is left of it.'
 }
 
 main "$@"

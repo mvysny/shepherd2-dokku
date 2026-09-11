@@ -75,10 +75,12 @@ end
 #
 # A verb renders nothing, so this is where a test looks for what the CLI would have printed.
 class EventLog
+  # @return [Array<Array(Symbol, Hash)>] every event, as +[kind, fields]+, in the order emitted.
   attr_reader :events
 
   def initialize = @events = []
 
+  # @return [Proc] the callback to hand to Shepherd2's +on_event:+.
   def listener = ->(kind, fields) { @events << [kind, fields] }
 
   # @return [Array<Symbol>] the kinds emitted, in order.

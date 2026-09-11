@@ -71,17 +71,15 @@ EXIT_FAILURE = 1
 EXIT_USAGE = 2
 EXIT_BUSY = 3
 
-# Everything the box says, in one place: the progress a verb emits while it runs, and the report it
-# returns when it finishes.
+# Everything the box says, in one place. Subscribe it to a verb's progress, then hand it whatever the
+# verb returned:
 #
 #   report = Report.new
 #   shepherd = Shepherd2.new(on_event: report.listener)
-#   report.stats(shepherd.stats)
+#   report.stats(shepherd.stats)   # …having already printed `box` from the :box_measured event
 #
-# Progress arrives as +(kind, fields)+ and is turned into a sentence here, because shepherd2.rb has
-# none: +:polling+ becomes "shepherd2: polling demo" on stdout, +:nginx_reload_failed+ a warning on
-# stderr. An unknown kind is ignored rather than fatal — a verb that grows an event must not crash a
-# front-end that has not learned it yet.
+# A verb emits data, so every word is composed here: +(:polling, {app: 'demo'})+ becomes
+# "shepherd2: polling demo" on stdout, +:nginx_reload_failed+ a warning on stderr.
 class Report
   STATS_LABEL_WIDTH = 12
 
@@ -104,6 +102,9 @@ class Report
   # @return [Proc] the callback to hand to Shepherd2's +on_event:+.
   def listener = ->(kind, fields) { event(kind, fields) }
 
+  # Says whatever one progress event is worth saying, and nothing for a kind it does not know — a verb
+  # that grows an event must not crash a front-end that has not learned it yet.
+  #
   # @param kind [Symbol] the event, as emitted by a verb.
   # @param fields [Hash{Symbol => Object}] its data.
   # @return [void]
@@ -122,10 +123,22 @@ class Report
     end
   end
 
+  # Progress, prefixed and on stdout: +say 'polling demo'+ prints "shepherd2: polling demo".
+  #
+  # @param message [String] the sentence, without the prefix.
+  # @return [void]
   def say(message) = @out.puts("shepherd2: #{message}")
 
+  # The same, on stderr — for what went wrong without stopping the verb.
+  #
+  # @param message [String] the sentence, without the prefix.
+  # @return [void]
   def oops(message) = @err.puts("shepherd2: #{message}")
 
+  # A line of a report, unprefixed: this is output the operator reads as content, not as progress.
+  #
+  # @param text [String] the line.
+  # @return [void]
   def line(text) = @out.puts(text)
 
   # One project's last build, as the line `last-build` leads with:
@@ -143,7 +156,14 @@ class Report
     "#{app}: #{fields.join(' · ')}"
   end
 
-  # The whole of `last-build ID`, given what the verb returned.
+  # The whole of `last-build ID`:
+  #
+  #   demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30.914Z · duration 1m43s
+  #     log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
+  #     read it: shepherd2 last-build demo --log
+  #
+  # With +log:+ the last line is the build's output instead — or, where there is none to print, which
+  # of the four reasons for that it was.
   #
   # @param result [Hash{Symbol => Object}] one app's +last_build+ result.
   # @param log [Boolean] whether the log was asked for.
@@ -171,8 +191,18 @@ class Report
     end
   end
 
-  # `stats`, rendered. The box half is printed from the +:box_measured+ event instead, as soon as it
-  # is known and before the daemon's per-volume walk, which is the slow part.
+  # The docker and projects sections of `stats`:
+  #
+  #     docker
+  #       images      11.5 GiB in 14 · 2.9 GiB dangling, which `shepherd2 clearcache` reclaims
+  #       volumes     9.1 GiB in 11 · never pruned — mostly the build caches below
+  #
+  #     projects    3 registered · 1 unregistered (not polled — no SHEPHERD_GIT_URL)
+  #       hello        1.1 GiB
+  #       total        1.1 GiB
+  #
+  # The `box` section above these is printed from the +:box_measured+ event instead, which arrives
+  # before the daemon's per-volume walk — the slow part — rather than after it.
   #
   # @param stats [Hash{Symbol => Object}] what +Shepherd2#stats+ returned.
   # @return [void]
@@ -181,6 +211,13 @@ class Report
     projects(stats[:projects])
   end
 
+  # The `box` section — memory, what is committed to apps, swap if there is any, and Docker's disk:
+  #
+  #     box
+  #       memory      7.8 GiB total · 4.1 GiB available
+  #       committed   768.0 MiB runtime + 2.0 GiB build peak, of 7.8 GiB
+  #       disk        /var/lib/docker on /dev/sda1 — 78.2 GiB total · 29.1 GiB free (63% used)
+  #
   # @param box [Hash{Symbol => Object}] the +:memory+ and +:disks+ half of +stats+.
   # @return [void]
   def box(box)

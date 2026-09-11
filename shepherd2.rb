@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require 'json'
+require 'open3'
+
 # shepherd2.rb — the Shepherd2 API: register, destroy, poll, rebuild, wait, prune, measure.
 #
 #   shepherd = Shepherd2.new
@@ -55,11 +58,6 @@
 #   SOLUTION.md — the flows these verbs implement, step by step
 #   D_api_surface (why the rendering is elsewhere) · D_dokku_is_truth · D_isolation
 #   D_builder (herokuish, and the cache volume) · D_admin_namespace · D_ruby
-
-require 'json'
-require 'open3'
-
-# The verbs, and the four seams they run through. See the file header.
 class Shepherd2
   VERSION = '0.1.0'
 
@@ -99,19 +97,20 @@ class Shepherd2
   # because a front-end answers it differently: it is the caller's mistake, not the box's.
   class UsageError < Error; end
 
-  # Runs `dokku` commands:
+  # Runs `dokku` commands — guard with #ok?, mutate with #run, read with #json:
   #
-  #   dokku = Shepherd2::Dokku.new
+  #   dokku = Shepherd2::Dokku.new                                # discards output
   #   dokku.ok?('apps:exists', 'demo')                            # => false
-  #   dokku.run('apps:create', 'demo')                            # output discarded
-  #   dokku.capture_or_nil('config:get', 'demo', 'SHEPHERD_GIT_URL')
+  #   dokku.run('apps:create', 'demo')
+  #   dokku.json('resource:report', 'demo', '--format', 'json')   # => {"_default_.limit.memory" => …}
+  #
+  #   Shepherd2::Dokku.new(output: $stdout).run('git:sync', '--build', 'demo', url)   # watch it build
   #
   # Commands are given as argv, never as a command line, so an app id or a git URL is never interpreted
   # by a shell.
   #
-  # **Output goes nowhere by default.** A build's log is not lost by that: Dokku captures every build's
-  # stdout and stderr to `<build-id>.log` itself, which is what `last_build(log: true)` reads. A
-  # front-end that wants to watch a build scroll past — the CLI does — constructs this with an IO.
+  # Discarding a build's output loses nothing retrievable: Dokku captures every build's stdout and
+  # stderr to `<build-id>.log` of its own accord, and `builds:output` reads it back.
   class Dokku
     # @param output [IO, nil] where a command's stdout and stderr go. nil discards both; an IO must be
     #   a real file or terminal, since the child inherits its descriptor (a StringIO cannot work).
@@ -123,8 +122,8 @@ class Shepherd2
     #
     # @param args [Array<String>] the dokku subcommand and its arguments.
     # @return [true]
-    # @raise [Error] if the command exits non-zero. The message names the command, not the reason: for
-    #   a build the reason is the build log, and `last_build(log: true)` is how to read it.
+    # @raise [Error] if the command exits non-zero. The message names the command and not the reason,
+    #   which for a build is in `builds:output` rather than on any stream.
     def run(*args)
       ok = if @output
              system('dokku', *args, out: @output, err: @output)
@@ -364,8 +363,7 @@ class Shepherd2
   #
   # Re-runnable, which is the point: a first build that fails is the *normal* case — the Procfile /
   # buildpack / system.properties trio usually needs a couple of tries — so every step before the
-  # build is guarded and running this again is the fix, not destroy-and-recreate. The two
-  # +*_created+ flags say whether this run was the first one.
+  # build is guarded and running this again is the fix, not destroy-and-recreate.
   #
   # **Blocks until the project has been built and deployed** — minutes for a cold JVM build, because
   # `git:sync` returns only once the new container is up. Emits +:app_exists+ and +:network_exists+.
@@ -376,7 +374,8 @@ class Shepherd2
   # @param options [Hash{Symbol => String}] +:owner+ (stored as SHEPHERD_OWNER), +:mem+, +:cpu+,
   #   +:build_mem+, +:build_cpu+ (a limit, or `clear` for none), +:buildpack+ (pinned rather than
   #   detected, which matters — see D_builder), +:build_dir+ (a subdirectory, for a monorepo).
-  # @return [Hash{Symbol => Object}] +:app+, +:network+, +:app_created+, +:network_created+.
+  # @return [Hash{Symbol => Object}] +:app+, +:network+, and the booleans +:app_created+ /
+  #   +:network_created+, false on a re-run over something that was already there.
   # @raise [UsageError] if the id is reserved or malformed, or the URL is missing.
   # @raise [Error] if any dokku command fails.
   def create_app(id, url, ref = nil, options = {})
@@ -443,11 +442,14 @@ class Shepherd2
 
   # Destroys a project: its containers, its build cache and its network.
   #
+  #   destroy_app('demo', yes: true)
+  #   # => {app: 'demo', network: 'app-demo', network_destroyed: true}
+  #
   # Emits +:cache_purge_failed+ and +:nginx_reload_failed+ — both steps are best-effort, because an
   # app that is already gone is not worth failing the teardown over.
   #
   # @param id [String] the app id.
-  # @param options [Hash{Symbol => Boolean}] :yes skips the confirmation.
+  # @param options [Hash{Symbol => Boolean}] +:yes+ proceeds without calling +confirm+.
   # @return [Hash{Symbol => Object}] +:app+, +:network+, +:network_destroyed+.
   # @raise [Error] if the app does not exist, or consent was neither given nor obtainable.
   def destroy_app(id, options = {})
@@ -509,8 +511,8 @@ class Shepherd2
   # Emits +:polling+ before each project and +:polled+ after it, so a front-end need not wait for the
   # return value to know how the first project went.
   #
-  # @return [Array<Hash>, :busy] one +{app:, ok:, error:}+ per registered project, newest state of the
-  #   box first-come; or +:busy+ when a build already holds the lock, which is not a failure.
+  # @return [Array<Hash>, :busy] one +{app:, ok:, error:}+ per registered project, in the order they
+  #   were polled; or +:busy+ when a build already holds the lock, which is not a failure.
   def poll
     @lock.with_lock do
       registered_apps.map do |app, url|
@@ -538,8 +540,10 @@ class Shepherd2
 
   # Forces a build: the retry after a failure, and the only way to rebuild an unchanged ref.
   #
-  # **Blocks for the build.** Takes the same lock as the poll, non-blocking: a rebuild that lands on a
-  # running build fails fast, rather than queueing behind a five-minute cron.
+  #   rebuild('demo')   # => :built, or :busy
+  #
+  # **Blocks for the build.** It takes the poll's lock, and *taking* it never waits: a rebuild that
+  # lands on a running build answers +:busy+ at once rather than queueing behind a five-minute cron.
   #
   # @param id [String] the app id.
   # @return [:built, :busy] +:busy+ when another build holds the lock.
@@ -602,17 +606,16 @@ class Shepherd2
 
   # --- wait-idle -------------------------------------------------------------------------------
 
-  # Blocks until no build is running, so a deliberate reboot never lands mid-build.
+  # **Blocks until no build is running**, so a deliberate reboot never lands mid-build.
   #
   # Two conditions, because either can be true without the other: the poll lock (a tick in progress)
   # and Dokku's own view of running builds (a +git push+ deploy, which never touches our lock).
   #
-  # **Blocks for up to +timeout+**, which is the verb's whole purpose.
-  #
-  # @param timeout [Integer] seconds to wait before giving up.
+  # @param timeout [Integer] seconds to wait before giving up — an hour by default, which is how long
+  #   this may hold its thread.
   # @param interval [Integer] seconds between checks.
   # @param clock [#now] injected for tests.
-  # @return [:idle, :timeout]
+  # @return [:idle, :timeout] +:timeout+ if something was still building when the deadline passed.
   def wait_idle(timeout: 3600, interval: 5, clock: Time)
     deadline = clock.now + timeout
     loop do

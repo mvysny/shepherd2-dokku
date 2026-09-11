@@ -8,11 +8,18 @@
 # `config:set`, `domains:add` are Dokku's, not ours, and a `shepherd2 logs` would be the shepherd-cli
 # this design deliberately retired (D_dokku_is_truth).
 #
+# `last-build` is the one verb here with an expiry date, and it is not a log surface — it answers a
+# question Dokku has no command for. `builds:report` names the *newest* record, which under a
+# five-minute poll is always an abandoned tick, and `--status failed` selects reaped ticks alongside
+# real failures. Delete the verb when the upstream capture-before-check ordering is fixed, or when
+# `poll` pre-checks the remote ref; both roads are in D_poll_churn.
+#
 # USAGE
 #   shepherd2 create-app ID URL [REF] [options]   register a project and build it for the first time
 #   shepherd2 destroy-app ID [--yes]              its exact inverse
 #   shepherd2 poll                                the */5 cron: build every project whose ref moved
 #   shepherd2 rebuild ID                          force a build of an unchanged ref; the retry
+#   shepherd2 last-build [ID] [--log]             the last *real* build, past the poll's churn
 #   shepherd2 wait-idle [--timeout SECONDS]       block until no build is running
 #   shepherd2 clearcache                          the weekly prune
 #
@@ -61,6 +68,15 @@ DEFAULT_MEMORY       = '256m'
 DEFAULT_BUILD_MEMORY = '2g'
 DEFAULT_CPU          = '1'
 DEFAULT_BUILD_CPU    = '2'
+
+# The exit code Dokku's reaper writes onto a build record that never finished — which is every no-op
+# poll tick, once a later deploy reaps it. Nothing else on disk distinguishes such a record from a
+# build that really failed (D_poll_churn).
+REAPED_EXIT_CODE = -1
+
+# The statuses a record reaches once its build is over. A `running` record is either a live build or an
+# abandoned tick, and only `display_status` separates those two.
+FINISHED_BUILD_STATUSES = %w[succeeded failed canceled].freeze
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -355,10 +371,10 @@ class Shepherd2
           # Dokku fetches; if the ref did not move, nothing is built. A failed build is therefore not
           # retried until upstream commits again — `shepherd2 rebuild` is the override.
           #
-          # A no-change tick still writes a build record and a log file, which at 288 ticks a day
-          # prunes real build logs out of the 20-per-app window. Whether this should pre-check the
-          # remote ref so a no-op tick never enters git:sync is Q_poll_churn — undecided, and the
-          # only open question in this flow.
+          # A no-change tick still writes a build record and a log file — 288 of them a day per app,
+          # which is why the install raises Dokku's retention to 300 and why `last-build` exists to
+          # find the real build among them (D_poll_churn). Pre-checking the remote ref here, so a
+          # no-op never enters git:sync at all, is that decision's deferred half.
           @dokku.run('git:sync', '--build-if-changes', app, url)
         rescue Shepherd2Error => e
           oops "#{app}: #{e.message}"
@@ -400,6 +416,55 @@ class Shepherd2
     end
 
     result
+  end
+
+  # --- last-build ------------------------------------------------------------------------------
+
+  # Reports a project's last *real* build — the newest record that is not poll churn — and, with
+  # +log:+, prints that build's output.
+  #
+  #   last_build('demo')   # prints:
+  #
+  #     demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30.914882731Z · duration 1m43s
+  #       log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
+  #       read it: shepherd2 last-build demo --log
+  #
+  #   last_build           # that line for every registered project — which of them is red
+  #
+  # One build, never a history: +dokku builds:list ID+ lists them and +builds:output ID current+ tails
+  # a live one. Temporary — the header says when to delete it.
+  #
+  # @param id [String, nil] the app id, or +nil+ for every registered project.
+  # @param log [Boolean] also print that build's output. Needs an id.
+  # @return [Integer] EXIT_OK whenever the question could be *answered* — a red build still exits 0 —
+  #   and EXIT_FAILURE only if some project's records could not be read.
+  # @raise [Shepherd2Error] if the named app does not exist.
+  # @raise [UsageError] if the id is malformed.
+  def last_build(id = nil, log: false)
+    return last_build_everywhere if id.nil?
+
+    validate_id!(id)
+    raise Shepherd2Error, "no such app: #{id}" unless @dokku.ok?('apps:exists', id)
+
+    build = notable_build(build_records(id))
+    if build.nil?
+      @out.puts "#{id}: no real build on record"
+      @out.puts '  either it has never built, or a later deploy pruned the last one (D_poll_churn).'
+      @out.puts "  what is on record: dokku builds:list #{id} --kind build"
+      return EXIT_OK
+    end
+
+    @out.puts describe_build(id, build)
+    @out.puts "  log: #{log_location(build)}"
+    unless log
+      @out.puts "  read it: shepherd2 last-build #{id} --log"
+      return EXIT_OK
+    end
+
+    @out.puts ''
+    # Dokku cats a finished build's log and tails a live one, which is the behaviour wanted either way.
+    @dokku.run('builds:output', id, build['id'])
+    EXIT_OK
   end
 
   # --- wait-idle -------------------------------------------------------------------------------
@@ -510,20 +575,96 @@ class Shepherd2
 
   # `builds:list` with no app lists every build box-wide, which is what makes this catch a deploy that
   # came from a `git push` rather than from us.
-  #
-  # `display_status`, not `status`: a no-op poll tick leaves its record at `status: "running"`
-  # *forever* — nothing ever writes a `finished_at` for a build that never started — and at a
-  # five-minute cron there is always at least one of those. Selecting on `status` therefore made
-  # wait-idle time out on every healthy box (verified on a box; 14 such records against 1 real build).
-  # Dokku computes `display_status` by checking whether the recorded pid is still alive, which is the
-  # question actually being asked: a live build reads `running`/`running`, an abandoned tick
-  # `running`/`abandoned`.
   def running_builds
     builds = @dokku.json('builds:list', '--format', 'json')
     builds = builds.values.flatten if builds.is_a?(Hash)
-    Array(builds).select { |build| (build['display_status'] || build['status']) == 'running' }
+    Array(builds).select { |build| live_build?(build) }
   rescue Shepherd2Error, JSON::ParserError
     [] # A box with no builds yet, or a Dokku that has nothing to say. Not a reason to block a reboot.
+  end
+
+  # One line per registered project, and tolerant like #poll: one project whose records will not read
+  # must not hide the rest. An app without SHEPHERD_GIT_URL was made by hand and is nobody's to poll,
+  # so it has no churn to see past either.
+  def last_build_everywhere
+    apps = registered_apps.keys
+    if apps.empty?
+      @out.puts 'no registered projects'
+      return EXIT_OK
+    end
+
+    failures = 0
+    apps.each do |app|
+      build = notable_build(build_records(app))
+      @out.puts(build ? describe_build(app, build) : "#{app}: no real build on record")
+    rescue Shepherd2Error => e
+      oops "#{app}: #{e.message}"
+      failures += 1
+    end
+
+    failures.zero? ? EXIT_OK : EXIT_FAILURE
+  end
+
+  # `--kind build` is load-bearing twice over, and the first reason is not obvious. An unfiltered
+  # `builds:list` **caps its output at the retention count** — but the cap is skipped for any filtered
+  # listing (`plugins/builds/subcommands.go`: `if statusFilter == "" && kindFilter == ""`). Without the
+  # flag, an app idle for more than `retention` ticks reports "no real build" while its record and log
+  # sit untouched on disk, because poll ticks fill the whole visible window. Verified on a box: at 21
+  # ticks with retention 20, the real build was invisible with 41 records on disk. The second reason is
+  # the ordinary one — `git:sync` records are always `kind: build`, so this is also the right set.
+  #
+  # Newest first (live builds ahead of the rest), which Dokku sorts before it filters, and the only
+  # ordering this relies on: `started_at` is RFC3339 with trailing zeros trimmed, so string order is
+  # not chronological order, and it is never parsed here.
+  def build_records(app)
+    builds = @dokku.json('builds:list', app, '--kind', 'build', '--format', 'json')
+    builds = builds.values.flatten if builds.is_a?(Hash)
+    Array(builds)
+  rescue JSON::ParserError
+    raise Shepherd2Error, 'build records are not readable as JSON'
+  end
+
+  # The build worth reporting: one that is building right now, else the newest that really built.
+  def notable_build(builds)
+    builds.find { |build| live_build?(build) } || builds.find { |build| real_build?(build) }
+  end
+
+  # Whether a build is running *now* — `display_status`, which Dokku computes from whether the recorded
+  # pid is alive, never the stored `status`, which a no-op tick holds at `running` forever. A live build
+  # reads `running`/`running`; an abandoned tick reads `running`/`abandoned`.
+  def live_build?(build) = (build['display_status'] || build['status']) == 'running'
+
+  # A record some build actually produced. Two filters, because the churn hides behind both: a tick's
+  # record stays `running` until a later deploy reaps it, and reaping writes it as `failed` with
+  # exit_code -1, which is indistinguishable on disk from a build that really failed. So this
+  # mislabels one thing as churn — a real build the box killed mid-flight, reaped the same way, for
+  # which `dokku logs:failed ID` is what is left.
+  def real_build?(build)
+    FINISHED_BUILD_STATUSES.include?(build['status']) && build['exit_code'] != REAPED_EXIT_CODE
+  end
+
+  def describe_build(app, build)
+    live = live_build?(build)
+    fields = [live ? 'building now' : build_outcome(build), "id #{build['id']}"]
+    fields << "started #{build['started_at']}" if build['started_at']
+    fields << "duration #{build['duration']}" if build['duration'] && !live
+    "#{app}: #{fields.join(' · ')}"
+  end
+
+  def build_outcome(build)
+    exit_code = build['exit_code']
+    return build['status'].to_s if exit_code.nil? || exit_code.to_i.zero?
+
+    "#{build['status']} (exit #{exit_code})"
+  end
+
+  # `log_path` is the durable copy. `builds:output` falls back to the syslog tag when the file is gone,
+  # and that fallback can come back empty, so the difference is worth printing rather than hiding.
+  def log_location(build)
+    path = build['log_path']
+    return 'not recorded' if path.nil? || path.to_s.empty?
+
+    File.exist?(path) ? path : "#{path} (gone — builds:output falls back to the syslog copy)"
   end
 end
 
@@ -537,6 +678,7 @@ class CLI
       destroy-app ID              its exact inverse
       poll                        build every project whose ref moved
       rebuild ID                  force a build of an unchanged ref
+      last-build [ID] [--log]     the last real build of a project, past the poll's churn
       wait-idle                   block until no build is running
       clearcache                  weekly prune of dangling images and stopped containers
 
@@ -555,6 +697,7 @@ class CLI
     when 'destroy-app' then destroy_app(argv)
     when 'poll'        then no_arguments!(argv, 'poll') { @shepherd.poll }
     when 'rebuild'     then rebuild(argv)
+    when 'last-build'  then last_build(argv)
     when 'wait-idle'   then wait_idle(argv)
     when 'clearcache'  then no_arguments!(argv, 'clearcache') { @shepherd.clearcache }
     when '--version'   then puts "shepherd2 #{VERSION}"; EXIT_OK
@@ -609,6 +752,19 @@ class CLI
     raise UsageError, 'usage: shepherd2 rebuild ID' unless argv.size == 1
 
     @shepherd.rebuild(argv[0])
+  end
+
+  def last_build(argv)
+    log = false
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 last-build [ID] [--log]'
+      o.on('--log', "print that build's output as well") { log = true }
+    end
+    rest = parse!(parser, argv)
+    raise UsageError, parser.banner if rest.size > 1
+    raise UsageError, '--log needs an app id' if log && rest.empty?
+
+    @shepherd.last_build(rest[0], log: log)
   end
 
   def wait_idle(argv)

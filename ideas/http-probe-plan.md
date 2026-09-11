@@ -6,9 +6,10 @@ stays the authority on each item; this note owns *the order, the traps and the e
 running the http-mode subset on the dev VM, and it is deleted once the findings have landed. The
 https subset cannot run here at all — see `ideas/production-cutover.md`.
 
-**Graduation is deliberately deferred.** The findings are *not* in `RESEARCH.md` / `DECISIONS.md` /
-`README.md` yet; that is a separate session's work, agreed with the operator on 2026-09-11. Until then
-this folder is the only record, and it is complete enough to graduate from without the box.
+**Graduation is under way, one finding at a time** (agreed with the operator on 2026-09-11): each is
+discussed, implemented, then cut out of `findings.md` with a note saying where it landed, and this note
+is deleted when the last one goes. The status table below marks what has graduated. Until a finding
+does, this folder is its only record — and it is complete enough to graduate from without the box.
 
 ## Where the run got to
 
@@ -27,7 +28,7 @@ this folder is the only record, and it is complete enough to graduate from witho
 | 15 pre-compiled bundle | **closed** on a box, not just off it |
 | 17 build CPU | **closed** — holds; marker dropped from `shepherd2:25` |
 | 18 http-only mode | **closed** — both the 502 and 200 paths |
-| 19 no-op tick churn | **closed** — `Q_poll_churn` is real, and retention turns out to be settable |
+| 19 no-op tick churn | **closed**, and **graduated** → `D_poll_churn` (retention 300 + `shepherd2 last-build`) |
 | 20 Gradle buildpack | **closed** — all three parts |
 | 4, 9, 14, 16 | out of scope here, as planned |
 

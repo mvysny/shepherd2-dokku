@@ -298,7 +298,14 @@ Items 2, 6, 10, 11, 12, 19, 20, the deployed-app half of 18, and the `ports:repo
 All of them need one app that actually *runs*; the next move is `karibu-helloworld-application` (the
 Gradle sibling, already onboarded upstream) rather than more surgery on the Maven pair.
 
-### FINDING — punch-list 19 / `Q_poll_churn`: every `[src]` claim holds, and the churn is real
+### ~~FINDING — punch-list 19 / `Q_poll_churn`~~ — **GRADUATED 2026-09-11 → `D_poll_churn`**
+
+Landed: the decision and its rejected options in `DECISIONS.md` → `D_poll_churn`; the two Dokku facts
+(retention is settable; eviction is not deletion until `builds:prune`) in `RESEARCH.md` → *Build
+tracking*, with punch-list 19 struck; `builds:set --global retention 300` in `shepherd2-install`; the
+`shepherd2 last-build` verb and its tests; the operator story in `README.md`'s cheat sheet and its
+*things that bite*; the flow correction in `SOLUTION.md`. `ideas/poll-build-record-churn.md` is deleted.
+Kept below as the evidence.
 
 All three claims confirmed on `hello`, with the poll cron disabled so every tick was deliberate.
 
@@ -342,8 +349,13 @@ Two things soften it, and one hardens it again:
   <id>` by id.
 - **…until `builds:prune` runs.** `dokku builds:prune hello` deleted four `.log` files (24 → 20 on
   disk) and the evicted successful build vanished from `--status succeeded` too (2 records → 1).
-  `builds:output` for that id then silently returns the *current* build's output rather than erroring,
-  which is worse than a failure.
+  `builds:output` for that id then printed something other than an error — **recorded here as observed
+  and NOT as explained**: reading `CommandOutput` at master afterwards shows it falls back to
+  `journalctl SYSLOG_IDENTIFIER=dokku-<id>` for a missing log file, which would print that build's own
+  syslog copy, not the current build's. The note that it returned "the current build's output" is
+  therefore unexplained by the source and should be re-run before anyone repeats it. What *is*
+  source-certain: nothing on that path validates the build id, so a genuinely unknown id exits 0 with
+  no output and no error.
 
 **The knob `Q_poll_churn` did not know about:** retention is settable, globally and per app, and
 reverts cleanly.
@@ -642,7 +654,11 @@ amount of reading would have found. All three are fixed and the fixes are verifi
 Covered above under *Phase 1*. `dokku ssh-keys:add admin < FILE` is invisible to Dokku, and a trailing
 blank line in a `.pub` file defeats the argument form.
 
-### BUG 2 — `shepherd2 wait-idle` could never return on a live box
+### ~~BUG 2 — `shepherd2 wait-idle` could never return on a live box~~ — **GRADUATED 2026-09-11**
+
+Went with `D_poll_churn`, whose *Consequences* carry it as the churn's most expensive effect; the
+`display_status` rule is also in `SOLUTION.md`'s reboot flow and on `live_build?` in the CLI. The fix
+itself was already on the box. Kept below as the evidence.
 
 `running_builds` selected build records with `status == 'running'`. **Every no-op poll tick leaves a
 record at exactly that, permanently** — there is no `finished_at` for a build that never started — and

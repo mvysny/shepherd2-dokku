@@ -3,11 +3,13 @@
 **Scheduled for v2** (operator, 2026-09-11): v1 ships with no notification of any kind, and a failed
 build is found by going to look at it. Open as of 2026-09-11 is the *shape* — everything below.
 
-One consequence to carry into v2 rather than re-argue there: while `Q_poll_churn` is open the failing
-build's log is evicted within ~95 minutes (`RESEARCH.md` → *Build tracking*), so a notification
-carrying the log tail is not merely an alert — it is the only durable record that the failure ever
-happened. Settle `Q_poll_churn` first and this goes back to being a plain alert, which is the easier
-thing to design.
+One consequence to carry into v2 rather than re-argue there, **and it got easier on 2026-09-11**: the
+worry was that a failing build's log is evicted within ~95 minutes, which would make the mail not an
+alert but the only durable record that the failure ever happened. `D_poll_churn` raised the window to
+about a day and gave the box `shepherd2 last-build`, so this is a **plain alert** again — the mail can
+point at a build that will still be readable when it is opened, and carrying the log tail is a
+convenience rather than the whole point. What has not changed is that the poll's churn is still there:
+the record the mail names has to be found by the `exit_code != -1` filter, not by `builds:report`.
 
 ## The problem, in one paragraph
 
@@ -97,8 +99,10 @@ arrives first, the cc stops being a spam hazard and may simply be the default.
   *detected dubious ownership* (so `sudo -u dokku git …`), and **[unverified]** that the object is
   present and readable there after a build that failed early.
 - **The log tail** is the two-step from `RESEARCH.md`: newest record whose `exit_code != -1` (the `-1`
-  filter is what separates a real failure from a reaped no-op tick while `Q_poll_churn` is open), then
-  `builds:output <app> <id>`. Last ~50 lines is what a mail should carry.
+  filter is what separates a real failure from a reaped no-op tick — `D_poll_churn`), then
+  `builds:output <app> <id>`. Last ~50 lines is what a mail should carry. `shepherd2 last-build` already
+  holds that selection in Ruby, so the notifier should call the same code rather than re-derive it —
+  bearing in mind that verb is scheduled for deletion when upstream is fixed.
 - **No debounce is needed.** `--build-if-changes` does not retry a failed build until upstream moves,
   so failures are naturally one mail per commit — no flap storm, nothing to rate-limit.
 - **A "fixed" mail** (Travis's first-success-after-failure) would need us to remember the previous

@@ -117,7 +117,10 @@ steps that reach past Shepherd2's own layer are opt-out (`--keep-docker`, `--kee
 written back, and is removed outright only if that key was all it held; and
 Dokku's two state directories — `/home/dokku`, holding the app repositories, and `/var/lib/dokku`,
 holding plugin data and the build records — are *reported*, not deleted; `apt purge` leaves both.
-Installing Dokku emptied `/etc/nginx/sites-enabled`, and that is not undoable from here.
+Installing Dokku emptied `/etc/nginx/sites-enabled`, and that is not undoable from here — nor is the
+fact that nginx itself goes with the purge, having arrived as a Dokku dependency. Run once on a box:
+afterwards its listening sockets were identical to the pre-install capture, which is the sharpest
+available statement that the install is reversible.
 
 ## The CLI surface
 

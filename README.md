@@ -126,7 +126,9 @@ To undo it, `sudo ./shepherd2-uninstall` — which **destroys every hosted proje
 box's hostname before it does. It removes what the install added, in reverse, including Docker and the
 address-pool change — of `/etc/docker/daemon.json` it deletes the `default-address-pools` key and
 leaves everything else in the file alone, `live-restore` included. `--keep-docker` and `--keep-pools`
-opt out of those two steps. It leaves `ruby`, and reports rather than deletes the two directories
+opt out of those two steps. **nginx goes too** — it arrived as a Dokku dependency and the purge's
+autoremove takes it, so a box that was also serving other vhosts loses the server as well as the
+config it was emptied of. It leaves `ruby`, and reports rather than deletes the two directories
 `apt purge` leaves behind — `/home/dokku` (the app repositories) and `/var/lib/dokku` (plugin data and
 build records).
 

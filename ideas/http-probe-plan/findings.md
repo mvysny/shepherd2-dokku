@@ -561,7 +561,7 @@ cache-gradle-a    1.3G   (Gradle: wrapper distribution + JDK + dependency and bu
 The duplication is the price of the isolation and is worth naming out loud: two ids on one repo cost
 two full copies. Disk went 18G → 20G used of 62G across the four apps.
 
-### PARTIAL — punch-list 12: the mechanism is confirmed off the box's own config; the live 502 is not run
+### FINDING — punch-list 12: confirmed, and the failure is *worse* than the expected 502
 
 First correction to the plan: **`traefik-vhosts` is a Dokku *core* plugin**, installed and enabled by
 the deb like `nginx-vhosts` and `haproxy-vhosts`. Nothing has to be installed to test this, and the
@@ -593,11 +593,44 @@ services:
   a Shepherd2 box `traefik:start` cannot even bind without stopping nginx first — every app on the box
   goes dark to run the experiment.
 
-**Not run:** `proxy:set vbm-b type traefik` + `traefik:start` + the observed 502. It needs nginx
-stopped box-wide, and the agent running this probe was denied both the plugin-fetch and the
-proxy-switch commands by its own tooling. Given the two lines above, the remaining value is
-confirmatory rather than decisive — but it should be finished by hand on a box that is about to be
-rebuilt anyway.
+**Then run for real**, on `gradle-a`, once the box was due for teardown (it needs nginx stopped
+box-wide). Dokku wires the app up correctly — the labels are right:
+
+```
+traefik.enable:true
+traefik.http.routers.gradle-a-web-http.rule:Host(`gradle-a.shepherd2.test`)
+traefik.http.services.gradle-a-web-http.loadbalancer.server.port:5000
+```
+
+…and the two containers are on different networks, as the config said they would be:
+
+```
+traefik-traefik-1   bridge=172.17.0.2
+gradle-a.web.1      app-gradle-a=172.16.2.3
+```
+
+**The result is not a 502. It is a hang.**
+
+| From | To | Result |
+|---|---|---|
+| `curl -H 'Host: gradle-a…'` → traefik | the app | **timed out at 20s, no response at all** |
+| inside traefik → `172.16.2.3:5000` | the app | **timed out at 6s** |
+| inside traefik → `172.17.0.1:22` (control) | its own gateway | "Connection refused", *immediately* |
+| inside the app → `172.16.2.3:5000` (control) | itself | **200** |
+
+The two controls are what make this conclusive: the tool reports a refusal promptly when there is one,
+and the app is alive and listening the whole time. The app's network is simply unroutable from
+traefik's, so packets are **dropped rather than refused** and traefik sits there until its own timeout
+rather than answering 502.
+
+That is a sharper argument than `D_proxy` currently makes. The entry anticipates a 502 — a thing an
+operator diagnoses in seconds. The reality is a silent hang with **nothing in traefik's logs**, which
+is the worst diagnostic shape available. Item 12 closed.
+
+One correction to the plan while here: it warned that this "installs a plugin the product deliberately
+does not use". It does not — `traefik-vhosts` is **core**, shipped and enabled by the deb alongside
+`nginx-vhosts` and `haproxy-vhosts`, so the experiment installs nothing. What it does need is
+`systemctl stop nginx` (traefik wants `ports: "80:80"`), which is why it still belongs last.
 
 ## Bugs the box found in our own code, beyond the punch list
 
@@ -683,3 +716,36 @@ knowing before anyone writes a test that asserts a hostname is dead the moment a
 This is **not** a Dokku bug to report upstream so much as a consequence of `apps:destroy` being
 designed for a box where the next deploy reloads nginx soon anyway; on Shepherd2 a destroyed project
 may be the last thing that happens for days.
+
+### FINDING — not on the punch list: the box survives a Docker daemon restart
+
+Nothing numbered covers this, and everything depends on it, so it was run before teardown. `RESEARCH.md`
+carries three `[docs]` claims that together are "the apps come back": Docker's `live-restore`, Dokku's
+`ps:restore` from the init service, and our `ps:set --global restart-policy always`.
+
+```
+$ docker info --format '{{.LiveRestoreEnabled}}'   → true      (from Dokku's postinst, not from us)
+$ systemctl restart docker
+```
+
+All three hold, and the shape is worth knowing:
+
+- **Containers are not restarted at all.** `hello.web.1` still read `Up About an hour` afterwards — its
+  uptime was never interrupted. That is `live-restore` doing exactly what it claims.
+- **`ps:restore` still fires, and briefly starts a duplicate.** A second container,
+  `gradle-a.web.1.1789125735`, appeared alongside the running `gradle-a.web.1` and **exited 143
+  (SIGTERM) about 17 seconds later** on its own. Transient and self-correcting, but an operator
+  watching `docker ps` in that window sees two containers for one app and should not panic.
+- **Routing stays consistent.** Both apps' nginx upstreams matched their containers' current IPs
+  afterwards, and both served 200:
+
+  ```
+  hello:    container=172.16.1.2  nginx=172.16.1.2:5000  MATCH
+  gradle-a: container=172.16.2.2  nginx=172.16.2.2:5000  MATCH
+  ```
+
+**Caveat on what this does and does not prove.** A daemon restart is the mechanism `ps:restore` hangs
+off, but it is *not* a reboot: it leaves the kernel, the bridges and nginx untouched. A true
+`reboot` test was not run because the agent driving this probe runs **on the VM**, so it would have
+killed the session mid-run. It stays worth doing — one command, and the only way to prove the box
+comes back unattended after a power cycle.

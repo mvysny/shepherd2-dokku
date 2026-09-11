@@ -22,7 +22,7 @@ this folder is the only record, and it is complete enough to graduate from witho
 | 8 ports auto-wired | **closed** — `http:80:5000`, detected, survives rebuilds |
 | 10 foreign `initial-network` | **closed**, and it found a correction for `D_isolation` |
 | 11 what an app reaches | **closed** — measured, and it argues *for* the v2 `DOCKER-USER` rule |
-| 12 Traefik 502 | **partial** — mechanism confirmed from `traefik:show-config`; the live 502 not run |
+| 12 Traefik 502 | **closed** — and it is not a 502, it is a silent hang |
 | 13 warm second build | **closed** for both Maven and Gradle |
 | 15 pre-compiled bundle | **closed** on a box, not just off it |
 | 17 build CPU | **closed** — holds; marker dropped from `shepherd2:25` |

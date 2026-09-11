@@ -645,6 +645,23 @@ must be named `*-vhosts` for the scheduler integration to work. **[docs]**
 - **Since 0.38.0, an undeployed app still gets a minimal nginx config returning 502** — so its domain
   resolves and monitoring sees a non-200 rather than a connection failure. Replaced by the real config
   on first successful deploy. **[docs]**
+- **`apps:create` reloads nginx; `apps:destroy` does not.** The asymmetry is invisible from the disk
+  and bites hard. `apps:destroy` removes `/home/dokku/<app>/nginx.conf` *synchronously* — it is gone
+  the instant the command returns, so there is no race — but nothing signals the running nginx, which
+  goes on serving that hostname from the config it still holds in memory, proxying to a container that
+  no longer exists. Requests to a destroyed app's hostname therefore **hang for
+  `proxy_connect_timeout` (60s)** rather than being refused, until some unrelated deploy happens to
+  reload nginx. Pinned down on an app created and never deployed, whose `return 502` vhost went on
+  answering 502 after the destroy, while `nginx -T`, `/home/dokku/<app>/` and `grep -r` over
+  `/etc/nginx` all agreed the app was gone. **[verified on a box 2026-09-11]**
+
+  It is not really a bug to file: `apps:destroy` is designed for a box where the next deploy reloads
+  nginx soon anyway. On a Shepherd2 box a destroyed project may be the last thing that happens for
+  days, so the caller has to reload — `dokku nginx:reload`, which is Dokku's own command for it.
+- **`dokku nginx:reload` is asynchronous.** It returns 0 immediately and the *old* config is still
+  being served for about another second. Harmless in itself, and worth an hour of anyone's time to
+  know: a check that curls a hostname the instant a destroy returns sees the stale vhost and looks
+  exactly like a reload that did not happen. **[verified on a box 2026-09-11]**
 
 ### Traefik (official plugin)
 

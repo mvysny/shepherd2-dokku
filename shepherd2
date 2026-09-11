@@ -16,7 +16,8 @@
 #
 # USAGE
 #   shepherd2 create-app ID URL [REF] [options]   register a project and build it for the first time
-#   shepherd2 destroy-app ID [--yes]              its exact inverse
+#   shepherd2 destroy-app ID [--yes]              its exact inverse: cache volume, app, network, and
+#                                                 the nginx reload apps:destroy omits
 #   shepherd2 poll                                the */5 cron: build every project whose ref moved
 #   shepherd2 rebuild ID                          force a build of an unchanged ref; the retry
 #   shepherd2 last-build [ID] [--log]             the last *real* build, past the poll's churn

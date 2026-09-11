@@ -690,7 +690,13 @@ This is the direct operational consequence of `Q_poll_churn` and is the stronges
 settling it: the churn did not merely clutter a listing, it broke the verb that exists to make a
 reboot safe.
 
-### BUG 3 — `destroy-app` left the destroyed app's hostname black-holing requests
+### ~~BUG 3 — `destroy-app` left the destroyed app's hostname black-holing requests~~ — **GRADUATED 2026-09-11**
+
+Landed: both Dokku facts — `apps:create` reloads nginx while `apps:destroy` does not, and
+`nginx:reload` is asynchronous — in `RESEARCH.md` → *nginx (the default)*; the reload in
+`SOLUTION.md`'s destroy flow and in the CLI header's `destroy-app` line; the operator story as a ninth
+*thing that bites* in `README.md`, including the repair for an app already destroyed the raw way. The
+fix itself was already in `destroy_app`, comment and all. Evidence kept below.
 
 `dokku apps:destroy` removes the per-app vhost file (`/home/dokku/<app>/nginx.conf`) but **does not
 reload nginx**. The running nginx therefore keeps serving the destroyed app's hostname from the config

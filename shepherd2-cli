@@ -165,12 +165,12 @@ class Report
   # With +log:+ the last line is the build's output instead — or, where there is none to print, which
   # of the four reasons for that it was.
   #
-  # @param result [Hash{Symbol => Object}] one app's +last_build+ result.
+  # @param result [Shepherd2::BuildReport] one app's report, its +build+ not nil.
   # @param log [Boolean] whether the log was asked for.
   # @return [void]
   def last_build(result, log:)
-    app = result[:app]
-    line build_line(app, result[:build], live: result[:live])
+    app = result.app
+    line build_line(app, result.build, live: result.live)
     line "  log: #{log_location(result)}"
 
     unless log
@@ -179,12 +179,12 @@ class Report
     end
 
     line ''
-    case result[:log_status]
-    when :file then @out.print result[:log]
+    case result.log_status
+    when :file then @out.print result.log
     when :syslog
       line '  the log file is gone; this is the copy journald still holds'
       line ''
-      @out.print result[:log]
+      @out.print result.log
     when :running      then line "  still building — `dokku builds:output #{app} current` follows it live"
     when :rotated      then line '  the log is gone: pruned from disk, and journald no longer has it either'
     when :not_recorded then line '  no log path on record'
@@ -249,10 +249,10 @@ class Report
   # `builds:output` falls back to the syslog tag when the log file is gone, and that fallback can come
   # back empty, so the difference is worth printing rather than hiding.
   def log_location(result)
-    path = result[:log_path]
+    path = result.log_path
     return 'not recorded' if path.nil?
 
-    result[:log_path_exists] ? path : "#{path} (gone — builds:output falls back to the syslog copy)"
+    result.log_path_exists ? path : "#{path} (gone — builds:output falls back to the syslog copy)"
   end
 
   def docker(docker)
@@ -439,7 +439,7 @@ class CLI
       return EXIT_OK # Not a failure: skipping is the designed behaviour, and cron should stay quiet.
     end
 
-    result.all? { |app| app[:ok] } ? EXIT_OK : EXIT_FAILURE
+    result.all?(&:ok) ? EXIT_OK : EXIT_FAILURE
   end
 
   def rebuild(argv)
@@ -468,7 +468,7 @@ class CLI
 
   def last_build_one(id, log:)
     result = shepherd.last_build(id, log: log)
-    if result.nil?
+    if result.build.nil?
       @report.line "#{id}: no real build on record"
       @report.line '  either it has never built, or a later deploy pruned the last one (D_poll_churn).'
       @report.line "  what is on record: dokku builds:list #{id} --kind build"
@@ -487,16 +487,16 @@ class CLI
     end
 
     results.each do |result|
-      if result[:error]
-        @report.oops "#{result[:app]}: #{result[:error]}"
-      elsif result[:build]
-        @report.line @report.build_line(result[:app], result[:build], live: result[:live])
+      if result.error
+        @report.oops "#{result.app}: #{result.error}"
+      elsif result.build
+        @report.line @report.build_line(result.app, result.build, live: result.live)
       else
-        @report.line "#{result[:app]}: no real build on record"
+        @report.line "#{result.app}: no real build on record"
       end
     end
 
-    results.any? { |result| result[:error] } ? EXIT_FAILURE : EXIT_OK
+    results.any?(&:error) ? EXIT_FAILURE : EXIT_OK
   end
 
   def stats(argv)

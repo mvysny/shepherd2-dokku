@@ -1617,9 +1617,18 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
 **Decision.**
 
 - **The verbs return data, never text.** `stats` returns the hash it already assembles, `last_build` a
-  build record or `nil` — and, with `log:`, that build's captured output as a string — `poll` a
-  per-app result list, `rebuild` `:built` or `:busy`. The mapping from those onto `EXIT_OK` /
-  `EXIT_FAILURE` / `EXIT_BUSY` is the executable's job, and `EXIT_*` exist only there.
+  build report — and, with `log:`, that build's captured output as a string — `poll` a per-app result
+  list, `rebuild` `:built` or `:busy`. The mapping from those onto `EXIT_OK` / `EXIT_FAILURE` /
+  `EXIT_BUSY` is the executable's job, and `EXIT_*` exist only there.
+- **A *record* is a `Data`; a *document* stays a `Hash`.** `create_app`, `destroy_app`, `poll` and
+  `last_build` answer with `Registration`, `Teardown`, `PollResult` and `BuildReport` — small, fixed
+  shapes, read by name, where `result.netwrok` raises and `result[:netwrok]` would have been a silent
+  `nil`, and where the definition is the contract rather than an `@return` list that drifts from it.
+  `stats` is the exception and stays a plain hash, because its documented interface is *serialisation*
+  (`--json`, `D_stats`): `Data#to_h` is shallow and `JSON.generate` renders a `Data` as the **string**
+  `"#<data …>"` rather than failing, so a nested-`Data` snapshot would need a recursive `to_h` whose
+  omission corrupts `--json` silently. Events carry a plain hash too, whatever the verb returns, so
+  that a listener reads every kind the same way.
 - **Progress leaves through a listener; the confirmation comes in as a callback.** No `out:`, no `err:`,
   no `$stdin` in the API. `destroy_app` takes `confirm:`, defaulting to the tty prompt the CLI wants.
 - **Nothing renders, nothing streams, every return value is a snapshot.** `Dokku#run` **discards** the
@@ -1720,6 +1729,9 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
   thread is the front-end's job — the API knows nothing about threads and must not learn. `confirm:`
   blocks its caller until answered, so a TUI hands the question to its UI thread and waits there
   rather than answering inline. The CLI, single-threaded, is unaffected by all of this.
+- **`last_build` answers in one shape whether it was asked about one project or all of them.** A
+  project with nothing but churn on record comes back as a `BuildReport` whose `build` is nil, rather
+  than as `nil` — so neither form needs a nil check before the other's fields can be read.
 - **`last-build --log` reads a log instead of handing over the terminal**, and the snapshot rule makes
   two of Dokku's sharp edges ours to handle. `builds:output` **`tail -f`s a live build and `cat`s a
   finished one**, so the status on the record is consulted first and the log is fetched only for a

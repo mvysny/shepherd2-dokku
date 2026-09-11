@@ -53,8 +53,8 @@ class CreateAppTest < Minitest::Test
     assert_includes dokku.mutations, 'git:sync --build demo https://github.com/me/demo main'
 
     # A re-run is the *normal* retry after a failed first build, so it has to be legible as one.
-    refute result[:app_created]
-    refute result[:network_created]
+    refute result.app_created
+    refute result.network_created
     assert_equal [{ app: 'demo' }], events[:app_exists]
     assert_equal [{ network: 'app-demo' }], events[:network_exists]
   end
@@ -62,8 +62,9 @@ class CreateAppTest < Minitest::Test
   def test_a_first_registration_reports_what_it_made
     result = shepherd(DokkuDouble.new).create_app('demo', 'https://github.com/me/demo')
 
-    assert_equal({ app: 'demo', network: 'app-demo', app_created: true, network_created: true },
-                 result)
+    assert_equal Shepherd2::Registration.new(app: 'demo', network: 'app-demo',
+                                             app_created: true, network_created: true),
+                 result
   end
 
   # The farm's one profile (operator, 2026-09-11). All four are emitted every time rather than left

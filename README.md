@@ -601,7 +601,15 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | pick out one app's containers · the build in flight | `docker ps --filter label=com.dokku.app-name=ID` · `docker ps --filter label=com.dokku.image-stage=build` |
 | see what the box has been doing | `dokku events -t` |
 
-Nine things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+
+- **Anything you bind on the box to `0.0.0.0` is reachable from inside every app container.** Measured:
+  a listener on all interfaces answered an app through the bridge gateway; the same service on
+  `127.0.0.1` did not. Per-app networks wall apps off from *each other* ([`D_isolation`](DECISIONS.md)),
+  not from the host — so when you run something on the box for yourself, a database console, an admin
+  port, a scratch service, **bind it to loopback** unless you mean every hosted app to see it. The
+  firewall rule that would cover the rest of this axis is a v2 topic
+  (`ideas/harden-container-egress.md`); loopback costs nothing today.
 
 - **Most build records are poll ticks, so don't ask Dokku which build was the last one — ask
   `shepherd2 last-build`.** Every five-minute poll writes a record even when there is nothing to build,

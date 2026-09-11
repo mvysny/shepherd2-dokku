@@ -175,15 +175,22 @@ cache is isolated from every other's.
 1. **A publicly cloneable git URL.** The box holds no git credentials in v1, so it must be able to
    `git clone` the repo anonymously; private repos are a v2 feature.
 2. A `Procfile` at the root, naming the `web` process.
-3. For a Maven project, a `system.properties` pinning `java.runtime.version`. The buildpack runs
-   `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
-   say otherwise — and a **Vaadin** project has to say otherwise, or it is built in development mode
-   (*Vaadin under herokuish*, below).
+3. For any JVM project, a `system.properties` pinning `java.runtime.version` — without one you get
+   whatever the newest LTS JDK is, currently 25. The Maven buildpack then runs
+   `mvn clean dependency:list install -DskipTests`, the Gradle one `./gradlew stage`, unless
+   `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS` / `GRADLE_TASK` say otherwise — and a **Vaadin** project
+   has to say otherwise either way, or it is built in development mode (*Vaadin under herokuish*,
+   below).
 4. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
    Java project that commits a `package.json`, which Vaadin tells you to do, is detected as a *Node*
    app, because `nodejs` is tried before `java`.
 5. Optionally a `.env`, for build-time settings the project wants to carry itself — see *The `.env`
    recipe* below.
+
+**Then check your work without leaving your machine.** The builder is an ordinary Docker image, so
+the box's exact build — and the app it produces — can be run locally before anyone registers your
+project. That is *Rehearse the build locally*, at the end of this section, and it is the fastest way
+through everything in between.
 
 And one thing the box does not offer yet: **there is no managed database.** An app that needs Postgres
 cannot be hosted here in v1; the plugin that will provide it (`dokku-postgres`) is a v2 addition, and it
@@ -205,10 +212,14 @@ shepherd2 create-app myproject https://github.com/me/myproject --buildpack herok
 dokku buildpacks:set myproject heroku/java
 ```
 
-Pin a *third-party* buildpack to a commit — `https://github.com/someone/their-buildpack#a1b2c3d` —
-or it is re-cloned at whatever that branch points to on the day, and the same commit of your app
-stops building the same way twice. The bundled Heroku buildpacks are already pinned inside the
-builder image.
+Pin a buildpack to a commit — `https://github.com/someone/their-buildpack#a1b2c3d` — or it is
+re-cloned at whatever that branch points to on the day, and the same commit of your app stops
+building the same way twice. **This applies to the Heroku buildpacks too.** They ship pinned inside
+the builder image, but that pin is what auto-*detection* uses; the moment one is *named* — in
+`.buildpacks`, in `app.json` or at registration — it is git-cloned from its default branch instead,
+and the bundled copy is ignored. If that matters more than the convenience of the shorthand, name it
+in full and pin it: `https://github.com/heroku/heroku-buildpack-gradle.git#v49`. The `heroku/gradle`
+shorthand cannot carry a ref — Dokku rejects `heroku/gradle#v49` as invalid.
 
 ### Coming from a Dockerfile: the swap, line by line
 
@@ -226,10 +237,15 @@ it — the box simply ignores it — and add the herokuish equivalents beside it
 | `RUN --mount=type=cache,target=/root/.m2 …` | nothing. The buildpack already keeps `.m2/repository` in this app's own `/cache` volume |
 
 The `Procfile` line is per project — whatever your build actually produces, whether that is a jar, an
-appassembler `bin/run` script or an exploded directory. Two things about it that bite:
+appassembler `bin/run` script or an exploded directory. Three things about it that bite:
 
 - **`web` is the process type the proxy routes to.** Name it anything else and the app deploys and is
   unreachable.
+- **The line is not a shell command line.** `$PORT` is expanded, and then the words are `exec`'d
+  directly — there is no shell, so a leading `VAR=value` fails at startup with
+  `unable to run VAR=value: file does not exist`, and pipes, `&&` and redirects have nobody to run
+  them. When a process needs a variable, put `env` in front of it:
+  `web: env SERVER_PORT=$PORT ./bin/myapp`.
 - **Keep `-Xmx` under the memory limit** (256 MB by default), for the reason at the end of this section.
 
 ### Vaadin under herokuish
@@ -282,11 +298,40 @@ dokku config:set --no-restart myproject VAADIN_OFFLINE_KEY='the-key'
   before the buildpack runs — see [RESEARCH.md](RESEARCH.md#config-env-vars-and-app-metadata). That is
   read from Dokku's source, not yet confirmed on a running box.
 
-**4. Gradle projects: unverified.** The `heroku/gradle` buildpack follows Heroku's convention of
-running a `stage` task, overridable with a `GRADLE_TASK` config var, and Vaadin's Gradle plugin takes
-`-Pvaadin.productionMode` rather than a Maven profile. Neither has been run on this box — nothing in
-[RESEARCH.md](RESEARCH.md) covers the Gradle buildpack yet — so treat a Gradle onboarding as the thing
-to try first and expect a couple of rounds.
+**4. Gradle projects need four things, and none of the defaults will do.** The Gradle buildpack runs
+exactly one command — `./gradlew $GRADLE_TASK` — and with `GRADLE_TASK` unset it looks for a `stage`
+task, guesses a task for Spring Boot / Micronaut / Quarkus / Ratpack, and otherwise falls back to
+`stage` anyway. A Vaadin Boot app is none of those, so it fails with *Task 'stage' not found* until
+you say what to run. The four things below were worked out by rehearsing a Vaadin Boot + Karibu-DSL
+app against the same builder image the box uses — do the same with yours (*Rehearse the build
+locally*, below) before you ask for it to be registered.
+
+- **`gradlew` must be committed** — the buildpack no longer supplies a wrapper and stops if yours is
+  missing.
+- **`GRADLE_TASK`, in a committed `.env`** — it belongs in the repo, since every app needs it and
+  nothing about it is secret or box-specific:
+  ```dotenv
+  GRADLE_TASK=clean installDist -Pvaadin.productionMode
+  ```
+  The value is word-split and handed to `./gradlew` verbatim, so flags belong in it, and
+  `-Pvaadin.productionMode` is Vaadin's production switch for Gradle — there is no Maven profile to
+  activate. Use **`installDist`**, not `build`: it is the `application` plugin's "unpack the
+  distribution" task, and it leaves a runnable `build/install/<name>/bin/<name>` for the `Procfile` to
+  name, where `build` leaves only a `.tar` that nothing here untars. It also skips your test suite,
+  which you do not want standing between a commit and a deploy. `dokku config:set` overrides `.env`
+  from the box side if an app ever needs it to; defining a `stage` task in `build.gradle.kts` avoids
+  the variable altogether.
+- **`settings.gradle.kts` naming the root project.** Without one, Gradle names the root project after
+  the directory it happens to be building in — and here that directory is `/tmp/build`, so an
+  `application`-plugin app installs to `build/install/build/bin/build` and the `Procfile` path you
+  worked out on your own machine is simply wrong. `rootProject.name = "myproject"` makes the path the
+  same everywhere.
+- **`system.properties`.** Left out, the buildpack installs the newest LTS JDK — **currently 25, not
+  21** — and says so in the build log.
+
+Gradle's caching here is better than Maven's, and costs you nothing: the buildpack points
+`GRADLE_USER_HOME` at the per-app cache volume, so dependencies, the Gradle build cache, the wrapper's
+Gradle distribution and the JDK are all warm from the second build on.
 
 ### The `.env` recipe
 
@@ -338,6 +383,101 @@ with an `OutOfMemoryError` that shows up in the logs instead.
 **Listen on `$PORT`, not on a port of your choosing.** The buildpack sets it (5000), and Dokku wires
 the proxy to it automatically — so the `EXPOSE`/`ports:set` dance the predecessors needed does not
 arise. Details in [RESEARCH.md](RESEARCH.md#ports--the-expose-trap).
+
+### Rehearse the build locally
+
+**Do this before you ask for your project to be registered.** The builder is a plain Docker image —
+`gliderlabs/herokuish:latest-24`, the one Dokku pins — so the box's build, and the app it produces,
+both run on your own machine with no box and no operator involved. Every mistake in the sections
+above is an order of magnitude cheaper to find here than in a deploy log. All you need is Docker.
+
+**Rehearse in your own checkout, not in a copy of it.** What you are tuning — the `Procfile`, the
+`.env`, the `Procfile` path that depends on your project's name — are files you are going to commit,
+so get them right where you will commit them from.
+
+**1. Write the settings into the repository.** Put everything the build needs in the repo and
+registration needs nothing but the buildpack name: no config vars for the operator to remember, and
+the same repo builds the same way on the next box. For a Vaadin Boot + Gradle app that is four files,
+written in your editor like any other:
+
+```
+.env                  GRADLE_TASK=clean installDist -Pvaadin.productionMode
+system.properties     java.runtime.version=21
+settings.gradle.kts   rootProject.name = "my-app"
+Procfile              web: env SERVER_PORT=$PORT JAVA_OPTS=-Xmx200m build/install/my-app/bin/my-app
+```
+
+Secrets stay out — `.env` is committed. A licence key like `VAADIN_OFFLINE_KEY` is a config var the
+operator sets (*Vaadin under herokuish*, above).
+
+**2. Clean.** Your `build/` or `target/` is copied into the builder along with everything else, so
+clear it and the builder starts where a fresh clone would:
+
+```bash
+./gradlew clean          # or: mvn clean
+```
+
+**3. Build.** `/build` is the image's own entrypoint for this, and it is what the box runs:
+
+```bash
+docker run --name rehearsal -v "$PWD:/tmp/app:ro" \
+  -v rehearsal-cache:/cache -e CACHE_PATH=/cache \
+  gliderlabs/herokuish:latest-24 /build
+```
+
+- **`:ro` — your checkout is never written to.** It is copied to `/app`, built in `/tmp/build`, and
+  it is that build directory which becomes the app image. `/tmp/build` is also why the *directory
+  name* your build tool sees is `build` rather than your project's, which is what the
+  `settings.gradle.kts` above is for.
+- `/cache` with `CACHE_PATH=/cache` is the per-app cache volume, mounted just as the box mounts
+  `cache-<app>`. Keep the volume between runs and your second build is warm exactly as a scheduled
+  rebuild is; `docker volume rm rehearsal-cache` is your `shepherd2 clearcache`.
+- Leave `--rm` off. The finished container *is* the built app, and step 4 needs it.
+- **The one thing the box does that this does not is expand the `heroku/…` shorthand** — Dokku
+  rewrites it before the builder ever sees it, and herokuish on its own rejects it. So here, either
+  let detection choose (which is what a repo with no root `package.json` gets anyway) or pass the URL
+  in full: `-e BUILDPACK_URL=https://github.com/heroku/heroku-buildpack-gradle.git`.
+- To stand in for a config var the operator will set, mount an env directory — one file per variable,
+  named for it, containing the value: `-v /tmp/rehearse-env:/tmp/env`, and not read-only, because the
+  builder chowns it.
+
+**4. Run what you just built**, under the box's runtime memory limit, with the same `Procfile`:
+
+```bash
+docker commit rehearsal rehearsal-slug
+docker run -d --name rehearsal-run --memory 256m -e PORT=5000 -p 5000:5000 \
+  rehearsal-slug /start web
+docker logs -f rehearsal-run          # until it says it is listening; Ctrl-C to stop following
+curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost:5000/
+```
+
+`/start web` is the runtime entrypoint the box uses, so this exercises your `Procfile` line, your
+`$PORT` handling and your `-Xmx` against the real limit. Watch `docker stats rehearsal-run` while you
+click around: if the app sits near 256 MB idle, ask the operator for more memory *before* the OOM
+killer finds it in production.
+
+**What to check in the output, in order:**
+
+| The log says | Check that |
+|---|---|
+| `-----> <X> app detected` | `X` is the language you meant. If it says Node and you meant Java, name the buildpack |
+| `Installing … OpenJDK <N>` | `N` is your JDK. With no `system.properties` this is the newest LTS, currently 25 |
+| the build command it echoes | the goals and flags are yours, production profile included |
+| `Procfile declares types -> web` | it says `web`. `No process types found` means the app will never start |
+| the container answers `200` | …and the log shows production mode, not a dev-mode server looking for Vite |
+
+**5. Commit what made it work — and check that you did.** This rehearses your *working tree*; the box
+builds your *commit*, checked out with only its tracked files in it. So an uncommitted `Procfile`
+passes here and fails there, and an untracked scratch file that the build quietly depends on does the
+same. `git status` before you hand the URL over. Then registration is one command with nothing else
+to arrange:
+
+```bash
+shepherd2 create-app my-app https://github.com/me/my-app --buildpack heroku/gradle
+```
+
+**What this cannot tell you:** anything above the app — your domain, the certificate, the poll, the
+build's CPU cap. Those are the operator's side, and none of them depend on your repository.
 
 ## Day-to-day operations
 

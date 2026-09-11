@@ -168,9 +168,15 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
 
 - **Bundled buildpacks, in detection order:** `multi, ruby, nodejs, clojure, python, java, gradle,
   scala, php, go, static, null`, each pinned — e.g. `heroku/heroku-buildpack-java v81`,
-  `heroku/heroku-buildpack-nodejs v366`, `dokku/heroku-buildpack-multi v1.2.0`. **[src]**
+  `heroku/heroku-buildpack-nodejs v366`, `heroku/heroku-buildpack-gradle v49`,
+  `dokku/heroku-buildpack-multi v1.2.0`. **[src]**
   **Note `nodejs` is detected before `java`**, so a Java repo with a committed root `package.json`
   is built as a Node app unless the buildpack is pinned.
+- **A JVM app gets the newest LTS JDK unless `system.properties` pins `java.runtime.version`** — as of
+  2026-09-11 that is Azul Zulu OpenJDK **25**, not 21, and the buildpack prints a warning naming the
+  file. Shared by the java, gradle and scala buildpacks, which all install through `jvm-common`.
+  **[observed against `gliderlabs/herokuish:latest-24`]** The JDK lands in the cache volume: a rebuild
+  asking for the same version does not re-download it. **[inferred from the rehearsal's timings]**
 - **Four ways to name the buildpack, in this precedence** — from `getBuildpacks` and the `buildpacks`
   plugin's `post-extract` trigger, which materialises the winner as a `.buildpacks` file inside the
   *extracted source* before the build runs. **[src]** The function's own doc comment states the
@@ -194,13 +200,31 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
 - **`.buildpacks` with exactly one entry is treated as `BUILDPACK_URL`**, bypassing
   `heroku-buildpack-multi` entirely; two or more entries go through multi. `BUILDPACK_URL` always
   wins over both. **[src]**
+- **Naming a buildpack fetches it over the network, and so gives up the pin the image gave you.**
+  Whenever a `BUILDPACK_URL` or a `.buildpacks` entry is in play, `_select-buildpack` calls
+  `buildpack-install <url> <ref>` — a `git clone` into `/tmp/buildpacks/custom` — and the pinned copies
+  baked into the image are not consulted at all. **[src]** So `buildpacks:set <app> heroku/gradle`,
+  which Dokku expands to `https://github.com/heroku/heroku-buildpack-gradle.git`, builds against
+  whatever that repository's default branch says on the day, where plain *detection* would have used
+  the version pinned in the image. To name a buildpack **and** keep a pin, give the full URL with a
+  ref — `https://github.com/heroku/heroku-buildpack-gradle.git#v49`. The `heroku/x` shorthand cannot
+  carry one: `validBuildpackURL` matches `^[\w-]+/[\w-]+$`, so `heroku/gradle#v49` fails validation
+  outright. **[src]**
 - **`heroku-buildpack-multi` runs each buildpack's `bin/compile` with the same `BUILD_DIR CACHE_DIR
   ENV_DIR`**, sources each buildpack's `export` file afterwards if it has one, and **exits the whole
   build if any listed buildpack fails to detect**. **[src]**
 - **A buildpack entry can be pinned to a ref**: `<url>#<ref>`, where multi does a full `git clone`
-  and then `git checkout "$ref"` — so a commit SHA works, not just a branch. **[src]** The bundled
-  buildpacks are already pinned inside the herokuish image; a third-party URL is not, unless pinned
-  this way.
+  and then `git checkout "$ref"` — so a commit SHA works, not just a branch. **[src]** Single-entry
+  `.buildpacks` and `BUILDPACK_URL` split on `#` the same way. This is the only way any *named*
+  buildpack is pinned, bundled or third-party — see the bullet above.
+- **What reaches the image is the *build directory*, not the source copy.** `_move-build-to-app`
+  empties `/app` and moves everything out of `/tmp/build` into it, dotfiles included. **[src]** So the
+  app image holds the checkout as the build left it, plus whatever the buildpack wrote *into* that
+  directory: `.jdk` (the JVM itself — 211 MB for Zulu 21), `.profile.d/*.sh` (sourced at startup, and
+  what puts the JDK on `PATH`), `.heroku`, and `.release`. **`/cache` is a mounted volume and travels
+  nowhere.** And that `rm -rf` is why anything written under `$HOME` during the build — `$HOME` is
+  `/app` **[src]** — is destroyed rather than shipped.
+  **[src, observed against `gliderlabs/herokuish:latest-24`]**
 - **The build runs unprivileged, and `/cache` is writable.** herokuish chowns `$app_path`,
   `$build_path`, `$cache_path`, `$env_path` and `$buildpack_path` to the unprivileged user (default
   `herokuishuser`) and invokes `bin/compile` through `unprivileged`. The build container is created
@@ -352,6 +376,25 @@ names the cache.** That is the fact `D_builder` turns on.
 - **Note what `-Duser.home=${build_dir}` implies:** during the Maven build `~` is the fresh source
   checkout, not the cache volume — so anything a build writes under `$HOME` other than `.m2`
   (Vaadin's `~/.vaadin`, for instance) is **not** cached. **[src]**
+- **The Heroku Gradle buildpack puts `GRADLE_USER_HOME` inside the volume** — `${CACHE_DIR}/.gradle` —
+  and writes a `gradle.properties` there setting `org.gradle.caching=true` and
+  `org.gradle.projectcachedir=${CACHE_DIR}/.gradle-project`. The wrapper's downloaded Gradle
+  distribution lands there too, under `.gradle/wrapper/dists`. So the dependency cache, the build
+  cache and Gradle itself are all warm and per-app — a better story than Maven's, where only
+  `.m2/repository` is. **[src]** Two carve-outs: `.gradle/daemon` is deleted at the start of every
+  build, and **`.gradle/nodejs` at the end of every successful one** (heroku-buildpack-gradle#49), so a
+  Node toolchain downloaded under `GRADLE_USER_HOME` is deliberately never cached. **[src]**
+- **`GRADLE_USER_HOME` is one of three variables that buildpack refuses to take from the ENV_DIR**,
+  with `JAVA_OPTS` and `JAVA_TOOL_OPTIONS` — setting any of them as a config var has no effect on the
+  build. **[src]**
+- **What it runs is `./gradlew $GRADLE_TASK`, and the default is `stage`.** With `GRADLE_TASK` unset
+  it takes `stage` if `./gradlew tasks --all` lists one; otherwise it resolves the app's framework
+  from a dependency report (`spring-boot-webapp-runner`, `spring-boot`, `micronaut`, `quarkus`,
+  `ratpack`) and uses that framework's task; otherwise `stage` again, which then fails. `GRADLE_TASK`
+  is word-split, so flags travel in it. **[src]** `bin/release` supplies a default `web` process only
+  for those same four frameworks, so **anything else must commit a `Procfile`**, and a committed
+  `Procfile` short-circuits `bin/release` entirely. **[src]** A committed `gradlew` is mandatory —
+  the buildpack stopped shipping a fallback wrapper. **[src]**
 - **The Heroku Node.js buildpack caches into the same `CACHE_DIR`** — npm/pnpm/yarn caches and
   `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
   `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
@@ -930,6 +973,14 @@ dokku ps:restore                                   # start previously-running ap
 dokku ps:set [--global] <app> <key> <value>
 ```
 
+- **How a herokuish app is started — and why a `Procfile` line is not a shell command line.** The
+  container's command is `/start <type>`, a symlink to herokuish's `procfile-start`: it reads that
+  type's line out of `/app/Procfile` and runs `exec setuidgid <user> $(eval echo "$cmd")`. **[src]**
+  So `$PORT` *is* expanded — but the resulting words are then `exec`'d directly, with no shell to
+  interpret them. A leading environment assignment fails at startup with
+  `setuidgid: fatal: unable to run FOO=bar: file does not exist`, and pipes, `&&` and redirects have
+  nobody to run them. Prefix with `env` when a process needs a variable.
+  **[src, reproduced locally against `gliderlabs/herokuish:latest-24`]**
 - **`restart-policy` defaults to `on-failure:10`**; allowed values `always`, `no`, `unless-stopped`,
   `on-failure`, `on-failure:N`. To match shepherd-traefik's `restart: always`:
   `dokku ps:set --global restart-policy always`. **[docs]**
@@ -1338,6 +1389,12 @@ first throwaway VPS:
     `git:sync --build` again, and split the timing: is Maven resolving from `/cache/.m2/repository`
     (expected yes), and is the *frontend* half — `~/.vaadin` node download, `node_modules`, npm
     fetches — re-done from scratch (expected yes, and this is the question that decides items 14–16).
+    **Answered for the Gradle half off-box on 2026-09-11**, by running `gliderlabs/herokuish:latest-24`
+    under plain Docker against a Vaadin Boot + Karibu-DSL app on the pre-compiled bundle: cold **2m13s**,
+    warm **21s**, with the cache volume holding the dependency cache, the Gradle build cache, the
+    wrapper's Gradle distribution *and* the JDK. No frontend build ran at all, so the frontend half of
+    the question is still open and still needs an app that customises its frontend. The Maven half is
+    untouched by this.
 14. **(v2.) Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
     rebuilds?** It should: config vars reach the build via the ENV_DIR `[src]` and `/cache` is the
     per-app volume. Confirm npm honours it under whatever package manager Vaadin picks (npm vs pnpm —
@@ -1457,7 +1514,27 @@ the per-app buildpack cache volume, and build tracking):
 [`plugins/network/subcommands.go`](https://github.com/dokku/dokku/blob/master/plugins/network/subcommands.go)
 (read on 2026-09-10: `network:create` takes a name and nothing else) ·
 [`plugins/traefik-vhosts/internal-functions`](https://github.com/dokku/dokku/blob/master/plugins/traefik-vhosts/internal-functions)
-(read on 2026-09-10: no network attachment logic anywhere in it).
+(read on 2026-09-10: no network attachment logic anywhere in it) ·
+[`dokku`](https://github.com/dokku/dokku/blob/v0.38.27/dokku) (read 2026-09-11: `DOKKU_IMAGE` defaults to
+`gliderlabs/herokuish:latest-24`) ·
+[`plugins/buildpacks/functions.go`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/buildpacks/functions.go)
+(read 2026-09-11: `validBuildpackURL`, the `heroku/x` shorthand and what it rejects) ·
+[`plugins/scheduler-docker-local/bin/scheduler-deploy-process-container`](https://github.com/dokku/dokku/blob/v0.38.27/plugins/scheduler-docker-local/bin/scheduler-deploy-process-container)
+(read 2026-09-11: `START_CMD="/start $PROC_TYPE"` for herokuish images).
+
+The builder itself, read 2026-09-11 at **herokuish v0.11.17** — the version the deb installs — and
+exercised as `gliderlabs/herokuish:latest-24` under plain Docker, which is where the `[src]` claims
+about buildpack selection, the `/build` and `/start` shims, `HOME`, and Procfile exec come from:
+[`include/herokuish.bash`](https://github.com/gliderlabs/herokuish/blob/v0.11.17/include/herokuish.bash) (the argv0 shims, `unprivileged`) ·
+[`include/buildpack.bash`](https://github.com/gliderlabs/herokuish/blob/v0.11.17/include/buildpack.bash) (`_select-buildpack`, `buildpack-setup`, `_move-build-to-app`) ·
+[`include/procfile.bash`](https://github.com/gliderlabs/herokuish/blob/v0.11.17/include/procfile.bash) (`procfile-exec` — `exec setuidgid … $(eval echo …)`, hence no shell) ·
+[`Dockerfile`](https://github.com/gliderlabs/herokuish/blob/v0.11.17/Dockerfile) (`FROM heroku/heroku:24-build`; `/build`, `/start`, `/exec`) ·
+[herokuish README](https://github.com/gliderlabs/herokuish/blob/master/README.md) (the path variables and their defaults) ·
+[`heroku-buildpack-gradle` at **v49**](https://github.com/heroku/heroku-buildpack-gradle/tree/v49), the
+version herokuish pins:
+[`bin/compile`](https://github.com/heroku/heroku-buildpack-gradle/blob/v49/bin/compile) (`GRADLE_USER_HOME` in the cache, the `GRADLE_TASK` default chain, the `.gradle/nodejs` purge) ·
+[`bin/release`](https://github.com/heroku/heroku-buildpack-gradle/blob/v49/bin/release) (default process types — none outside the four frameworks) ·
+[`lib/frameworks.sh`](https://github.com/heroku/heroku-buildpack-gradle/blob/v49/lib/frameworks.sh) (how Spring Boot / Micronaut / Quarkus / Ratpack are detected).
 
 Networking, read 2026-09-10 (*Network management* above re-read the same day for the three attachment
 phases):

@@ -75,7 +75,7 @@ registering** — the four marked TBD are unverified guesses, not findings.
 | Project id | Repo (`github.com/mvysny/…`) | Buildpack |
 |---|---|---|
 | `beverage-buddy-ktorm` | `beverage-buddy-ktorm` | TBD — Kotlin, likely `heroku/gradle` |
-| `karibu-helloworld-application` | `karibu-helloworld-application` | TBD — likely `heroku/gradle` (a `-maven` sibling exists) |
+| `karibu-helloworld-application` | `karibu-helloworld-application` | `heroku/gradle` — **verified**, and rehearsed end to end (below) |
 | `karibu-helloworld-application-maven` | `karibu-helloworld-application-maven` | `heroku/java` |
 | `vaadin-boot-example-gradle` | `vaadin-boot-example-gradle` | `heroku/gradle` |
 | `vaadin-boot-example-maven` | `vaadin-boot-example-maven` | `heroku/java` |
@@ -96,13 +96,37 @@ entirely. So before any of these can be registered, each repo needs commits of i
 
 - a **`Procfile`** at the root naming the `web` process — none of them has one, since Jenkins never
   needed it;
-- for the Maven projects, a **`system.properties`** pinning `java.runtime.version`;
+- a **`system.properties`** pinning `java.runtime.version`, Maven or Gradle alike — without one the
+  buildpack installs the newest LTS JDK, which is 25 today;
 - optionally a `.env` for build-time settings the project carries itself.
 
 That is per-repo work in nine *other* repositories, and it is the real gate on the cutover — not the
 box. `SOLUTION.md` warns that the `Procfile` / buildpack / `system.properties` trio "usually needs a
 couple of tries", which is why `create-app`'s steps are ordered to be resumable. Budget for it, and do
 one app end to end before touching the other eight.
+
+**One of the nine has now been rehearsed off-box (2026-09-11).** `karibu-helloworld-application`
+built and ran green under `gliderlabs/herokuish:latest-24` in plain Docker — the procedure is
+`README.md` → *Rehearse the build locally*, and it needs no box, so the other eight can be worked
+through the same way before the box exists. What that one repo needed, over and above the list above:
+
+```
+.env                  GRADLE_TASK=clean installDist -Pvaadin.productionMode
+system.properties     java.runtime.version=21
+settings.gradle.kts   rootProject.name = "karibu-helloworld-application"
+                      # without it Gradle names the root project after /tmp/build, and the app
+                      # installs to build/install/build/bin/build
+Procfile              web: env SERVER_PORT=$PORT JAVA_OPTS=-Xmx200m \
+                        build/install/karibu-helloworld-application/bin/karibu-helloworld-application
+```
+
+**All four live in the repo, which is the point**: the registration is then
+`create-app <id> <url> --buildpack heroku/gradle` and nothing else — no config vars to remember per
+app, and each repo stays portable to the next box. Three of the four generalise to every Gradle app
+on the list, and the `env` prefix to all nine: Vaadin Boot reads `SERVER_PORT`, not `PORT`, and a
+`Procfile` line is `exec`'d without a shell. It answered as expected: 200, production mode, Java 21,
+153 MB resident against the 256 MB limit — *comfortable but not roomy*, and worth re-measuring per app
+rather than assuming.
 
 ## The resource profile
 

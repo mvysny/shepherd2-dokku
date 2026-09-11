@@ -14,6 +14,13 @@ herokuish. That gives a per-app `cache-$APP` volume mounted at `/cache`, and the
 puts `maven.repo.local` inside it — so **Maven is warm and per-project, enforced.** Both hard
 requirements are met for the Java half, which is the half every app on this box exercises.
 
+**Gradle apps are a different, better story, and it is already settled** (2026-09-11). The Heroku
+Gradle buildpack puts `GRADLE_USER_HOME` *inside* the cache volume, so dependencies, the Gradle build
+cache, the wrapper's distribution and the JDK all come back warm — see `RESEARCH.md` → *Build
+caching*. Candidates 2 and 3 below are Maven's problem specifically. What Gradle does not fix is the
+frontend: that buildpack deletes `${CACHE_DIR}/.gradle/nodejs` after every successful build, on
+purpose, so a Node toolchain fetched under `GRADLE_USER_HOME` is never kept either.
+
 **What is left, for the app that eventually needs it.** A Vaadin production build that *does* run its
 frontend is not only Maven: `vaadin-maven-plugin` downloads its own Node into `~/.vaadin`, runs
 `npm install` into `node_modules`, and runs Vite. None of that is cached, because during the Maven

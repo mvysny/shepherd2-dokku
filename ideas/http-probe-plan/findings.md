@@ -445,7 +445,13 @@ network, and does not check the one service the key it asks for depends on. A on
 warning would have saved the next person the confusion. (On a real VPS sshd is always there, which is
 why it took a local VM to notice.)
 
-### FINDING — punch-list 2: `D_isolation` works exactly as claimed, both halves
+### ~~FINDING — punch-list 2: `D_isolation` works exactly as claimed, both halves~~ — **GRADUATED 2026-09-11**
+
+Landed: the before/after table and its self-reach control in `RESEARCH.md` → *Networking and app
+isolation*, with punch-list 2 struck; `D_isolation`'s Status line now reads confirmed-on-a-box rather
+than `[unverified]`. The build-container half (an in-flight build sits on the app's own network, from
+the punch-list 7 finding below) went with it, into the same `RESEARCH.md` block and `D_isolation`'s
+"membership is managed state" bullet. Evidence kept below.
 
 Two real apps, `hello` (Maven) and `gradle-a` (Gradle), each serving on its unpublished port 5000.
 The before/after the item insists on, run by unsetting `initial-network` and restarting, then setting
@@ -464,7 +470,14 @@ the refusing.
 and host-nginx routing is untouched in every state. **Item 2 closed, and `D_isolation`'s central claim
 is confirmed on a box.**
 
-### FINDING — punch-list 10: a foreign network works, **and the rung `D_isolation` rejected is reachable**
+### ~~FINDING — punch-list 10: a foreign network works, **and the rung `D_isolation` rejected is reachable**~~ — **GRADUATED 2026-09-11**
+
+Landed: both halves in `RESEARCH.md` → *Networking and app isolation* (a foreign network is accepted,
+routes, and stays visible-but-unmanaged; two apps on one `icc=false` network isolate as well as two
+per-app networks), with punch-list 10 struck. `D_isolation`'s rejected `icc=false` rung is rewritten
+around the measurement: it is a live option rejected on judgement, and the "outside Dokku's model"
+count is narrowed to what is actually true — nothing in a reinstall recreates that network. The
+decision itself does not move. Evidence kept below.
 
 `initial-network` accepts a network Dokku did not create:
 

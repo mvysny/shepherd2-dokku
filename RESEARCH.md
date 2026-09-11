@@ -893,7 +893,36 @@ default bridge — they cannot deliver isolation, only reachability. Isolation i
 or a network specified by the `initial-network` network property" — so out of the box **every Dokku app
 shares Docker's default bridge and can reach every other app**. Getting shepherd-traefik's
 one-network-per-app property means creating a network per app and setting `initial-network` on it.
-**[docs + third-party corroboration; the per-app recipe is unverified]**
+**[docs + third-party corroboration]**
+
+**The per-app recipe was run end to end, in both directions.** Two deployed apps, each serving on its
+unpublished port 5000, with `initial-network` unset and then set: **[verified on a box 2026-09-11]**
+
+| State | hello → gradle-a :5000 by IP | gradle-a → hello :5000 by IP | nginx `hello` | nginx `gradle-a` |
+|---|---|---|---|---|
+| no `initial-network`, both on the default bridge (172.17.0.2 / .3) | **200** | **200** | 200 | 200 |
+| per-app networks (`app-hello` 172.16.1.3 / `app-gradle-a` 172.16.2.3) | **timeout** | **000** | 200 | 200 |
+
+The control that makes the second row mean anything: **each app still reached *itself* on :5000 → 200**,
+so the port is open and listening and it is the network doing the refusing. `network:set <app>
+initial-network` plus `ps:restart` is the whole procedure, nothing re-attaches anything afterwards, and
+host-nginx routing is untouched in every state.
+
+**`initial-network` covers the *build* container too, not just the runtime one.** A build in flight
+sits on the app's own network (`app-hello`, 172.16.1.2) — so a hostile build cannot reach another
+project's containers either. **[verified on a box 2026-09-11]**
+
+**`initial-network` accepts a network Dokku did not create, and the app still routes.** Pointed at a
+hand-made `docker network create -o com.docker.network.bridge.enable_icc=false foreign-icc-off`, the
+app deployed onto it (172.16.3.2) and served 200 through nginx. Dokku keeps the distinction visible
+rather than hiding it: `network:list` shows the foreign network, `network:list --dokku-managed` shows
+only the ones it made. **[verified on a box 2026-09-11]**
+
+**And the shape that follows from that: one shared `icc=false` network isolates exactly as well as N
+per-app networks.** With both apps on that single foreign network, app→app was `timeout` / `000` and
+both apps still served 200 through nginx — the same row as the per-app table above, with one subnet
+allocated instead of one per app. Worth knowing because it is the rung `D_isolation` weighs and
+rejects; it is a real option, not an unreachable one. **[verified on a box 2026-09-11]**
 
 The one mitigation on the shared default bridge is weak and worth naming so nobody mistakes it for a
 boundary: *"Containers on the default bridge network can only access each other by IP addresses, unless
@@ -1477,10 +1506,12 @@ first throwaway VPS:
    passed through `docker-options` actually *exports* a cache?~~ **Moot** — `D_builder` prohibits the
    Dockerfile builder, so no `--cache-to` is ever passed. Number retained so existing references
    don't shift.
-2. Does `network:create` + `network:set <app> initial-network` actually isolate apps *and* leave
+2. ~~Does `network:create` + `network:set <app> initial-network` actually isolate apps *and* leave
    host-nginx routing intact? Concretely, from inside app A's container: can it reach app B's
    unpublished port by container IP before the change, and not after; and does `curl` through nginx
-   still work for both apps after it.
+   still work for both apps after it.~~ **Answered 2026-09-11: yes to both, with the before/after and a
+   self-reach control** — the table is in *Networking and app isolation*. The build container turned out
+   to be covered as well.
 3. ~~Does anything in the install write `/etc/docker/daemon.json` before we do — Docker's own package
    being the candidate, since `bootstrap.sh` never runs (`D_install_apt`) — and does what it writes
    survive our enlarged `default-address-pools`?~~ **Answered 2026-09-11: yes, but it is not Docker's
@@ -1521,10 +1552,12 @@ first throwaway VPS:
    *because* both containers sit on the per-app network, not because of the link. The `--link` is
    accepted silently and is **redundant rather than inert**. Isolation covers services too — from
    another network the service name does not even resolve. See *Networking and app isolation*.
-10. **Can `initial-network` point at a network Dokku did not create** — one made with
+10. ~~**Can `initial-network` point at a network Dokku did not create** — one made with
     `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
-    deploy and route? Only matters if `D_isolation` is ever revisited — it decides whether that entry's
-    rejected shared-network-plus-firewall rung is reachable through Dokku at all. Lowest priority here.
+    deploy and route?~~ **Answered 2026-09-11: yes, and the rung is reachable.** The app deploys onto a
+    foreign network and routes, Dokku keeps it visible but unmanaged, and *both* apps on one
+    `icc=false` network isolate exactly as per-app networks do. Both in *Networking and app isolation*;
+    what it changes in `D_isolation` is the rejected alternative's reasoning, not the decision.
 11. **(v2, but cheap.) What can an app reach on the host?** From inside a container, on both a shared
     and a per-app network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header
     for another app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish

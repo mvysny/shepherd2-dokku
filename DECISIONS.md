@@ -110,11 +110,11 @@ of why the verdict landed on Dokku:
   does not carry.
   - **Amended 2026-09-10, and this one is a real dent:** "20 per app" is 20 *records*, and a
     `--build-if-changes` tick that finds nothing writes one too — so under the five-minute poll the
-    window holds ~95 minutes of no-op ticks and prunes real build logs out from under itself
+    default window holds ~95 minutes of no-op ticks and prunes real build logs out from under itself
     (`RESEARCH.md`, *Build tracking*). The upstream counterpart is therefore only as good as our poll
-    is quiet, which is `Q_poll_churn` in `ideas/poll-build-record-churn.md`. It does not change the
-    choice — a guard in `poll` is a dozen lines and Jenkins is not coming back — but the sentence above
-    over-promised, so read it with this attached.
+    is quiet. It does not change the choice — Jenkins is not coming back — but the sentence above
+    over-promised, so read it with `D_poll_churn` attached, which is where the window, the way to read
+    past the noise, and the upstream report live.
 - **Build cache isolation is *not* a regression, which is a large part of why Dokku won.** The
   Dockerfile builder allowlists `--cache-to`/`--cache-from` and appends them to `docker image build`, so
   today's per-project `type=local` cache directory migrates as one `docker-options:add` per app —
@@ -1324,3 +1324,101 @@ enumerated-slug rule in `CLAUDE.md` now applies to exactly two namespaces: **`D_
   `ideas/private-repo-credentials.md`. The *answered* questions (`Q_descriptor`, `Q_proxy`, `Q_cert`,
   `Q_cache`, `Q_isolation`, `Q_language`, `Q_build_history`) are cited nowhere any more: an entry that
   used to point at one now points at the `D_` entry that answered it, or at `RESEARCH.md`.
+
+---
+
+## D_poll_churn — Raise Dokku's build retention and read past the churn with `last-build`; the poll keeps calling `git:sync` (2026-09-11)
+
+**Status:** Accepted 2026-09-11 and implemented the same day — `builds:set --global retention 300` in
+`shepherd2-install` → *Global Dokku properties*, and the `shepherd2 last-build` verb. The upstream bug
+report is part of this decision and not yet filed. The `ls-remote` guard in `poll` is **deferred, not
+rejected** — see *Consequences*.
+
+**Context.** `dokku git:sync --build-if-changes` starts a build record *before* it fetches and before it
+compares refs, and its no-change path returns without finalizing that record (`RESEARCH.md` → *Build
+tracking*, `[src]`). The `*/5` poll therefore writes 288 records and 288 log files per app per day when
+nothing at all is happening. Measured on the probe box on 2026-09-11, every step of that held:
+
+- Three no-op ticks left three records at `status: running` / `display_status: abandoned`, one 265-byte
+  log apiece.
+- The next real deploy reaped all three as `status: failed`, `exit_code: -1` — on disk,
+  indistinguishable from a build that really failed.
+- Sixteen further ticks filled Dokku's default window of 20 and evicted the *successful* real deploy.
+  At 288 ticks a day that window is **~100 minutes**, so "why did last night's deploy fail?" was
+  unanswerable by breakfast.
+
+Two things the measurement changed. First, the churn was never cosmetic: `shepherd2 wait-idle` filtered
+running builds on `status`, which an abandoned tick holds forever, so on any box that had been up five
+minutes it blocked until timeout and exited 1 — the verb that exists to make a reboot safe, broken by
+poll noise. (Fixed by keying off `display_status`, Dokku's own liveness check on the recorded pid.)
+Second, **`builds:set retention` exists** — globally and per app, reverting cleanly — which nothing in
+the design had noticed.
+
+**Decision.** Three parts, and the first two are the whole of v1:
+
+1. **The install raises retention to 300 records per app.** One line next to `builder:set` and
+   `ps:set`. 300 ticks is about a day, which is the horizon the one question worth answering needs.
+2. **`shepherd2 last-build [ID] [--log]` is how a build is read**, because neither of Dokku's own
+   answers survives the churn: `builds:report` names the newest record, which on an idle box is always
+   an abandoned tick, and `--status failed` selects reaped ticks alongside real failures. The verb
+   reports the newest record that really built — `status` in `succeeded|failed|canceled` **and**
+   `exit_code != -1` — or the build running right now if there is one.
+3. **The ordering gets reported upstream.** `CLAUDE.md`'s *Dokku stays upstream and unforked* makes a
+   bug report the sanctioned move, and this looks like a plain bug rather than a design position: a
+   record is opened for a run that may never build, and the no-change path is the only exit that skips
+   finalization. A fix upstream retires all three parts of this decision.
+
+**Alternatives rejected.**
+
+- *Pre-check the remote ref in `poll` (`git ls-remote` against `config:get GIT_REV`) and skip `git:sync`
+  entirely when it has not moved.* The original favourite, and **deferred rather than rejected**: it is
+  cheaper than the status quo (one `ls-remote` replaces a full fetch for 287 of 288 ticks) and it stops
+  the churn at the source instead of tolerating it. Not in v1 because it puts a *second* copy of
+  Dokku's change detection in our code — the shape `CLAUDE.md` warns about — and retention 300 buys
+  the year or so that waiting for an upstream fix might take. If it ever lands it is a tidy-up, not a
+  repair.
+- *Accept the noise and stop treating the records as history.* Zero lines, and honest. Rejected because
+  the cost it accepts is the only build-log story the box has, and the two parts taken instead are a
+  line of Bash and a read-only verb.
+- *Tee `git:sync`'s output to a log of our own, per app.* Exactly the glue `D_dokku_is_truth` was
+  pleased to delete: rotation, disk growth, and a second place to look. Only worth it if Dokku's
+  records were unreadable, and they are merely noisy.
+- *Retention per app, set by `create-app`.* Rejected as strictly worse: the churn rate is the same for
+  every app because the cron is box-wide, so a per-app value is a global value with N places to drift.
+  The per-app override stays available for an app that wants a different window.
+- *A much larger retention — 2000, say, so nothing is ever evicted.* The point of a window is that it
+  closes; a number chosen to never close is a leak with extra steps. 300 is picked to cover the
+  overnight question and nothing more.
+- *A general build-history surface in the CLI — `shepherd2 builds`, `shepherd2 logs`.* This is
+  `shepherd-cli` reincarnated and `CLAUDE.md` forbids it. `last-build` reports exactly one build and
+  points at `dokku builds:list` / `builds:output` for everything else, which is the line between a
+  verb Dokku lacks and a wrapper around verbs it has.
+- *Patch Dokku, or carry a plugin of our own.* `CLAUDE.md`: Dokku stays upstream and unforked. The
+  sanctioned moves are a wrapper, a cron line, a documented manual step — or a bug report, which is
+  part 3.
+
+**Consequences.**
+
+- **`dokku builds:report ID` still lies, and nothing here fixes that.** It reports the newest record,
+  so on an idle box it calls a healthy app's build status `abandoned`. Read `shepherd2 last-build`
+  instead; the cheat sheet says so.
+- **`--status failed` is still polluted, and `exit_code` is the only discriminator.** A reaped tick
+  always carries `-1` and a real failure the builder's own positive code; `kind` does not help, because
+  `git:sync` maps to `build` either way. The one case this mislabels as churn is a real build the box
+  killed mid-flight — a reboot during a build, reaped the same way — for which `dokku logs:failed ID`
+  is what is left.
+- **`shepherd2 last-build` has an expiry date, stated in the script header.** Delete it when the
+  upstream ordering is fixed or when the `ls-remote` guard lands. Nothing else in the CLI depends on
+  it, which is the property that keeps deleting it cheap.
+- **`builds:list ID` is now ~300 rows of noise instead of ~20.** Deliberate: the log surviving matters
+  more than the listing being short, and the listing was already mostly noise at 20.
+- **The window is time-proportional to the poll, not absolute.** 300 records is ~25 hours *at the `*/5`
+  cron in `SOLUTION.md`*. Changing the poll cadence silently changes this horizon — halve the interval
+  and the day becomes twelve hours.
+- **`wait-idle` must key off `display_status`, not `status`**, and that is not a detail of this entry
+  but its most expensive consequence: the same churn that eats build logs makes a `status`-based
+  liveness check permanently true. Anything else that ever asks Dokku "is a build running?" inherits
+  the same trap.
+- **`ideas/build-failure-notifications.md` (v2) is partly unblocked.** It deferred its alert design
+  because a failed build's log vanished before anyone could be pointed at it; with a day of retention
+  and `last-build`, an alert can now name a build that will still be readable when the mail is opened.

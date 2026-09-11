@@ -16,9 +16,10 @@ that file rather than inventing a shape; if the shape is wrong, change `SOLUTION
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
 box, and the dev VM is now ready to be one (`ideas/http-probe-plan.md`). The feature survey that decided
 *what* the rebuilt thing does has graduated and is gone (`D_no_feature_list`); what is left in `ideas/`
-is five open questions carrying `Q_` slugs, two pieces of deferred work — all v2 except `Q_poll_churn`,
-which is a v1 gap in the poll's build-log story — and two plans for running the punch list, one per TLS
-mode, since `D_cert` means no single box can answer all of it.
+is five open questions carrying `Q_` slugs and two pieces of deferred work — **all of it v2** now that
+`Q_poll_churn`, the one v1 gap among them, has graduated into `D_poll_churn` — plus two plans for
+running the punch list, one per TLS mode, since `D_cert` means no single box can answer all of it, and
+the two unfiled upstream bug reports `D_poll_churn` owes.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:
@@ -127,7 +128,7 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 |---|---|
 | `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
 | `shepherd2-uninstall` | Bash. The inverse, driven by `SHEPHERD_TLS_MODE`. Destroys every project; `--keep-docker` / `--keep-pools` opt out of the two steps that reach past Shepherd2's own layer |
-| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache`. Its process-running seams (`Dokku`, `Docker`, `BuildLock`) are constructor arguments — that is the test surface |
+| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `last-build`, `wait-idle`, `clearcache`. Its process-running seams (`Dokku`, `Docker`, `BuildLock`) are constructor arguments — that is the test surface |
 | `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`) |
 | `.github/workflows/test.yml` | the suite plus shellcheck, in an `ubuntu:24.04` container so it runs on the box's Ruby |
 
@@ -171,6 +172,10 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
   `rebuild` exist because Dokku has no single command for them; `dokku logs`, `ps:restart`,
   `config:set`, `domains:add` are used as they are and documented in the `README.md` cheat sheet. A
   `shepherd2 logs` is `shepherd-cli` reincarnated — don't.
+  - **`last-build` is the one verb on that line, and it is on the right side of it** — `builds:report`
+    names the newest record, which under the poll is always an abandoned tick, so there *is* no Dokku
+    command for "the last real build" (`D_poll_churn`). It is also the only verb with an expiry date:
+    delete it when upstream fixes the ordering. Don't let it grow into a build-history surface.
 - **Prefer a Dokku command to a `docker` command.** `dokku ps:restart` over `docker restart`; the
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.

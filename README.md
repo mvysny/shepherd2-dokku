@@ -495,12 +495,14 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | **register a project** | `shepherd2 create-app ID URL [REF] --owner you@example.com --buildpack heroku/java` |
 | **delete one**, network and all | `shepherd2 destroy-app ID` |
 | force a rebuild — retry a failed build, or rebuild an unchanged ref | `shepherd2 rebuild ID` |
+| **did the last build work?** · and its log | `shepherd2 last-build ID` · `shepherd2 last-build ID --log` |
+| **which projects are red?** | `shepherd2 last-build` |
 | make sure a reboot won't land mid-build | `shepherd2 wait-idle` |
 | prune images now rather than on Sunday | `shepherd2 clearcache` |
 | list projects · read everything about one | `dokku apps:list` · `dokku apps:report ID` |
 | **see the runtime log** | `dokku logs ID -t -p web` |
 | see why the last deploy failed | `dokku logs:failed ID` |
-| **list past builds** (newest first, 20 kept — mostly poll ticks, see below) | `dokku builds:list ID [--format json]` |
+| **list past builds** (newest first, 300 kept — mostly poll ticks, see below) | `dokku builds:list ID [--format json]` |
 | read one build's log | `dokku builds:output ID <build-id>` |
 | watch the build that is running | `dokku builds:output ID current` |
 | stop a build that is running | `dokku builds:cancel ID` |
@@ -517,24 +519,40 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` |
 | see what the box has been doing | `dokku events -t` |
 
-Seven things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Eight things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
 
-- **`dokku builds:output ID` with no build id does not mean "the last build".** It resolves one from the
-  app's deploy lock, so on an idle app it prints `App not currently deploying` rather than the failure
-  you came for. The last *really* failed build's log is two steps — and the `exit_code` filter is not
-  optional, for the reason in the next bullet:
+- **Most build records are poll ticks, so don't ask Dokku which build was the last one — ask
+  `shepherd2 last-build`.** Every five-minute poll writes a record even when there is nothing to build,
+  and once a later deploy reaps them those land on disk as `failed` with `exit_code: -1`. Two
+  consequences: `dokku builds:report ID` names the *newest* record, so it calls a perfectly healthy
+  app's build status `abandoned`, and `dokku builds:list ID --status failed` selects reaped ticks
+  alongside real failures. `shepherd2 last-build ID` skips both traps — newest record that really
+  built, or the one building right now — and `--log` prints its log:
+
+  ```
+  $ shepherd2 last-build hello
+  hello: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30Z · duration 1m43s
+    log: /var/lib/dokku/data/builds/hello/mtwslbpulbzlek.log
+    read it: shepherd2 last-build hello --log
+  ```
+
+  With no project id it does every registered project, one line each, which is the *which of these is
+  red* view. In `dokku` alone the same filter is `exit_code != -1`, and it needs `jq`:
 
   ```bash
   dokku builds:output ID "$(dokku builds:list ID --status failed --format json \
       | jq -r '[.[] | select(.exit_code != -1)][0].id')"
   ```
 
-- **Most build records are poll ticks, and a build log survives about 95 minutes.** Every five-minute
-  poll writes a record even when there is nothing to build, and those records land on disk as `failed`
-  with `exit_code: -1` — so `builds:list` is mostly noise, and once 19 further ticks have gone by the
-  real build's record *and* its log are pruned away. Read a failed build's log the same day it failed;
-  after that `dokku logs:failed ID` (the container's own output) is what is left. Raising
-  `dokku builds:set ID retention 200` buys hours rather than fixing it.
+- **A build log survives about a day, and then it is gone.** Retention is by count — the install sets
+  300 records per app, which at 288 poll ticks a day is roughly 25 hours — so last night's failure is
+  readable in the morning and last week's is not. After that `dokku logs:failed ID` (the container's
+  own output, not the build's) is what is left. `dokku builds:set ID retention 600` buys a particular
+  project more room.
+
+- **`dokku builds:output ID` with no build id does not mean "the last build".** It resolves one from the
+  app's deploy lock, so on an idle app it prints `App not currently deploying` rather than the failure
+  you came for. `dokku builds:output ID current` is the right way to watch a build that is *running*.
 - **A build record carries no git SHA.** Which commit is live is
   `dokku apps:report ID --app-deploy-source-metadata`, which reads `<url>#<sha>` after a *successful*
   deploy — and doubles as a drift check, since a URL that isn't the app's `SHEPHERD_GIT_URL` is worth

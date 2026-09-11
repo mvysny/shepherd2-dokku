@@ -42,11 +42,10 @@ And a set of **global Dokku properties**, which is the whole of the box's config
 | `builder:set --global selected` | `herokuish` | short-circuits detection, so a committed `Dockerfile` is never read (`D_builder`) |
 | `ps:set --global restart-policy` | `always` | survive a crash and a reboot; Dokku's default is `on-failure:10` |
 | `config:set --global SHEPHERD_TLS_MODE` | `https` or `http` | the install mode, recorded where `uninstall` can find it (`D_cert`) |
+| `builds:set --global retention` | `300` | ~a day of poll ticks, so a real build's log outlives the churn that buries it (`D_poll_churn`) |
 
 **What is deliberately absent:** Jenkins, Traefik, `docker-compose.yaml`, any JVM, any web UI, any
-directory of ours holding project state, and any Dokku fork or plugin we maintain. `builds:set --global
-retention` is not set either — Dokku's default of 20 per app is right once the poll only builds on
-change.
+directory of ours holding project state, and any Dokku fork or plugin we maintain.
 
 ## Two install modes, chosen once
 
@@ -126,6 +125,7 @@ already has** (`D_dokku_is_truth`).
 | `destroy-app ID` | its exact inverse |
 | `poll` | the `*/5` cron: `git:sync --build-if-changes` over every registered app, serially, under a non-blocking lock |
 | `rebuild ID` | the forced `git:sync --build` — the retry after a failed build, and the only way to rebuild an unchanged ref |
+| `last-build [ID] [--log]` | the last *real* build's status, and its log — the one read the poll's churn breaks (`D_poll_churn`), and the one verb here with an expiry date |
 | `wait-idle` | blocks until no build is running, so a reboot never lands mid-build |
 | `clearcache` | the weekly prune |
 
@@ -189,7 +189,7 @@ to that ref, and every later sync can then omit it.
 3. **Dokku fetches. If the ref did not move, nothing is built** — so 288 ticks produce a build only on a
    real change, and a failed build is not retried until upstream commits again. `shepherd2 rebuild` is
    the override. *Nothing built is not nothing done:* the tick still writes a build record and a log
-   file, which is `Q_poll_churn` in step 6.
+   file, which is what step 6 has to be read past.
 4. **If it moved:** herokuish builds in a container with the app's own `cache-$APP` volume mounted at
    `/cache`, where the Heroku Java buildpack keeps `maven.repo.local`. Another project's artifacts are
    unreachable by construction — Dokku names the volume and the app has no Dockerfile in which to name
@@ -199,19 +199,19 @@ to that ref, and every later sync can then omit it.
    proxy port wired from the buildpack's `$PORT` with nothing in `ports:set`
    `[unverified — punch-list 8]`, nginx's vhost regenerated, the old container stopped.
 6. **Dokku records it itself** — a build record and a log per deploy, `builds:list` / `builds:output`,
-   20 per app, captured whether the deploy came from a push or from `git:sync`. The poll tees nothing
+   300 per app, captured whether the deploy came from a push or from `git:sync`. The poll tees nothing
    and writes no log of its own. The record carries no git SHA, but
    `apps:report --app-deploy-source-metadata` holds `<url>#<sha>` after a successful build — which is
    also the free drift check: a last deploy that did not come from the app's `SHEPHERD_GIT_URL` is
    worth noticing. (`config:get <app> GIT_REV` is the other half: the last commit Dokku *started*
    building, so it survives a failure the metadata never records.)
 
-   **The "20 per app" comes with a caveat that is ours to fix.** A no-change tick writes a record too,
-   so at 288 ticks a day the retention window is about 95 minutes of poll noise, real build logs are
-   pruned out from under it, and reaped ticks land on disk as `failed` (`RESEARCH.md` → *Build
-   tracking*). Whether `poll` pre-checks the remote ref itself so that a no-op tick never enters
-   `git:sync` is `Q_poll_churn` in `ideas/poll-build-record-churn.md` — undecided, and the only open
-   question inside this flow. `wait-idle` is not affected either way.
+   **The records are mostly poll noise, and two things make them readable anyway** (`D_poll_churn`). A
+   no-change tick writes a record too, and reaped ticks land on disk as `failed` with `exit_code: -1`
+   (`RESEARCH.md` → *Build tracking*) — so the install raises the window to 300 records, about a day of
+   ticks, and `shepherd2 last-build` is the read that skips past them. `dokku builds:report` is *not*:
+   it names the newest record, which on an idle app is always an abandoned tick. The same churn reaches
+   the reboot flow below, where it decides how `wait-idle` asks whether a build is running.
 
 ## Flow — certificate renewal (https mode only)
 
@@ -245,6 +245,11 @@ back after a reboot, skipping any that was manually stopped.
 Deliberate: `shepherd2 wait-idle` first. It blocks on the same poll lock and on `builds:list` with no
 app, which lists every running build box-wide, and exits when both are clear. That is the whole of the
 graceful-shutdown wait shepherd-java-client used to provide.
+
+The one subtlety, and it is load-bearing: *running* here means `display_status`, Dokku's liveness check
+on the recorded pid — never the stored `status`, which a no-op poll tick holds at `running` forever
+(`D_poll_churn`). A `status`-based check is permanently true on a healthy box, so anything else that
+ever asks "is a build running?" inherits the same trap.
 
 ## Flow — destroying a project
 

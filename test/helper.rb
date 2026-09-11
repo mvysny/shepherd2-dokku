@@ -16,9 +16,12 @@ module Minitest
     # @param dokku [DokkuDouble] records the commands the verb emits.
     # @param docker [DockerDouble] counts prunes.
     # @param lock [LockDouble] free unless the test says otherwise.
+    # @param out [IO] pass a StringIO of your own to assert on what the verb printed — which is the
+    #   whole output of a reporting verb like +last-build+, where there are no commands to record.
+    # @param err [IO] likewise for warnings.
     # @return [Shepherd2]
-    def shepherd(dokku, docker: DockerDouble.new, lock: LockDouble.new)
-      Shepherd2.new(dokku: dokku, docker: docker, lock: lock, out: StringIO.new, err: StringIO.new)
+    def shepherd(dokku, docker: DockerDouble.new, lock: LockDouble.new, out: StringIO.new, err: StringIO.new)
+      Shepherd2.new(dokku: dokku, docker: docker, lock: lock, out: out, err: err)
     end
   end
 end

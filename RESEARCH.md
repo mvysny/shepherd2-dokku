@@ -1132,6 +1132,20 @@ dokku builds:set [--global|<app>] retention <N>  # `retention` is the only prope
   cascading to a `--global` one. Pruning removes the record *and* its log, runs at the end of every
   deploy, and never touches a live build. Deleting the app deletes its build data; renaming moves it.
   **[src]**
+- **Retention is settable, and eviction is not deletion.** `builds:set [--global|<app>] retention <N>`
+  takes effect at once — `builds:report` echoes it back as `Builds computed retention` — a per-app
+  value wins over the global one, and `builds:set --global retention` with no value reverts to 20. An
+  *evicted* record is still reachable by `builds:list <app> --status succeeded` and by
+  `builds:output <app> <id>`: the cap is on the default listing, not on what is stored. **Until
+  `builds:prune` runs**, which deletes the `.log` files for good. **[verified on a box, 2026-09-11]**
+- **`builds:output` never validates the build id, and its journald fallback fails silently.** Given an
+  id, `CommandOutput` stats the log file and on `IsNotExist` runs
+  `journalctl SYSLOG_IDENTIFIER=dokku-<id>` — so a pruned build prints whatever journald still holds,
+  and once journald has rotated that away the command **exits 0 having printed nothing**. There is no
+  "no such build" error anywhere on the path: the record itself is read only *after* the log-file stat,
+  and a missing record is tolerated. **[src]** *(The probe reported seeing the current build's output
+  for a pruned id, which this code path does not explain — that observation is `[unverified]` and was
+  probably journald still answering for the id.)*
 - **No git SHA in the record.** "Which commit was that build?" is still answerable only from the events
   log. That is the half of discussion #5114 that survives. **[src]**
 - `builds:list` **with no app** lists the builds running box-wide — which is a cheaper
@@ -1170,12 +1184,16 @@ order they arrive: **[src]**
 
 For anything reading these records that means `builds:list <app>` is mostly poll noise, `--status
 failed` no longer selects failures (`--status succeeded` is the one filter that still means what it
-says), and a build log is reliably present only until 19 further ticks have passed — so "go and read
-why last night's build failed" does not work. Raising `builds:set retention` buys minutes, not
-fidelity. **`builds:list` with no app is unaffected**, and so is anything built on it:
-it goes through `FetchRunningBuilds`, which requires a live PID, so a dead record can never make a
-box-wide "is anything building?" check block. **[src]** The fix is on the caller's side — don't enter
-`git:sync` at all unless the ref moved; that is `Q_poll_churn` in `ideas/poll-build-record-churn.md`.
+says), and at the default retention of 20 a build log is reliably present only until 19 further ticks
+have passed — so "go and read why last night's build failed" does not work. **`builds:list` with no app
+is unaffected**, and so is anything built on it: it goes through `FetchRunningBuilds`, which requires a
+live PID, so a dead record can never make a box-wide "is anything building?" check block. **[src]**
+
+Retention is by count, so raising it converts that count into time: **Shepherd2 sets it to 300, about a
+day of ticks**, which is enough for the overnight question but is a window, not a repair. The repair is
+on the caller's side — don't enter `git:sync` at all unless the ref moved — and is deferred pending an
+upstream fix. Both halves, and the read that skips past the noise (`shepherd2 last-build`), are
+`D_poll_churn`.
 
 **Sharp edge: bare `builds:output <app>` does not mean "the last build".** Given no build id (or the
 literal `current`) it resolves one from the app's `.deploy.lock`, so on an idle app it prints
@@ -1190,9 +1208,10 @@ That recipe assumes `--status failed` means something, which under a periodic po
 newest "failed" record will be a reaped no-op tick (previous edge). **`exit_code` is what separates
 them**: a reaped record always carries `-1`, a build that really failed carries the builder's own
 positive code, and `kind` does not help because `git:sync` maps to `build` either way. **[src]** So
-`… --status failed --format json | jq -r '[.[] | select(.exit_code != -1)][0].id'` while `Q_poll_churn`
-is open. The one case it mislabels is a real build the box killed (reboot mid-build), which is reaped
-as `-1` too.
+`… --status failed --format json | jq -r '[.[] | select(.exit_code != -1)][0].id'` is the recipe, and
+`shepherd2 last-build <app> --log` is that filter as a verb, which is why it exists (`D_poll_churn`).
+The one case it mislabels is a real build the box killed (reboot mid-build), which is reaped as `-1`
+too.
 
 ## Admin interface
 
@@ -1425,13 +1444,15 @@ first throwaway VPS:
     `[unverified]` inferences from the nginx template (see *nginx*), and the second is the one that
     would make the mode useless if wrong. While there: check that `nginx:set <app> hsts` is genuinely
     inert without a certificate, since that is why the mode is one-way.
-19. **The no-op-tick record drill** — cheap, and it decides `Q_poll_churn`. On a deployed app, run
-    `git:sync --build-if-changes` three times with no upstream commit and check
-    `builds:list <app> --format json`: three extra records, `status` `running` / display `abandoned`,
-    one `.log` each. Then deploy for real and re-list: the three should have become `failed` with
-    `exit_code: -1`, and the *previous* real build's record should be gone once enough ticks have
-    accumulated. All three claims are `[src]`-derived (*Build tracking*), so this is a confirmation,
-    not an open question — worth the five minutes because a whole design choice hangs off it.
+19. ~~**The no-op-tick record drill** — three `git:sync --build-if-changes` ticks with no upstream
+    commit, then a real deploy, and watch the records.~~ **Answered 2026-09-11, and all three
+    `[src]` claims held**: three ticks → three `running`/`abandoned` records with a 265-byte log each,
+    a real deploy reaped all three as `failed` / `exit_code: -1`, and 16 further ticks filled the
+    20-record window and evicted the successful deploy. Two things the drill added, both now in
+    *Build tracking*: the window is a **knob** (`builds:set retention`, which no amount of reading had
+    turned up), and eviction is not deletion until `builds:prune` runs. And the churn turned out not to
+    be cosmetic — it broke `shepherd2 wait-idle`, which filtered on `status`, a value an abandoned tick
+    holds forever. Decided in `D_poll_churn`.
 20. **Does a Vaadin *Gradle* app build under `heroku/gradle` at all?** Everything above quietly assumes
     Maven, and roughly half the farm is Gradle (`ideas/production-cutover.md`), so this is a hole rather
     than a detail. Three parts, all `[unverified]` because nothing in this file covers that buildpack

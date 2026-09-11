@@ -417,6 +417,15 @@ configure_globals() {
   # Dokku's default is on-failure:10; apps here should come back after a crash and after a reboot.
   dokku ps:set --global restart-policy always
   log 'restart policy: always'
+
+  # Retention is by *count*, and the count is shared with poll noise: every five-minute tick writes a
+  # build record even when there is nothing to build, so Dokku's default of 20 holds ~100 minutes and a
+  # real build's log is gone long before anyone reads it. 300 records is about a day of ticks, which is
+  # what makes "why did last night's deploy fail?" answerable in the morning. See D_poll_churn — this
+  # is the workaround, `shepherd2 last-build` is how the survivor is found, and both retire when the
+  # upstream capture-before-check ordering is fixed.
+  dokku builds:set --global retention 300
+  log 'build record retention: 300 per app (~a day of poll ticks)'
 }
 
 # --- Step 8: https mode -------------------------------------------------------------------------

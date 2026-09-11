@@ -1,12 +1,47 @@
 # The http-mode probe run — how the punch list actually gets executed
 
-Written 2026-09-11. **Not yet run.** `RESEARCH.md` → *Questions only a box can answer* owns *what* is
-being asked and stays the authority on each item; this note owns *the order, the traps and the exact
-commands* for running the http-mode subset on the dev VM, and it is deleted once the findings have
-landed. The https subset cannot run here at all — see `ideas/production-cutover.md`.
+Written 2026-09-11. **Run on 2026-09-11 — see `ideas/http-probe-plan/findings.md`, which is where
+every result lives.** `RESEARCH.md` → *Questions only a box can answer* owns *what* is being asked and
+stays the authority on each item; this note owns *the order, the traps and the exact commands* for
+running the http-mode subset on the dev VM, and it is deleted once the findings have landed. The
+https subset cannot run here at all — see `ideas/production-cutover.md`.
 
-Sidecar: `ideas/http-probe-plan/pre-install-baseline.txt` is the virgin-box capture taken before
-anything was installed. It is the *pre* half of item 3 and cannot be retaken once Docker exists.
+**Graduation is deliberately deferred.** The findings are *not* in `RESEARCH.md` / `DECISIONS.md` /
+`README.md` yet; that is a separate session's work, agreed with the operator on 2026-09-11. Until then
+this folder is the only record, and it is complete enough to graduate from without the box.
+
+## Where the run got to
+
+| Item | Status |
+|---|---|
+| 2 isolation + routing | **closed** — both halves, with a self-reach control |
+| 3 `daemon.json` | **closed** (first half) — Dokku's postinst writes it; the merge branch is the live one |
+| 3 the ~30-network wall | **not run** — needs stock pools, i.e. a VM snapshot this run did not have |
+| 6 two-build drill | in progress |
+| 7 container naming | **closed** — `hello.web.1`; build containers get random names; `com.dokku.*` labels |
+| 8 ports auto-wired | **closed** — `http:80:5000`, detected, survives rebuilds |
+| 10 foreign `initial-network` | **closed**, and it found a correction for `D_isolation` |
+| 11 what an app reaches | **closed** — measured, and it argues *for* the v2 `DOCKER-USER` rule |
+| 12 Traefik 502 | pending — last, as planned |
+| 13 warm second build | **closed** for both Maven and Gradle |
+| 15 pre-compiled bundle | **closed** on a box, not just off it |
+| 17 build CPU | **closed** — holds; marker dropped from `shepherd2:25` |
+| 18 http-only mode | **closed** — both the 502 and 200 paths |
+| 19 no-op tick churn | **closed** — `Q_poll_churn` is real, and retention turns out to be settable |
+| 20 Gradle buildpack | **closed** — all three parts |
+| 4, 9, 14, 16 | out of scope here, as planned |
+
+Two v1 bugs came out of it, both fixed: the `ssh-keys:add` abort in `shepherd2-install`, and the
+address-pool comment pointing at the wrong branch.
+
+Sidecars, all in `ideas/http-probe-plan/`:
+
+- `findings.md` — **the results.** Everything else here is evidence for it.
+- `pre-install-baseline.txt` — the virgin-box capture taken before anything was installed. The *pre*
+  half of item 3, and not retakeable once Docker exists.
+- `install-http.log` / `install-http-2.log` — the failed first install and the clean re-run.
+- `build-hello-*.log`, `build-gradle-a-*.log`, `poll-real-deploy.log` — build and deploy transcripts,
+  ANSI and Maven download chatter stripped.
 
 ## The box
 
@@ -107,8 +142,10 @@ phase** and roll the snapshot back afterwards, or leave it to the end of the who
 Four apps, all real, so nothing is invented:
 
 - **`hello`** ← `karibu-helloworld-application-maven`, the cheapest real Java build, for items 8 and 19.
-- **`gradle-a`** ← `vaadin-boot-example-gradle`, for item 20. Keep it out of the timing drills; it is
-  there to find out whether the Gradle path works at all.
+- **`gradle-a`** ← ~~`vaadin-boot-example-gradle`~~ **`karibu-helloworld-application`**, for item 20.
+  Changed on the day: the planned repo carries none of the four files README §4 requires, while
+  `karibu-helloworld-application` carries all of them, so it goes in unmodified from GitHub and its
+  success doubles as a check that the §4 recipe is complete.
 - **`vbm-a`** and **`vbm-b`** ← *both* from `vaadin-boot-example-maven`. Deploying one repo under two
   ids is the only way to *guarantee* the shared Maven coordinates item 6 needs; picking two different
   repos and hoping they collide on `1.0-SNAPSHOT` is how that drill gets run inconclusively.
@@ -130,10 +167,11 @@ have to be in place before the first build is worth watching, both from `README.
 
 - a **`Procfile`** and, for Maven, a **`system.properties`** in each repo — none of them has either,
   since the predecessor built from a `Dockerfile`;
-- **`MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction`**, or the app is built in development mode and tries
-  to start a Vite dev server at runtime. Set it from the box side so the probe does not need a commit
-  in the app's repo: `dokku config:set --no-restart hello MAVEN_CUSTOM_OPTS='-DskipTests -Pproduction'`
-  **before** the first build, then `shepherd2 rebuild hello`.
+- ~~**`MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction`**~~ — **wrong, and the run proved it.** Vaadin
+  **25.0** dropped the `production` profile; `build-frontend` now runs in the default lifecycle, so
+  `mvn install` *is* the production build and the buildpack's default goals already carry
+  `-DskipTests`. No config var was set and the app came up in production mode. The advice still holds
+  for **Vaadin ≤ 24**, which is why README needs the version split rather than a deletion.
 
 So phase 3's real first finding is the unnumbered one: **does a Vaadin app deploy under herokuish at
 all**, and how many rounds of the `Procfile` / `system.properties` / `MAVEN_CUSTOM_OPTS` trio it takes.
@@ -149,7 +187,7 @@ Items 8, 19, 13 and 6 all assume that already works. Time-box it and write down 
 | **17** build CPU | see below; the framing in the punch list needs correcting first. Now load-bearing: `--build-cpu 2` is a *default*, so if herokuish ignores it every app builds uncapped |
 | **20** the Gradle buildpack | added to the punch list 2026-09-11, and the one genuine hole: everything else assumes Maven while about half the farm is Gradle. Needs a fourth app from a Gradle repo — `vaadin-boot-example-gradle` — with `heroku/gradle` pinned. Which task runs by default, whether `-Pvaadin.productionMode` is the way in, and whether `~/.gradle` lands in the cache volume |
 
-### Item 17 is mis-framed, and it matters for production
+### Item 17 is mis-framed, and it matters for production — **resolved: the documented route works**
 
 The punch list asks whether `--cpus` works at build time via
 `docker-options:add <app> build '--cpus 2'` — a question inherited from the Dockerfile builder, where
@@ -162,10 +200,11 @@ dokku resource:limit --process-type build --cpu 2 --memory 2g <app>
 ```
 
 …which is exactly what `create-app --build-cpu` / `--build-mem` already emit (`shepherd2:249`). So what
-wants verifying is not the `docker-options` hack but that the *documented* route takes effect — read the
-limit back with `resource:report`, and watch a build with `docker stats` to see it honoured. Rewrite the
-item when the finding graduates, and drop the `[unverified — punch-list 17]` marker on
-`shepherd2:25` if it holds. `ideas/production-cutover.md` depends on this one.
+wanted verifying was not the `docker-options` hack but that the *documented* route takes effect — and it
+does: the build container is created with `mem=2147483648` and `nanocpus=2000000000`, and a real build
+peaked at **202% CPU on a 4-core host**. The marker is already dropped from `shepherd2:25`; the
+punch-list item still needs rewriting when this graduates. `ideas/production-cutover.md` depended on
+this one and is unblocked.
 
 ## Out of scope here
 

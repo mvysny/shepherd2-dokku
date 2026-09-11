@@ -1619,8 +1619,10 @@ The honest gap list, for the feature discussion:
 
 ## Questions only a box can answer
 
-The `[unverified]` claims above, plus the ones that decide the design. This is the punch list for the
-first throwaway VPS:
+The `[unverified]` claims above, plus the ones that decide the design. This was the punch list for the
+first throwaway VPS, and **most of it was run on 2026-09-11** — a struck item carries its answer and
+names the section that now owns it. What is left is **item 4** (the `D_cert` chain, which needs an
+https box and a real DNS zone) and the v2 items, 9 having been answered early:
 
 1. ~~Does the box's Docker route `docker image build` to buildx, so that a `--cache-to type=local`
    passed through `docker-options` actually *exports* a cache?~~ **Moot** — `D_builder` prohibits the

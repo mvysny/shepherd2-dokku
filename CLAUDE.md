@@ -149,9 +149,12 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
   apps commit a `package.json`). The build cache is the `cache-$APP` volume Dokku names, purged with
   `repo:purge-cache <app>` — never a `RUN --mount` and never `--cache-to`. `pack`/CNB is a v2 option,
   not a v1 alternative. See `D_builder`.
-- **The proxy is Dokku's default host nginx, and it is not a container.** Don't install the Traefik
-  plugin or set `proxy:type` on an app; per-app ingress tuning is `nginx:set`. See `D_proxy` — and note
-  that `D_isolation` *depends* on this, so switching proxies is not a local change.
+- **The proxy is Dokku's default host nginx, and it is not a container.** Don't set `proxy:type` on an
+  app and don't run `traefik:start` — `traefik-vhosts` is a *core* plugin, so it is already installed
+  on every box and the thing to refrain from is using it, not adding it. Per-app ingress tuning is
+  `nginx:set`. See `D_proxy` — and note that `D_isolation` *depends* on this, so switching proxies is
+  not a local change: measured, Traefik cannot reach a per-app network and the failure is a silent
+  hang with empty logs.
 - **TLS is one wildcard certificate, and nothing per app.** lego issues and renews it on the host, and
   `dokku-global-cert` pushes it into every app; that plugin is the one third-party plugin we depend on.
   Don't install `dokku-letsencrypt` or `letsencrypt:enable` an app in v1, and don't make `create-app`

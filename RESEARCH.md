@@ -697,6 +697,12 @@ must be named `*-vhosts` for the scheduler integration to work. **[docs]**
 
 Label-driven, exactly like shepherd-traefik — so existing Traefik knowledge transfers. **[docs]**
 
+**`traefik-vhosts` is a *core* plugin, not something you install.** It ships enabled with the deb
+alongside `nginx-vhosts` and `haproxy-vhosts`, so `traefik:show-config` and `traefik:labels:show`
+answer on a stock box and nothing has to be added to try it. What makes Traefik unused here is that no
+app sets `proxy:type` and `traefik:start` is never run — not the absence of a plugin.
+**[verified on a box 2026-09-11]**
+
 ```bash
 dokku proxy:set node-js-app type traefik
 dokku ps:rebuild node-js-app
@@ -730,9 +736,45 @@ A fourth restriction, not quoted because the docs never mention it: **the plugin
 Docker networks.** `plugins/traefik-vhosts/internal-functions` templates a compose file and reads global
 properties; there is no `docker network connect`, no `--network`, and no read of the app's
 `initial-network` / `attach-*` properties (read 2026-09-10). Since Traefik here *is* a container, an app
-isolated on its own network is plausibly unreachable by it. See *Nobody has to re-attach anything* under
+isolated on its own network is unreachable by it. See *Nobody has to re-attach anything* under
 *Networking and app isolation*. This is one of the reasons `D_proxy` chose nginx, and it is why
-`D_isolation` depends on that choice. **[src for the absence; unverified for the 502]**
+`D_isolation` depends on that choice. **[src]**
+
+**The generated compose file says both halves of it out loud**, which `traefik:show-config <app>`
+renders without starting anything: **[verified on a box 2026-09-11]**
+
+```yaml
+services:
+  traefik:
+    image: "traefik:v3.7.10"
+    command: [--entrypoints.http.address=:80, --providers.docker, …]
+    network_mode: bridge          # Docker's default bridge, and nothing attaches it elsewhere
+    ports:
+      - "80:80"                   # the host port Dokku's own nginx already holds
+```
+
+- `network_mode: bridge` puts Traefik on the default bridge while an isolated app is on `172.16.x`, so
+  they are on different L2 segments with nothing bridging them.
+- `ports: "80:80"` means **Traefik cannot even start on a box running Dokku's nginx** — trying it takes
+  every app on the box down for the duration, which is why this experiment belongs last in any run.
+
+**And the failure is not a 502 — it is a silent hang.** Run for real on a box due for teardown: Dokku
+wires the app up correctly (`traefik.enable=true`, a `Host(…)` rule, `loadbalancer.server.port=5000`)
+and the two containers land on different networks exactly as the config says. Then:
+**[verified on a box 2026-09-11]**
+
+| From | To | Result |
+|---|---|---|
+| `curl -H 'Host: <app>…'` → Traefik | the app | **timed out at 20s, no response at all** |
+| inside Traefik → the app's IP:5000 | the app | **timed out at 6s** |
+| inside Traefik → its own gateway :22 | (control) | "Connection refused", *immediately* |
+| inside the app → its own IP:5000 | (control) | 200 |
+
+The two controls are what make it conclusive: the tool reports a refusal promptly when there is one,
+and the app is listening the whole time. The app's network is simply unroutable from Traefik's, so
+packets are **dropped rather than refused** and Traefik sits there until its own timeout — with
+**nothing in `traefik:logs`**. A 502 would be diagnosable in seconds; this is the worst diagnostic
+shape available.
 
 DNS-01 mode is documented as being "for wildcard certificates or when port 443 is not accessible" —
 but nothing in the plugin declares a wildcard SAN, so per-app ACME *orders* remain unless `tls.domains`
@@ -1039,8 +1081,9 @@ read 2026-09-10) **[src]**. So a per-app `initial-network` plausibly leaves Trae
 app at all, and repairing that is `shepherd-traefik-connect-networks` returning, this time as ours.
 **Traefik would therefore cost either the per-project network isolation or a reconciler script** — which is one of
 the reasons `D_proxy` chose nginx, and why `D_isolation` names `D_proxy` as a dependency rather than a
-neighbour. **[src for the absence; unverified — whether Traefik + `initial-network` actually 502s needs
-a box]**
+neighbour. Confirmed on a box, and it is worse than the 502 this file used to predict: the request
+**hangs** until Traefik's own timeout, with nothing in its logs (*Traefik (official plugin)*).
+**[src for the absence; verified 2026-09-11 for the consequence]**
 
 ## Resource limits
 
@@ -1565,10 +1608,13 @@ first throwaway VPS:
     measured not to unblock v1 but to decide whether v2 should bother. Worth the ten minutes while
     item 2 is being run anyway. Add `curl http://169.254.169.254/` to it: the metadata endpoint is the
     one answer with a genuinely bad worst case.
-12. **Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
-    network?** The plugin has no attachment logic `[src]`, so the expectation is a 502. Worth ten
-    minutes on the same box as item 2, because it is the evidence under `D_proxy`'s strongest reason and
-    the thing to re-check if anyone ever proposes switching proxies.
+12. ~~**Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
+    network?** The plugin has no attachment logic `[src]`, so the expectation is a 502.~~ **Answered
+    2026-09-11: it does not route, and the expectation was too kind** — the request hangs until
+    Traefik's own timeout with nothing in its logs, because packets to an unroutable network are
+    dropped rather than refused. Two things came free: `traefik-vhosts` is a *core* plugin, so the
+    experiment installs nothing, and its compose file wants host port 80, so running it stops every app
+    on the box. All in *Traefik (official plugin)*.
 13. **Does a Vaadin app's second build come back warm under herokuish?** Deploy one, commit trivially,
     `git:sync --build` again, and split the timing: is Maven resolving from `/cache/.m2/repository`
     (expected yes), and is the *frontend* half — `~/.vaadin` node download, `node_modules`, npm

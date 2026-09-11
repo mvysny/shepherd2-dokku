@@ -219,8 +219,9 @@ backported to `RESEARCH.md` before the idea is deleted.
 
 ## D_proxy — Dokku's default host nginx, not the Traefik plugin (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Nothing to implement — nginx is Dokku's default, so this decision is
-mostly a commitment *not* to do something. `D_isolation` depends on it.
+**Status:** Accepted 2026-09-10, **its central risk measured on a box 2026-09-11** (punch-list 12).
+Nothing to implement — nginx is Dokku's default, so this decision is mostly a commitment *not* to do
+something. `D_isolation` depends on it.
 
 **Context.** Dokku ships five proxy implementations and nginx is the default; the official `traefik`
 plugin is one of the alternatives, switched on per app with `proxy:set <app> type traefik`. Traefik was
@@ -228,8 +229,9 @@ the obvious candidate because shepherd-traefik *is* a Traefik box — the labels
 the failure modes are all knowledge this project already has, and "keep the part that works" was a real
 option rather than a straw man.
 
-**Decision.** Use **nginx**, Dokku's default. The Traefik plugin is not installed and no app sets
-`proxy:type`.
+**Decision.** Use **nginx**, Dokku's default. No app sets `proxy:type` and `traefik:start` is never
+run. Note that there is no plugin to refrain from installing: `traefik-vhosts` is a Dokku *core*
+plugin, shipped and enabled by the deb, so it sits on every Shepherd2 box unused.
 
 **Why.** The two are not symmetric, and every asymmetry runs the same way:
 
@@ -239,10 +241,18 @@ option rather than a straw man.
   architectural gain of the whole Dokku move (`D_dokku`), and it is what makes `D_isolation` free.
 - **The Traefik plugin has no network-attachment logic whatsoever** — no `docker network connect`, no
   read of an app's `initial-network` / `attach-*` properties (`plugins/traefik-vhosts/internal-functions`
-  **[src]**). So a per-app isolated network is plausibly unreachable by it, and repairing that would be
+  **[src]**). So a per-app isolated network is unreachable by it, and repairing that would be
   `shepherd-traefik-connect-networks` reincarnated as ours. **Choosing Traefik would cost either
   the per-project network isolation or a reconciler cron** — exactly the script `D_dokku` celebrates
   deleting.
+
+  **Measured, and the failure mode is worse than this entry originally assumed.** It is not a 502: the
+  request **hangs** until Traefik's own timeout, because packets to a network it has no route to are
+  dropped rather than refused, and **nothing appears in `traefik:logs`**. A 502 is diagnosable in
+  seconds; a silent hang with empty logs is the worst diagnostic shape there is, so the cost of
+  switching proxies without re-reading this entry is higher than "it breaks" — it is "it breaks
+  invisibly". `RESEARCH.md` → *Traefik (official plugin)* has the run, the controls and the generated
+  compose file.
 - **Per-app ingress tuning is first-class on nginx and absent on Traefik.** `nginx:set <app>
   client-max-body-size` / `proxy-read-timeout` are app-scoped properties, where **every `traefik:set`
   property is global-only** — per-app tuning would have to be hand-written
@@ -284,6 +294,10 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 - **The `proxy` plugin's other implementations stay unused but present.** If a future need forces
   Traefik, this entry is the thing to re-read — and `D_isolation` has to be re-read with it, because it
   is the dependent decision.
+- **Trying Traefik is not a per-app experiment; it takes the box down.** Its compose file asks for host
+  port `80:80`, which Dokku's nginx already holds, so `traefik:start` requires stopping nginx — every
+  app on the box goes dark for the duration. Anyone tempted to "just test it on one app" should know
+  that the blast radius is all of them.
 
 ## D_isolation — One Dokku-managed bridge network per project (2026-09-10)
 

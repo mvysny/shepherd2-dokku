@@ -600,7 +600,15 @@ cache-gradle-a    1.3G   (Gradle: wrapper distribution + JDK + dependency and bu
 The duplication is the price of the isolation and is worth naming out loud: two ids on one repo cost
 two full copies. Disk went 18G → 20G used of 62G across the four apps.
 
-### FINDING — punch-list 12: confirmed, and the failure is *worse* than the expected 502
+### ~~FINDING — punch-list 12: confirmed, and the failure is *worse* than the expected 502~~ — **GRADUATED 2026-09-11**
+
+Landed: the whole run — core plugin, the generated compose file's `network_mode: bridge` and
+`ports: "80:80"`, the hang and its two controls — in `RESEARCH.md` → *Traefik (official plugin)*, with
+punch-list 12 struck and the old "unverified for the 502" marker replaced where it appears under
+*Nobody has to re-attach anything*. `D_proxy` gains the measurement under its network-attachment reason
+and a consequence naming the blast radius (port 80 means stopping nginx box-wide); its Decision no
+longer says the plugin "is not installed", because it ships with Dokku. The same correction went to
+`README.md`'s *Leave the proxy alone* and `CLAUDE.md`'s proxy convention. Evidence kept below.
 
 First correction to the plan: **`traefik-vhosts` is a Dokku *core* plugin**, installed and enabled by
 the deb like `nginx-vhosts` and `haproxy-vhosts`. Nothing has to be installed to test this, and the

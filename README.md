@@ -166,8 +166,11 @@ impossible to retrofit:
   same edit shepherd-traefik needs. Nothing for you to do; it is here because it cannot be applied
   later without restarting Docker, so a box that skipped it would have to be rebuilt rather than
   fixed.
-* **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`); do not install the Traefik
-  plugin. Per-app tuning is `dokku nginx:set PROJECTID …`.
+* **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`). Per-app tuning is
+  `dokku nginx:set PROJECTID …`. Dokku ships a Traefik plugin as core, so it is present on every box —
+  never `proxy:set … type traefik` or `traefik:start`. It would not route (each app is on its own
+  network, which Traefik never joins — and the failure is a silent hang, not a 502), and it wants host
+  port 80, so starting it means stopping nginx and taking every app on the box down.
 * **In https mode, one wildcard certificate for every app** (`D_cert`). `lego` from the Ubuntu repos
   issues `*.mydomain.me` over DNS-01, a daily root cron line renews it, and its renew hook runs
   `dokku global-cert:set`, which pushes the new certificate into every app. New apps pick it up at

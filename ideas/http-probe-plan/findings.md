@@ -923,22 +923,21 @@ struck. *Services: Postgres* already defers to that section for the caveat, so i
 `D_isolation` already prescribes `postgres:create --initial-network` as the flag that must not be
 forgotten — the research now says why, and the decision links rather than restates.
 
-### FINDING — a wildcard app domain is accepted, and it routes
+### ~~FINDING — a wildcard app domain is accepted, and it routes~~ — **GRADUATED 2026-09-11**
 
-The unnumbered `[unverified]` under *Config, env vars and app metadata* ("Whether a **wildcard** app
-domain is accepted is not documented"). It is:
+Landed in `RESEARCH.md` → *Config, env vars and app metadata*, replacing the `[unverified]` bullet that
+said the behaviour was undocumented.
 
-```
-$ dokku domains:add demo '*.wild.shepherd2.test'
------> Configuring *.wild.shepherd2.test...(using built-in template)
-$ grep server_name /home/dokku/demo/nginx.conf
-  server_name demo.shepherd2.test *.wild.shepherd2.test;
-$ curl -o /dev/null -w '%{http_code}' http://anything.wild.shepherd2.test/
-200
-```
+### ~~The probe rig's two incidental facts~~ — **GRADUATED / already known, 2026-09-11**
 
-Accepted with no complaint, passed through to `server_name` verbatim, and nginx routes an arbitrary
-label under it. Adding it to an app with no web listeners warns `No web listeners specified` and
-configures the vhost anyway. Nothing in v1 wants this — the box is one app per hostname — but it is
-the mechanism a future admin surface or a per-app custom-domain story would use, and it is no longer
-a guess.
+- The `heroku-community/x` → `heroku/heroku-buildpack-x` rewrite was **already** in `RESEARCH.md`
+  (*Buildpacks*), recorded when `validBuildpackURL` was read on 2026-09-11. Nothing to land.
+- The `file://`-source ownership requirement — the clone runs as `dokku`, so a root-owned tree fails
+  git's dubious-ownership check — landed on the `git:sync` bullet list in *`git:sync` — the SCM poll*.
+  That supersedes the *Note, not a finding* earlier in this file, which said only "readable".
+
+The rig itself — a four-file `heroku-community/inline` app that builds in five seconds and prints
+whatever the build container sees — is a **technique, not a finding**, and belongs with the plan note
+rather than in the durable docs. It is described under *The probe rig* above and dies with this file.
+Worth re-reading before the next box run: three of the four questions in this sitting fell out of one
+five-second build.

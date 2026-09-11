@@ -472,7 +472,11 @@ dokku git:sync [--build|--build-if-changes] [--skip-deploy-branch] <app> <reposi
 dokku git:sync node-js-app https://github.com/heroku/node-js-getting-started.git main
 ```
 
-- Clones or fetches from a remote URL; takes an optional branch, tag or commit SHA.
+- Clones or fetches from a remote URL; takes an optional branch, tag or commit SHA. A local
+  `file:///path` works too — useful for rehearsing a repo's herokuish onboarding before committing it
+  upstream — but the repository must be **owned by the `dokku` user**, not merely readable by it: the
+  clone runs as `dokku` and a root-owned tree fails it with git's
+  `fatal: detected dubious ownership`. **[verified on a box, 2026-09-11]**
 - `--build` always builds; **`--build-if-changes` builds only when the fetch moved the ref** — exactly
   the poll-SCM semantics.
 - The app must already exist (`apps:create`).
@@ -1070,8 +1074,12 @@ dokku domains:report [<app>|--global] [<flag>]
 - **An app named as an FQDN takes that FQDN**: "the global virtualhost will be ignored and the resulting
   vhost URL for that application will be `dokku.org`" — the mechanism for publishing one project on the
   apex domain. **[docs]**
-- Whether a **wildcard** app domain (`domains:add app '*.example.com'`) is accepted is not documented.
-  **[unverified]**
+- A **wildcard** app domain (`domains:add app '*.example.com'`) is undocumented but works: it is
+  accepted without complaint, passed through to nginx's `server_name` verbatim
+  (`server_name demo.example.com *.wild.example.com;`) and an arbitrary label under it routes to the
+  app. Adding one to an app with no web listeners warns `No web listeners specified` and configures the
+  vhost anyway. **[verified on a box, 2026-09-11]** Nothing in v1 wants it — the box is one hostname per
+  app — but it is the mechanism a per-app custom-domain story would reach for.
 - **There is no user-settable per-app metadata slot.** `apps:set` accepts exactly one key,
   `disable-autocreation`, and only globally; every other `apps:report` field (`deploy-source`,
   `deploy-source-metadata`, `created-at`, …) is read-only and system-written. **[docs + src]** Anything

@@ -313,11 +313,78 @@ What is and is not established:
   app's log — but we run `D_single_operator`, one keyholder with root, so this box has no boundary to
   cross and we cannot demonstrate the interesting case.
 
-**Recommended route: the private one, not an issue.** Dokku takes GitHub Security Advisories and has
-published five CVEs through them (`github.com/dokku/dokku/security/advisories/new`), and a path
-built from unvalidated input belongs there rather than in a public thread — describe the class, not a
-working path, and let the maintainers judge the boundary question we cannot test. Nothing here is
-urgent for us: on a `D_single_operator` box the caller is already root.
+**Route: the private one, not an issue.** Dokku takes GitHub Security Advisories and has published five
+CVEs through them (`github.com/dokku/dokku/security/advisories/new`), and a path built from unvalidated
+input belongs there rather than in a public thread. Nothing here is urgent for us: on a
+`D_single_operator` box the caller is already root.
+
+**Operator's assessment, 2026-09-11, and it is the right one:** the blast radius is small. `builds:output`
+runs as the `dokku` user, so root-only files are out of reach; and on stock Dokku anyone who can run it
+can already read every app's logs and `config:show` every app's secrets, so the traversal grants nothing
+new. (The `dokku` user is in the `docker` group and therefore root-equivalent on the host in any case.)
+The one configuration where it has teeth is `dokku-acl`, which is third-party and stale — so this is
+reported as a defect for the maintainers to weigh, not as something we believe is being exploited.
+
+### To test before sending (throwaway box, our own files only)
+
+```bash
+sudo -u dokku sh -c 'echo CANARY > /var/lib/dokku/data/builds/canary.log'
+dokku builds:output demo ../canary ; echo "exit=$?"      # expect: CANARY, exit 0
+sudo -u dokku sh -c 'echo NOPE > /var/lib/dokku/data/builds/canary.txt'
+dokku builds:output demo ../canary.txt ; echo "exit=$?"  # expect: nothing — it looks for canary.txt.log
+sudo rm /var/lib/dokku/data/builds/canary.log /var/lib/dokku/data/builds/canary.txt
+```
+
+The severity-deciding one, if there is appetite: a second app, then
+`dokku builds:output <app-a> ../<app-b>/<a-real-build-id-of-b>` — same box, same owner. It is the only
+check that shows the app argument being validated while the path leaves the app's directory.
+
+### Advisory draft — for review, not sent
+
+**Summary:** `builds:output` builds a file path from an unvalidated build id, allowing reads of any
+`.log` file the `dokku` user can reach
+
+**Severity:** Low on a stock installation; arguably Moderate where a per-app authorization layer is in
+use. Deferring to maintainers — see *Impact*.
+
+**Affected:** 0.38.27 and `master` at `aa39920`. Introduced with the `builds` plugin in 0.38.0.
+
+**Description.** `plugins/builds/builds.go`:
+
+```go
+func LogPathFor(appName, buildID string) string {
+	return filepath.Join(AppDataDir(appName), buildID+".log")
+}
+```
+
+`buildID` arrives from argv and is never validated — `CommandOutput` verifies the *app* name and
+nothing else, and `filepath.Join` cleans the result, so an id containing `../` resolves outside the
+app's build directory. If the resulting path exists, `CommandOutput` `cat`s it: the build *record* is
+read only after the `os.Stat`, and a missing record is explicitly tolerated
+(`if err != nil && !os.IsNotExist(err)`). The read is bounded only by the appended `.log` suffix and by
+the permissions of the `dokku` user.
+
+**Impact.** On a stock installation we think this is a hygiene defect rather than a vulnerability:
+Dokku ships no authorization layer, so any principal who can invoke `builds:output` can already read
+every app's build logs and run `config:show` against every app. The case we could not test is a
+deployment using per-app authorization — `dokku-acl` gates on the app argument, which this path
+satisfies while reading another app's file. That matters more than it might appear because **build logs
+contain config variables with their values** (`-----> Setting config vars` echoes name and value), so a
+cross-app read of a build log is a cross-app read of secrets. We run a single-operator box and have no
+second principal to demonstrate this with; the boundary question is yours to judge.
+
+**Suggested fix.** Reject a build id that is not a bare path segment before it reaches `LogPathFor` —
+the ids Dokku generates are `[a-z0-9]+` — or verify the resolved path is still inside
+`AppDataDir(appName)`.
+
+**The same id reaches a second path**, and is worth fixing in the same place: `builds:info` calls
+`ReadBuild`, which is `os.ReadFile(RecordPath(appName, buildID))` — the same unvalidated join with a
+`.json` suffix. It is better behaved, in that a miss returns `No build record found`, and a foreign
+file has to unmarshal into a `Build` to render; but the read itself happens before any of that. A
+validation at the point the id is accepted covers both.
+
+**Credit:** found while investigating [#9031](https://github.com/dokku/dokku/issues/9031), the
+unvalidated-id usability defect, which is the same input with a different consequence.
 
 ## Our two pieces, both run on a box for the first time
 

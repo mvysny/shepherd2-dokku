@@ -17,7 +17,8 @@ Dokku takes bug reports through an **issue form**, not a freeform body
 problem**, **Steps to reproduce**, and **the output of `dokku report $APP_NAME`**. The drafts below are
 written to those fields — and the third is why this needs a box: the probe box was torn down on
 2026-09-11 and no `dokku report` dump was kept in the sidecars. **Agreed 2026-09-11: stand up a box and
-run both repros.** Transcripts land in `ideas/upstream-bug-reports/`.
+run both repros.** Transcripts land in `ideas/upstream-bug-reports/`, and the prompt that drives that
+session is `ideas/http-probe-plan/prompt.txt` — paste it verbatim into a fresh Claude Code on the box.
 
 Three things the run gets us beyond the required field: a repro we can quote as *run on this version*,
 the loose end at the bottom of this note settled, and the first-ever execution of

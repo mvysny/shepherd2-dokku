@@ -16,8 +16,8 @@ Dokku takes bug reports through an **issue form**, not a freeform body
 (`.github/ISSUE_TEMPLATE/bug_report.yaml`), and three of its fields are *required*: **Description of
 problem**, **Steps to reproduce**, and **the output of `dokku report $APP_NAME`**. The drafts below are
 written to those fields — and the third is why this needs a box: the probe box was torn down on
-2026-09-11 and no `dokku report` dump was kept in the sidecars. **Agreed 2026-09-11: bring the VM back
-and re-run both repros.** Transcripts land in `ideas/upstream-bug-reports/`.
+2026-09-11 and no `dokku report` dump was kept in the sidecars. **Agreed 2026-09-11: stand up a box and
+run both repros.** Transcripts land in `ideas/upstream-bug-reports/`.
 
 Three things the run gets us beyond the required field: a repro we can quote as *run on this version*,
 the loose end at the bottom of this note settled, and the first-ever execution of
@@ -29,12 +29,22 @@ duration or a scheduled tick lands mid-drill; and **retention has to be back at 
 for the drill itself**, or the eviction step needs 300 ticks instead of 20 and the numbers in the report
 stop being the ones a maintainer would see.
 
+**The box is a fresh VM**, not the probe box (which was uninstalled on 2026-09-11 and is not being
+reused). So it must satisfy the installer's preflight before any of this runs: **Ubuntu 24.04 exactly**
+(`D_host_os` — 26.04 is refused), root, **`hostname -f` must resolve** (the likeliest failure on a new
+guest; an `/etc/hosts` line `127.0.1.1 <host>.localdomain <host>` fixes it), ports 80 and 443 free,
+outbound network, and a readable OpenSSH *public* key file for `--ssh-key`. Realistically ≥4 GB RAM and
+≥20 GB free disk: the default build memory limit is 2g. `git` is needed to clone this repo; `ruby`,
+`docker.io` and `dokku` are the installer's job.
+
 ```bash
-# Snapshot the VM from the KVM host first. http mode is cheap to redo, but the install is one-way
-# per D_cert and this is a box we may want again.
+# 0. Clone and take the branch the retention line and `last-build` live on.
+git clone git@github.com:mvysny/shepherd2-dokku.git /home/mavi/work/my/shepherd2-dokku
+cd /home/mavi/work/my/shepherd2-dokku
+git checkout poll-churn-retention-and-last-build
+[[ -r ~/.ssh/id_ed25519.pub ]] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
 
 # 1. Install — and confirm the new retention line fires.
-cd /home/mavi/work/my/shepherd2-dokku
 mkdir -p ideas/upstream-bug-reports
 sudo ./shepherd2-install --domain shepherd2.test --mode http \
      --ssh-key /home/mavi/.ssh/id_ed25519.pub --yes 2>&1 \
@@ -48,13 +58,17 @@ sudo sed -i 's|^\*/5|#*/5|' /etc/cron.d/shepherd2
 sudo dokku builds:set --global retention                   # unset -> back to 20
 sudo dokku builds:report --global | grep -i retention
 
-# 4. One app, and the cheapest one we know deploys unmodified from GitHub (probe item 20).
+# 4. One app. Heroku's own Node sample, because the defect is in cmd-git-sync *before* any builder
+#    is reached, so the cheapest app that deploys is the right one — and a stock Heroku sample is
+#    the most credible thing to name in the report. Fallback if it misbehaves:
+#    https://github.com/mvysny/karibu-helloworld-application with --buildpack heroku/gradle, which
+#    probe item 20 proved deploys unmodified — at the cost of a 3m15s build and a 1.3 GB cache volume.
 echo '127.0.0.1 demo.shepherd2.test' | sudo tee -a /etc/hosts
-sudo shepherd2 create-app demo https://github.com/mvysny/karibu-helloworld-application \
-     --owner mavi@vaadin.com --buildpack heroku/gradle
+sudo shepherd2 create-app demo https://github.com/heroku/node-js-getting-started \
+     --owner mavi@vaadin.com --buildpack heroku/nodejs
 
 # 5. Report #1's repro, exactly as drafted below.
-REPO=https://github.com/mvysny/karibu-helloworld-application
+REPO=https://github.com/heroku/node-js-getting-started
 for i in 1 2 3; do sudo dokku git:sync --build-if-changes demo "$REPO"; done
 sudo dokku builds:list demo --format json > ideas/upstream-bug-reports/records-3-ticks.json
 sudo dokku git:sync --build demo "$REPO"                   # a real deploy, unchanged ref
@@ -161,9 +175,9 @@ Every step above is what a box did on 2026-09-11, on 0.38.27.
 
 ### Additional information
 
-A Vaadin/Java app on the herokuish builder with `heroku/java` pinned, but nothing about the app
-matters: the leak is in `cmd-git-sync` before any builder is reached, and a plain `git:sync` with no
-build flag leaks identically.
+Reproduced with `heroku/node-js-getting-started` on the herokuish builder, `heroku/nodejs` pinned —
+but nothing about the app matters: the leak is in `cmd-git-sync` before any builder is reached, and a
+plain `git:sync` with no build flag leaks identically. *(Adjust if the box run used the fallback app.)*
 
 **Suggested fix.** Finalize (or discard) the record on the no-change path before returning — the ref
 comparison already has what it needs, and `CURRENT_REF` is captured before the capture starts. Moving

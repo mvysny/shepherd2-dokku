@@ -179,7 +179,14 @@ Ports map json:                     null
 Nothing in `ports:set`; `http:80:5000` is detected. **It survived** three further builds and two
 successful deploys — `Ports map` is still empty and `Ports map json` still `null`. Item 8 closed.
 
-### FINDING — punch-list 18: the http-only mode behaves, and `hsts` is genuinely inert
+### ~~FINDING — punch-list 18: the http-only mode behaves, and `hsts` is genuinely inert~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *nginx (the default)*, on the bullet whose `[unverified]` template reading it
+settles: the deployed-app headers, the absent redirect, and the inert-rather-than-unset `hsts`.
+Punch-list 18 struck. `D_cert`'s "box questions" consequence now separates its answered http half from
+its untouched https half, and `README.md`'s mode-choice bullet carries the asymmetry an operator needs
+— an http box cannot leak HSTS by accident, and the day a certificate appears the same computed `true`
+starts sending it. Evidence kept below.
 
 On the undeployed app, `nginx:show-config hello` is a plain-http vhost — `listen 80` / `listen [::]:80`
 and **no `ssl`, no `443`, no redirect, no `Strict-Transport-Security` anywhere in the generated file**.
@@ -434,7 +441,12 @@ never a container-to-anything boundary. And on a real VPS, `169.254.169.254` wou
 the one with a genuinely bad worst case, and it is the strongest argument for the v2 `DOCKER-USER`
 rule. Measured, as the item asked, to decide whether v2 bothers: **it should.**
 
-### FINDING — an http-mode box still listens on 443, and that is Dokku being careful
+### ~~FINDING — an http-mode box still listens on 443, and that is Dokku being careful~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *nginx (the default)*, next to the undeployed-app 502 vhost: the catch-all's
+`ssl_reject_handshake on` and `return 444`, and what each means for reachability. `README.md` gains it
+as its own settled-thing bullet, since "443 is open on the http box" is exactly the sort of thing that
+gets reported as a finding. Evidence kept below.
 
 Worth recording under item 18 because it looks alarming and is not. `/etc/nginx/conf.d/00-default-vhost.conf`
 is Dokku's catch-all, installed by the deb:

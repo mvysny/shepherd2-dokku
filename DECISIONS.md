@@ -693,11 +693,16 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   is still set and apps are still `PROJECTID.mydomain.me`; what http mode drops is the zone, the `*`
   record and the API token. Resolution can then come from the client's `/etc/hosts`, one line per app —
   which is exactly why this mode is the one a test VM uses, and why `README.md` owns that recipe.
-- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*):
-  that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
-  re-applies to every app and reloads nginx without dropping connections; that an app created and
-  never yet deployed serves the global cert on its first successful deploy; and — for the http mode —
-  that an app on a box with no certificate serves plain http with no redirect and no HSTS header.
+- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*).
+  The http half is **answered** (2026-09-11): an app on a box with no certificate serves plain http on
+  80, emits no `Strict-Transport-Security` and issues no redirect, and `hsts` is *inert* rather than
+  merely unset — `nginx:report` computes it `true`, and the header still appears nowhere, because it
+  hangs off an ssl listener that does not exist. That is what makes the mode safe to run and
+  unrepairable to leave. **Nothing of the https half has been run**: that `lego run --dns godaddy`
+  succeeds with the current credentials; that `global-cert:set` on renewal re-applies to every app and
+  reloads nginx without dropping connections; and that an app created and never yet deployed serves
+  the global cert on its first successful deploy. Those are punch-list item 4 and need their own box —
+  `ideas/production-cutover.md`.
 
 ## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
 

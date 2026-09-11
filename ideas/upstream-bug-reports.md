@@ -313,10 +313,12 @@ What is and is not established:
   app's log — but we run `D_single_operator`, one keyholder with root, so this box has no boundary to
   cross and we cannot demonstrate the interesting case.
 
-**Route: the private one, not an issue.** Dokku takes GitHub Security Advisories and has published five
-CVEs through them (`github.com/dokku/dokku/security/advisories/new`), and a path built from unvalidated
-input belongs there rather than in a public thread. Nothing here is urgent for us: on a
-`D_single_operator` box the caller is already root.
+**Route: email, not an issue and not the advisory form.** GitHub private vulnerability reporting is
+**disabled** on `dokku/dokku` (`/security/advisories/new` 404s; the API confirms `{"enabled":false}`),
+so the five published CVEs did not come in that way. `CONTRIBUTING.md` → *Reporting security issues* is
+the documented channel and it is explicit: **"DO NOT file a public issue, instead send your report
+privately to `dokku@josediazgonzalez.com`."** That is where this goes. Nothing here is urgent for us: on
+a `D_single_operator` box the caller is already root.
 
 **Operator's assessment, 2026-09-11, and it is the right one:** the blast radius is small. `builds:output`
 runs as the `dokku` user, so root-only files are out of reach; and on stock Dokku anyone who can run it
@@ -339,7 +341,10 @@ The severity-deciding one, if there is appetite: a second app, then
 `dokku builds:output <app-a> ../<app-b>/<a-real-build-id-of-b>` — same box, same owner. It is the only
 check that shows the app argument being validated while the path leaves the app's directory.
 
-### Advisory draft — for review, not sent
+### Email draft — for review, not sent
+
+Send to `dokku@josediazgonzalez.com`, subject something like *"Security: unvalidated build id in
+`builds:output` allows reading arbitrary `.log` files"*. Body below.
 
 **Summary:** `builds:output` builds a file path from an unvalidated build id, allowing reads of any
 `.log` file the `dokku` user can reach

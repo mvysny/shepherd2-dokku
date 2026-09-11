@@ -17,12 +17,12 @@ this folder is the only record, and it is complete enough to graduate from witho
 | 2 isolation + routing | **closed** — both halves, with a self-reach control |
 | 3 `daemon.json` | **closed** (first half) — Dokku's postinst writes it; the merge branch is the live one |
 | 3 the ~30-network wall | **not run** — needs stock pools, i.e. a VM snapshot this run did not have |
-| 6 two-build drill | in progress |
+| 6 two-build drill | **closed** — 924 downloads from central each, nothing shared |
 | 7 container naming | **closed** — `hello.web.1`; build containers get random names; `com.dokku.*` labels |
 | 8 ports auto-wired | **closed** — `http:80:5000`, detected, survives rebuilds |
 | 10 foreign `initial-network` | **closed**, and it found a correction for `D_isolation` |
 | 11 what an app reaches | **closed** — measured, and it argues *for* the v2 `DOCKER-USER` rule |
-| 12 Traefik 502 | pending — last, as planned |
+| 12 Traefik 502 | **partial** — mechanism confirmed from `traefik:show-config`; the live 502 not run |
 | 13 warm second build | **closed** for both Maven and Gradle |
 | 15 pre-compiled bundle | **closed** on a box, not just off it |
 | 17 build CPU | **closed** — holds; marker dropped from `shepherd2:25` |
@@ -31,8 +31,17 @@ this folder is the only record, and it is complete enough to graduate from witho
 | 20 Gradle buildpack | **closed** — all three parts |
 | 4, 9, 14, 16 | out of scope here, as planned |
 
-Two v1 bugs came out of it, both fixed: the `ssh-keys:add` abort in `shepherd2-install`, and the
-address-pool comment pointing at the wrong branch.
+**Three v1 bugs in our own code came out of it, all fixed and all verified on the box** — none of
+which any amount of reading would have found. See *Bugs the box found in our own code* in
+`findings.md`:
+
+1. `shepherd2-install` aborted at the admin-key step (`ssh-keys:add` is invisible to a `<` redirect).
+2. `shepherd2 wait-idle` could never return on a live box — the no-op poll records it counted as
+   running never stop being `status: running`.
+3. `shepherd2 destroy-app` left the destroyed app's hostname hanging for 60s a request, because
+   `apps:destroy` removes the vhost without reloading nginx.
+
+Plus the address-pool comment, which pointed at the branch the install never takes.
 
 Sidecars, all in `ideas/http-probe-plan/`:
 

@@ -1183,8 +1183,11 @@ get for free is a usable record set — see the next edge.
 nothing still writes a record.** `cmd-git-sync` calls `dokku_setup_build_capture` *before* it fetches
 and before it compares refs, then `return`s on the no-change path without ever reaching
 `builds-record-finalize`. **[src]** So every no-op tick leaves a `running` record — dead PID, so
-display status `abandoned` — plus its log file, holding the fetch chatter. Three consequences, in the
-order they arrive: **[src]**
+display status `abandoned` — plus its log file, holding the fetch chatter. (It is not only the
+no-change path: a plain `git:sync` with no `--build*` flag, and a `--build` whose *clone* fails, both
+fall off the end unfinalized the same way — reported as
+[dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030), where the box transcripts live.)
+Three consequences, in the order they arrive: **[src]**
 
 1. **Nothing prunes them in the meantime.** `PruneAppBuilds` runs *only* from
    `builds-record-finalize`, so they accumulate at one per tick per app, unboundedly, for as long as

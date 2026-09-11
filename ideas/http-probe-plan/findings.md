@@ -886,21 +886,12 @@ Two incidental facts came out of the rig itself:
   root-owned repo fails the clone with git's `fatal: detected dubious ownership`. This sharpens the
   note earlier in this file, which says only "readable".
 
-### FINDING — punch-list 14, second half: **a `--global` config var does reach the build's ENV_DIR**
+### ~~FINDING — punch-list 14, second half: a `--global` config var reaches the build's ENV_DIR~~ — **GRADUATED 2026-09-11**
 
-The item asks whether the `pre-build` trigger bundles the app's own config or the merged view. It is
-the **merged** view. With `PROBE_GLOBAL` set globally and `PROBE_APP` set on the app, `ls $ENV_DIR`
-inside the build shows both, alongside Dokku's own globals:
-
-```
-/tmp/env:  CURL_CONNECT_TIMEOUT  CURL_TIMEOUT  GIT_REV
-           PROBE_APP=app-value-7  PROBE_GLOBAL=global-value-42  SHEPHERD_TLS_MODE=http
-```
-
-So a build-time setting can be applied box-wide with `config:set --global` and never touch a repo —
-which is the variant the item wanted, and it is the cheaper half of the answer for the nine apps.
-`SHEPHERD_TLS_MODE` turning up in every build is a free consequence worth knowing about; nothing reads
-it there today.
+Landed in `RESEARCH.md` → *The herokuish builder*, on the existing "Config vars are available at build
+time" bullet, which now says the ENV_DIR carries the **merged** view and marks it
+`[src; verified on a box]`; punch-list 14's global half is struck. Nothing else owns any of it — it is
+a Dokku fact and nothing about it changes a choice of ours.
 
 ### FINDING — punch-list 14, first half: it is `NPM_CONFIG_CACHE`, uppercase, and a Node app does not need it
 

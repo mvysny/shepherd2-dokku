@@ -229,9 +229,15 @@ heroku/heroku:24-build` **[src]** — a current stack. The app supplies **no bui
   `$build_path`, `$cache_path`, `$env_path` and `$buildpack_path` to the unprivileged user (default
   `herokuishuser`) and invokes `bin/compile` through `unprivileged`. The build container is created
   with no `--privileged`, no Docker socket and no special network. **[src]**
-- **Config vars are available at build time.** `builder-herokuish/pre-build` bundles every app config
-  var into an ENV_DIR at `/tmp/env` inside the build ("Adding BUILD_ENV to build environment…"). **[src]**
-  This is the opposite of the Dockerfile builder, where config vars are runtime-only.
+- **Config vars are available at build time, and the ENV_DIR carries the *merged* view.**
+  `builder-herokuish/pre-build` bundles config vars into an ENV_DIR at `/tmp/env` inside the build
+  ("Adding BUILD_ENV to build environment…") **[src]**, and what lands there is global + app rather
+  than the app's own alone: with one var set by `config:set --global` and another set on the app,
+  `ls $ENV_DIR` inside a build shows both, alongside Dokku's own `CURL_CONNECT_TIMEOUT` / `CURL_TIMEOUT`
+  and `GIT_REV`. **[src; verified on a box, 2026-09-11]** So a build-time setting can be applied
+  box-wide with `config:set --global` and never touch a repo — worth knowing before adding a config var
+  to nine repositories. The same mechanism puts `SHEPHERD_TLS_MODE` into every build; nothing reads it
+  there. This is the opposite of the Dockerfile builder, where config vars are runtime-only.
 - **Build-phase `docker-options` are genuine container options here, unfiltered.** The trigger output
   is split and passed straight to `docker container create` with **no allowlist** — unlike the
   Dockerfile builder, which filters against a flag list. So `-v`, `--cpus` and anything else
@@ -1440,10 +1446,10 @@ first throwaway VPS:
 14. **(v2.) Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
     rebuilds?** It should: config vars reach the build via the ENV_DIR `[src]` and `/cache` is the
     per-app volume. Confirm npm honours it under whatever package manager Vaadin picks (npm vs pnpm —
-    pnpm reads `store-dir`, not `npm_config_cache`). And the variant that would keep the setting off
-    the app's repo entirely: does a **`config:set --global`** var reach the build's ENV_DIR too? The
-    `pre-build` trigger bundles the *app's* config `[src]`, and whether that is the merged view
-    (`config:keys --merged`) is `[unverified]`.
+    pnpm reads `store-dir`, not `npm_config_cache`). ~~And the variant that would keep the setting off
+    the app's repo entirely: does a **`config:set --global`** var reach the build's ENV_DIR too?~~
+    **Answered 2026-09-11: yes — the ENV_DIR is the merged view**, so a global var reaches every
+    build. See *The herokuish builder*.
 15. **Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
     no custom frontend and no add-ons (Vaadin 24.1+)? **Answered for this farm on 2026-09-10, not on a
     box**: the operator confirms every app here uses that bundle, so items 13, 14 and 16 stop mattering

@@ -164,7 +164,8 @@ impossible to retrofit:
 
 ## Adding your project
 
-Not written yet, but the contract is settled. **It has changed from both predecessors** — see
+Unproven — no project has been onboarded onto a Shepherd2 box yet — but the contract is settled.
+**It has changed from both predecessors** — see
 [`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
 is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency
 cache is isolated from every other's.
@@ -176,7 +177,8 @@ cache is isolated from every other's.
 2. A `Procfile` at the root, naming the `web` process.
 3. For a Maven project, a `system.properties` pinning `java.runtime.version`. The buildpack runs
    `mvn clean dependency:list install -DskipTests` unless `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS`
-   say otherwise.
+   say otherwise — and a **Vaadin** project has to say otherwise, or it is built in development mode
+   (*Vaadin under herokuish*, below).
 4. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
    Java project that commits a `package.json`, which Vaadin tells you to do, is detected as a *Node*
    app, because `nodejs` is tried before `java`.
@@ -208,21 +210,97 @@ or it is re-cloned at whatever that branch points to on the day, and the same co
 stops building the same way twice. The bundled Heroku buildpacks are already pinned inside the
 builder image.
 
+### Coming from a Dockerfile: the swap, line by line
+
+If your project was hosted on either predecessor it carries a `Dockerfile`, and that file is the thing
+this box no longer reads ([`D_builder`](DECISIONS.md)). Leave it in the repo if you build locally with
+it — the box simply ignores it — and add the herokuish equivalents beside it:
+
+| What the `Dockerfile` did | What replaces it here |
+|---|---|
+| `FROM openjdk:21-…` — picked the JDK | `system.properties` in the repo root: `java.runtime.version=21` |
+| `RUN ./mvnw … -Pproduction` — ran the build | the buildpack's own goals, adjusted with `MAVEN_CUSTOM_OPTS` (next section — **Vaadin apps must adjust them**) |
+| `CMD java -jar …` — named the process | `Procfile` in the repo root: `web: java -Xmx200m -jar target/your-app.jar` |
+| `EXPOSE 8080` | nothing. Listen on `$PORT` — see the end of this section |
+| `ARG offlinekey` / `ENV VAADIN_OFFLINE_KEY=…` | a config var the operator sets; build args are gone with the Dockerfile |
+| `RUN --mount=type=cache,target=/root/.m2 …` | nothing. The buildpack already keeps `.m2/repository` in this app's own `/cache` volume |
+
+The `Procfile` line is per project — whatever your build actually produces, whether that is a jar, an
+appassembler `bin/run` script or an exploded directory. Two things about it that bite:
+
+- **`web` is the process type the proxy routes to.** Name it anything else and the app deploys and is
+  unreachable.
+- **Keep `-Xmx` under the memory limit** (256 MB by default), for the reason at the end of this section.
+
+### Vaadin under herokuish
+
+Everything above applies to any JVM app. These four are specific to Vaadin, and the first one is not
+optional.
+
+**1. The production build is not what you get by default.** The Java buildpack runs
+`mvn clean dependency:list install -DskipTests` — which does *not* activate Vaadin's `production`
+profile. Without it your app is built in development mode and tries to start a Vite dev server at
+runtime, on a box with no Node and no network to fetch one. So every Vaadin Maven project needs:
+
+```dotenv
+# .env in the repo root — MAVEN_CUSTOM_OPTS *replaces* the default opts, so keep -DskipTests
+MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction
+```
+
+…or the same thing from the box side, which wins over `.env` and keeps a platform detail out of your
+repository:
+
+```bash
+dokku config:set myproject MAVEN_CUSTOM_OPTS='-DskipTests -Pproduction'
+```
+
+**2. Do this if your app builds Vite.** It only does when it has to: an app with no custom JS/TS and no
+frontend-customising add-ons uses Vaadin's **pre-compiled production bundle** (24.1+) and skips npm and
+Vite entirely. That is the recommended state — **stay on the default bundle** — because on this box the
+frontend build is slow and stays slow: `vaadin-maven-plugin` downloads its own Node into `~/.vaadin`
+and installs `node_modules` into the source checkout, and both are thrown away after every build, since
+`$HOME` *is* that checkout during the Maven build. If your app genuinely must customise the frontend:
+
+- **commit `src/main/bundles/`**, as Vaadin's own guidance says, so the compiled bundle travels in the
+  repo instead of being rebuilt here every time the poll finds a commit;
+- if you cannot, expect the full npm + Vite cost on every build, and read *The `.env` recipe* below for
+  the two unverified lines that might cut it down.
+
+**3. Do this if you need `VAADIN_OFFLINE_KEY`** — i.e. your app uses Pro or Prime components. The
+licence has to be present **at build time**, and on the predecessors that meant a Docker build arg,
+which no longer exists. Here it is a config var, which the builder bundles into the build environment:
+
+```bash
+# the *server* licence key from vaadin.com/myaccount/licenses — not the offline development key
+dokku config:set --no-restart myproject VAADIN_OFFLINE_KEY='the-key'
+```
+
+- **Set it before the first build**, or that build fails and you retry with `shepherd2 rebuild`.
+- **Never put it in `.env`.** That file is committed to your repository; a licence key is a secret, and
+  `dokku config:set` is what keeps it on the box. (Ask the operator to set it: config vars are theirs.)
+- It reaches the build because the herokuish builder bundles every app config var into an `ENV_DIR`
+  before the buildpack runs — see [RESEARCH.md](RESEARCH.md#config-env-vars-and-app-metadata). That is
+  read from Dokku's source, not yet confirmed on a running box.
+
+**4. Gradle projects: unverified.** The `heroku/gradle` buildpack follows Heroku's convention of
+running a `stage` task, overridable with a `GRADLE_TASK` config var, and Vaadin's Gradle plugin takes
+`-Pvaadin.productionMode` rather than a Maven profile. Neither has been run on this box — nothing in
+[RESEARCH.md](RESEARCH.md) covers the Gradle buildpack yet — so treat a Gradle onboarding as the thing
+to try first and expect a couple of rounds.
+
 ### The `.env` recipe
 
 A committed `.env` reaches the **build** environment, so a project can point its own caches at the
 per-app cache volume that Dokku mounts at `/cache`. That volume is yours alone and survives between
 builds, which is what stops the Maven tree being re-downloaded on every scheduled rebuild.
 
-**As this box actually runs, you need no `.env` at all** — not for Maven, and not for Vaadin. The
-buildpack already puts `.m2/repository` in the cache volume, and every Vaadin app here relies on
-Vaadin's **pre-compiled production bundle**, which skips npm and Vite entirely for an app with no
-frontend-customising add-ons and no custom JS/TS (Vaadin 24.1+). No frontend build means nothing to
-cache, and that is the recommendation rather than a happy accident: **stay on the default bundle.** If
-your app must customise the frontend, commit `src/main/bundles/` as Vaadin's own guidance says, so the
-compiled bundle travels in the repo instead of being rebuilt here every five minutes.
+**As this box actually runs, you need nothing here for *caching*** — not for Maven, and not for
+Vaadin. The buildpack already puts `.m2/repository` in the cache volume, and an app on Vaadin's
+pre-compiled production bundle runs no frontend build, so there is nothing to cache. (The one `.env`
+line a Vaadin app *does* generally need is `MAVEN_CUSTOM_OPTS`, and that is about the production
+profile rather than the cache — see *Vaadin under herokuish* above.)
 
-**If you ever do need a real frontend build on the box, expect it to be slow — the fix is a v2 topic.**
+**If you do need a real frontend build on the box, expect it to be slow — the fix is a v2 topic.**
 `vaadin-maven-plugin` downloads its own Node into `~/.vaadin` and installs `node_modules` into the
 source checkout, and both are discarded after every build, because during the Maven build `$HOME` *is*
 that checkout. The two lines below are the candidate fix. They are **unverified — never run on a real
@@ -251,9 +329,9 @@ Prefer `.env` to `.npmrc` for the npm cache: recent pnpm no longer expands `${VA
 repository-controlled `.npmrc`, and Vaadin's own recommended `.gitignore` excludes that file anyway.
 `dokku config:set` sets the same variables from the box side and wins over `.env`.
 
-**Pay attention to the memory limit** the container will run under — **256 MB** unless the operator
-gave your app more. If
-the JVM asks for more it is hard-killed by the Linux OOM killer with no warning and no log message
+**Pay attention to the limits your app runs under** — **256 MB and 1 CPU at runtime, 2 GB and 2 CPU
+during the build**, unless the operator gave your app something else. If the JVM asks for more memory
+than the runtime limit it is hard-killed by the Linux OOM killer with no warning and no log message
 (only the host's `dmesg` records it). Run Java with `-Xmx` a little below the limit, so the app dies
 with an `OutOfMemoryError` that shows up in the logs instead.
 

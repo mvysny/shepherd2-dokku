@@ -132,8 +132,10 @@ already has** (`D_dokku_is_truth`).
 `create-app`'s flags: `--owner EMAIL`, `--mem`, `--cpu`, `--build-mem`, `--build-cpu`, `--buildpack`,
 `--build-dir`. There is no `--domain` (custom domains are v2, and `domains:add` is a `dokku` command),
 no `--postgres` (a managed database is v2), and no cache flag of any kind (`D_builder` — the cache is a
-volume Dokku names). The limit defaults are **`256m` runtime and `2g` build** (operator, 2026-09-10):
-one build runs at a time box-wide, so the build figure is a peak rather than a per-app multiplier.
+volume Dokku names). The limit defaults are the farm's one profile — **`256m` / 1 CPU runtime and
+`2g` / 2 CPU build** (operator, 2026-09-10, CPU added 2026-09-11): one build runs at a time box-wide,
+so the build figures are a peak rather than a per-app multiplier. All four are always applied; `clear`
+as a flag value is Dokku's own way to ask for no limit.
 
 ## Flow — registering a project
 

@@ -14,8 +14,8 @@ class CreateAppTest < Minitest::Test
     assert_equal [
       'apps:create demo',
       'config:set --no-restart demo SHEPHERD_GIT_URL=https://github.com/me/demo SHEPHERD_OWNER=me@example.com',
-      'resource:limit --memory 256m demo',
-      'resource:limit --process-type build --memory 2g demo',
+      'resource:limit --memory 256m --cpu 1 demo',
+      'resource:limit --process-type build --memory 2g --cpu 2 demo',
       'network:create app-demo',
       'network:set demo initial-network app-demo',
       'buildpacks:set demo heroku/java',
@@ -52,27 +52,33 @@ class CreateAppTest < Minitest::Test
     assert_includes dokku.mutations, 'git:sync --build demo https://github.com/me/demo main'
   end
 
-  def test_defaults_are_256m_runtime_and_2g_build
+  # The farm's one profile (operator, 2026-09-11). All four are emitted every time rather than left
+  # unset, so no registration can silently run uncapped by forgetting a flag.
+  def test_defaults_are_the_farm_profile
     dokku = DokkuDouble.new
     shepherd(dokku).create_app('demo', 'https://github.com/me/demo')
-
-    assert_includes dokku.mutations, 'resource:limit --memory 256m demo'
-    assert_includes dokku.mutations, 'resource:limit --process-type build --memory 2g demo'
-  end
-
-  def test_cpu_limits_are_omitted_unless_asked_for
-    dokku = DokkuDouble.new
-    shepherd(dokku).create_app('demo', 'https://github.com/me/demo')
-
-    assert_empty dokku.mutations.grep(/--cpu/)
-  end
-
-  def test_cpu_limits_are_passed_through_when_given
-    dokku = DokkuDouble.new
-    shepherd(dokku).create_app('demo', 'https://github.com/me/demo', nil, cpu: '1', build_cpu: '2')
 
     assert_includes dokku.mutations, 'resource:limit --memory 256m --cpu 1 demo'
     assert_includes dokku.mutations, 'resource:limit --process-type build --memory 2g --cpu 2 demo'
+  end
+
+  # `clear` is Dokku's own value for "no limit", and the escape hatch now that the default is a number.
+  def test_clear_passes_through_as_the_way_to_ask_for_no_limit
+    dokku = DokkuDouble.new
+    shepherd(dokku).create_app('demo', 'https://github.com/me/demo', nil, cpu: 'clear', build_cpu: 'clear')
+
+    assert_includes dokku.mutations, 'resource:limit --memory 256m --cpu clear demo'
+    assert_includes dokku.mutations, 'resource:limit --process-type build --memory 2g --cpu clear demo'
+  end
+
+  # Values that differ from every default, or this proves nothing about overriding.
+  def test_explicit_limits_override_the_defaults
+    dokku = DokkuDouble.new
+    shepherd(dokku).create_app('demo', 'https://github.com/me/demo', nil,
+                               mem: '512m', cpu: '2', build_mem: '4g', build_cpu: '4')
+
+    assert_includes dokku.mutations, 'resource:limit --memory 512m --cpu 2 demo'
+    assert_includes dokku.mutations, 'resource:limit --process-type build --memory 4g --cpu 4 demo'
   end
 
   def test_no_ref_leaves_the_ref_off_the_sync

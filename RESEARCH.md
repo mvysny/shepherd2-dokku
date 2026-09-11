@@ -1374,6 +1374,14 @@ first throwaway VPS:
     `exit_code: -1`, and the *previous* real build's record should be gone once enough ticks have
     accumulated. All three claims are `[src]`-derived (*Build tracking*), so this is a confirmation,
     not an open question — worth the five minutes because a whole design choice hangs off it.
+20. **Does a Vaadin *Gradle* app build under `heroku/gradle` at all?** Everything above quietly assumes
+    Maven, and roughly half the farm is Gradle (`ideas/production-cutover.md`), so this is a hole rather
+    than a detail. Three parts, all `[unverified]` because nothing in this file covers that buildpack
+    beyond its place in the detection order: which task it runs with no configuration (Heroku's
+    convention is a `stage` task, overridable with a `GRADLE_TASK` config var); whether Vaadin's
+    `-Pvaadin.productionMode` is the way to reach a production build, there being no Maven profile to
+    activate; and whether `~/.gradle` lands in the `cache-$APP` volume the way `.m2/repository` does,
+    since if it does not, every Gradle build re-downloads its dependency tree.
 
 ## Sources
 

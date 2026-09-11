@@ -29,4 +29,4 @@ researched:
 
 Note that the thing a quota was protecting against got smaller: one build runs at a time
 (`SOLUTION.md` → the poll's non-blocking lock), so the build figure is a box-wide peak rather than a
-per-app multiplier, and the default limits are 256m runtime and 2g build.
+per-app multiplier, and the default limits are 256m / 1 CPU runtime and 2g / 2 CPU build.

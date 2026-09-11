@@ -14,9 +14,11 @@ and its tests exist, and **no box has been installed from any of it yet**.
 **`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
-throwaway VPS. The feature survey that decided *what* the rebuilt thing does has graduated and is gone
-(`D_no_feature_list`); what is left in `ideas/` is five open questions carrying `Q_` slugs and two
-pieces of deferred work — all v2 except `Q_poll_churn`, which is a v1 gap in the poll's build-log story.
+box, and the dev VM is now ready to be one (`ideas/http-probe-plan.md`). The feature survey that decided
+*what* the rebuilt thing does has graduated and is gone (`D_no_feature_list`); what is left in `ideas/`
+is five open questions carrying `Q_` slugs, two pieces of deferred work — all v2 except `Q_poll_churn`,
+which is a v1 gap in the poll's build-log story — and two plans for running the punch list, one per TLS
+mode, since `D_cert` means no single box can answer all of it.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:

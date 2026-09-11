@@ -19,10 +19,11 @@
 # create-app OPTIONS
 #   --owner EMAIL      contact address, stored as SHEPHERD_OWNER. Not an ACL (D_single_operator).
 #   --mem SIZE         runtime memory limit. Default 256m.
-#   --cpu N            runtime CPU limit. Default: none.
+#   --cpu N            runtime CPU limit. Default 1. Pass `clear` for no limit.
 #   --build-mem SIZE   build-phase memory limit. Default 2g. One build runs at a time box-wide, so
 #                      this is a peak rather than a per-app multiplier.
-#   --build-cpu N      build-phase CPU limit. Default: none. [unverified — punch-list 17]
+#   --build-cpu N      build-phase CPU limit. Default 2. Pass `clear` for no limit.
+#                      [unverified — punch-list 17] whether herokuish honours it.
 #   --buildpack NAME   buildpack to pin, e.g. heroku/java. Strongly recommended: herokuish detects
 #                      nodejs before java, and a Vaadin app commits a package.json, so *relying on
 #                      detection is a bug* (D_builder). Without it the repo's own .buildpacks decides.
@@ -58,6 +59,8 @@ OWNER_VAR      = 'SHEPHERD_OWNER'
 
 DEFAULT_MEMORY       = '256m'
 DEFAULT_BUILD_MEMORY = '2g'
+DEFAULT_CPU          = '1'
+DEFAULT_BUILD_CPU    = '2'
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -242,17 +245,20 @@ class Shepherd2
     config[OWNER_VAR] = options[:owner] if options[:owner]
     @dokku.run('config:set', '--no-restart', id, *config.map { |k, v| "#{k}=#{v}" })
 
-    runtime_limit = ['resource:limit', '--memory', options.fetch(:mem, DEFAULT_MEMORY)]
-    runtime_limit += ['--cpu', options[:cpu].to_s] if options[:cpu]
-    @dokku.run(*runtime_limit, id)
+    # All four limits are always emitted: the farm runs one profile, and a default nobody has to
+    # remember is worth more than the ability to leave a limit unset by accident. `clear` as a value
+    # is Dokku's own way to say "no limit" and passes straight through.
+    @dokku.run('resource:limit',
+               '--memory', options.fetch(:mem, DEFAULT_MEMORY),
+               '--cpu', options.fetch(:cpu, DEFAULT_CPU).to_s, id)
 
-    build_limit = ['resource:limit', '--process-type', 'build',
-                   '--memory', options.fetch(:build_mem, DEFAULT_BUILD_MEMORY)]
-    # Build CPU is expected to work on the herokuish path, which passes build options to
-    # `docker container create` unfiltered. [unverified — punch-list 17]: if it turns out not to, this
-    # flag is dropped, not worked around.
-    build_limit += ['--cpu', options[:build_cpu].to_s] if options[:build_cpu]
-    @dokku.run(*build_limit, id)
+    # Build CPU rides the herokuish path, which the docs say honours both cpu and memory against the
+    # `build` process type (RESEARCH.md, *Resource limits*). [unverified — punch-list 17] is whether
+    # that holds on a box; if it does not, the app simply builds uncapped — the flag is dropped then,
+    # not worked around.
+    @dokku.run('resource:limit', '--process-type', 'build',
+               '--memory', options.fetch(:build_mem, DEFAULT_BUILD_MEMORY),
+               '--cpu', options.fetch(:build_cpu, DEFAULT_BUILD_CPU).to_s, id)
 
     # initial-network is persisted app state that Dokku re-applies at container creation, so nothing
     # ever has to re-attach anything afterwards (D_isolation). Set before the first build, or that
@@ -549,9 +555,9 @@ class CLI
       o.banner = 'usage: shepherd2 create-app ID URL [REF] [options]'
       o.on('--owner EMAIL', 'contact address, stored as SHEPHERD_OWNER') { |v| options[:owner] = v }
       o.on('--mem SIZE', "runtime memory limit (default #{DEFAULT_MEMORY})") { |v| options[:mem] = v }
-      o.on('--cpu N', 'runtime CPU limit') { |v| options[:cpu] = v }
+      o.on('--cpu N', "runtime CPU limit (default #{DEFAULT_CPU}; `clear` for none)") { |v| options[:cpu] = v }
       o.on('--build-mem SIZE', "build memory limit (default #{DEFAULT_BUILD_MEMORY})") { |v| options[:build_mem] = v }
-      o.on('--build-cpu N', 'build CPU limit') { |v| options[:build_cpu] = v }
+      o.on('--build-cpu N', "build CPU limit (default #{DEFAULT_BUILD_CPU}; `clear` for none)") { |v| options[:build_cpu] = v }
       o.on('--buildpack NAME', 'buildpack to pin, e.g. heroku/java') { |v| options[:buildpack] = v }
       o.on('--build-dir PATH', 'subdirectory of the repo to build') { |v| options[:build_dir] = v }
     end

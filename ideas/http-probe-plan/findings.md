@@ -567,7 +567,14 @@ So the arithmetic in `D_isolation` stays arithmetic until someone runs this on a
 snapshot. **Note that punch-list 10's result may make the whole question moot**: one shared
 `icc=false` network gives the same isolation and allocates exactly one subnet.
 
-### FINDING — punch-list 6: cache isolation is impossible to breach, demonstrated
+### ~~FINDING — punch-list 6: cache isolation is impossible to breach, demonstrated~~ — **GRADUATED 2026-09-11**
+
+Landed: the drill and its 924-downloads-each table in `RESEARCH.md` → *The herokuish cache volume*,
+with punch-list 6 struck; the measured volume sizes in the same place, since they are a property of
+the buildpacks rather than of us. `D_builder`'s Status now cites the demonstration instead of waiting
+for it, and a new consequence carries the cost side — ~1.3 GB per Gradle app against ~205–280 MB per
+Maven one, so ~12 GB for nine Gradle apps, reclaimed by nothing but `repo:purge-cache`. `README.md`'s
+*Never prune volumes* gains the same budget line. Evidence kept below.
 
 `vbm-a` and `vbm-b` are **the same repository deployed under two ids**, which is the only way to
 guarantee the shared Maven coordinates the item needs: both build

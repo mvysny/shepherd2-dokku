@@ -635,6 +635,11 @@ Nine things that bite, all of them documented at length in [RESEARCH.md](RESEARC
   build is always about to want it ([`D_builder`](DECISIONS.md)). `repo:purge-cache` is the per-app
   lever, and `shepherd2 clearcache` is the safe blanket one.
 
+  **Budget for them**, since nothing reclaims them on its own: a Maven app's volume measures
+  **~205–280 MB**, a Gradle app's **~1.3 GB** — the Gradle buildpack caches Gradle itself and the JDK,
+  not just dependencies. Two projects built from the same repo keep two full copies; that is the
+  isolation working, not a leak. `docker system df -v` is how you see the bill.
+
 **Prefer a `dokku` command to a `docker` one** — `dokku ps:restart` over `docker restart`, the reports
 over `docker inspect`. Reaching around Dokku to the daemon is how its state drifts out from under it.
 `docker stats` is the exception that matters: Dokku does not do monitoring, by design, and apps are

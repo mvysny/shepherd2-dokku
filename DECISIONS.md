@@ -693,7 +693,10 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 
 ## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented. The one `[unverified]` that could have forced a
+**Status:** Accepted 2026-09-10, and **the requirement it exists for was demonstrated on a box
+2026-09-11**: one repository deployed under two ids, both installing the same
+`1.0-SNAPSHOT` coordinates, downloaded 924 artifacts from Central *each* and shared nothing
+(`RESEARCH.md` → *The herokuish cache volume*). The one `[unverified]` that could have forced a
 re-read — whether a Vaadin *frontend* build stays warm across rebuilds — **stopped being load-bearing
 the same day**: every app on this box uses Vaadin's pre-compiled production bundle, so it runs no
 frontend build at all, and caching one is deferred to v2 (see *Consequences*).
@@ -876,6 +879,13 @@ whole decision in one sentence.
   becomes one lever — `repo:purge-cache <app>` — and the successor to `shepherd-clearcache` prunes
   *volumes*, not buildx caches. Punch-list item 1 (does `--cache-to type=local` export at all) is moot
   and has been struck.
+- **Isolation is paid for in disk, and the bill is now measured.** A Maven app's cache volume is
+  ~205–280 MB; **a Gradle app's is ~1.3 GB**, because that buildpack caches Gradle itself and the JDK
+  as well as dependencies. Two ids on one repo cost two full copies — that is the same property the
+  requirement asks for, seen from the cost side. Roughly half the farm is Gradle
+  (`ideas/production-cutover.md`), so nine Gradle apps is ~12 GB of volumes that nothing reclaims on
+  its own: `clearcache` never touches volumes by design, and `repo:purge-cache <app>` is the only
+  lever. Worth watching on the production box rather than assuming the dev VM's headroom.
 - **The frontend half of a Vaadin build is the one thing this decision does not solve — and v1 does not
   need it solved.** It is not a herokuish weakness: the frontend is driven by Maven, so it is invisible
   to the node buildpack that would otherwise have cached it, on any builder. What retires the problem

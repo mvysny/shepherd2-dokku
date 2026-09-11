@@ -1,10 +1,13 @@
 # SOLUTION.md — the v1 box, assembled
 
-> **This describes the box we intend to build, not one that has ever been run.** Every piece below is
-> now written — both installers and the CLI — and no box has been installed from any of it yet.
-> Everything here is decided (each claim names the `D_` entry that decided it), but the parts
-> that rest on Dokku behaviour nobody has run yet are marked `[unverified]` and point at
-> `RESEARCH.md` → *Questions only a box can answer*.
+> **This box has been assembled once, in `http` mode, on a throwaway VM (2026-09-11).** Every piece
+> below is written — both installers and the CLI — and the install, four real apps, a poll tick, a
+> teardown and an uninstall all ran. Everything here is decided (each claim names the `D_` entry that
+> decided it); what remains `[unverified]` is Dokku behaviour that run did not reach, and each such
+> claim points at `RESEARCH.md` → *Questions only a box can answer*.
+>
+> **The `https` steps are the notable gap** — step 8 below has never executed. See *What is not yet
+> proven on a box*, at the end.
 
 **What this file owns:** the *assembly* — what ends up on the box, and how the pieces move together
 end to end. Those flows cross four or five decisions each and are therefore inside none of them.
@@ -321,12 +324,18 @@ Each of these is deferred with a decision behind it, not forgotten:
 
 ## What is not yet proven on a box
 
-The design leans on these, and the first throwaway VPS settles them —
-`RESEARCH.md` → *Questions only a box can answer* is the punch list, and the load-bearing items for v1
-are **2** (per-app networks isolate apps and leave nginx routing intact), **3** (address pools),
-**4** (the whole `D_cert` chain), **8** (the buildpack port wiring), **13** (a second build comes back
-warm), **17** (build CPU limits under herokuish) and **18** (an app on a box with no certificate serves
-plain http, with no redirect and no HSTS).
+The 2026-09-11 run settled most of the punch list — `RESEARCH.md` → *Questions only a box can answer*
+records each answer against its item. Four things are left, and only the first is load-bearing for v1:
 
-Items 14 and 16 are v2, and 9, 11 and 12 are measurements taken for later decisions rather than for
-this one.
+- **Item 4, the whole `D_cert` chain.** Step 8 above — lego's first issuance, `global-cert:set`, the
+  renewal hook re-applying to every app, and a new app picking the certificate up on its first deploy
+  — has never executed. It cannot be run here: `D_cert` makes the TLS mode one-way, so it needs its own
+  box with a real DNS zone. Planned in `ideas/production-cutover.md`.
+- **A true reboot.** The box survived a Docker daemon restart with `live-restore`, `ps:restore` and the
+  restart policy all doing their part, but a daemon restart is not a power cycle: it leaves the kernel,
+  the bridges and nginx untouched. The probe agent ran *on* the VM, so rebooting would have killed the
+  session mid-run.
+- **The two `shepherd2-uninstall` fixes made after the teardown** — the surgical `daemon.json` edit and
+  the second leftover directory. Both were exercised against the file shapes they handle, neither has
+  been through a real uninstall.
+- **Items 14 and 16**, which are v2 and wait on an app that customises its frontend.

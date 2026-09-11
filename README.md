@@ -1,10 +1,14 @@
 # Shepherd2 (Dokku)
 
-> **DESIGN PHASE — there is nothing to install yet.**
+> **v1 is written, and it has been run — on one throwaway VM, in `http` mode.**
 >
-> This repo currently holds documentation only. The v1 design is settled and written up in
-> [SOLUTION.md](SOLUTION.md) — what gets installed, what the CLI is, and how a build flows through the
-> box. Code follows that file.
+> On 2026-09-11 a dev VM was installed from this repo, ran four real Vaadin apps end to end, and was
+> uninstalled again. That run fixed three bugs in this code and answered most of the punch list in
+> [RESEARCH.md](RESEARCH.md).
+>
+> **What has never run anywhere is the `https` half** — lego, the wildcard certificate and its renewal
+> (`D_cert`, punch-list item 4). It needs a real DNS zone, and the plan for it is
+> `ideas/production-cutover.md`. Nothing here has hosted a project anyone depends on yet.
 
 Builds given git repos periodically and automatically deploys them to a Linux box running
 [Dokku](https://dokku.com). Serves as a homebrew "replacement" for Heroku, to publish your own pet
@@ -40,7 +44,7 @@ fork out.
 
 | If you want to… | Read |
 |---|---|
-| run, install or troubleshoot this box | this file (once there is something to run) |
+| run, install or troubleshoot this box | this file |
 | see the whole box at once — what is installed, and how a build flows through it | [SOLUTION.md](SOLUTION.md) |
 | know what **Dokku** does — a command, a flag, a plugin, a gap | [RESEARCH.md](RESEARCH.md) |
 | know *why* it's built this way, and what was rejected | [DECISIONS.md](DECISIONS.md) (`D_` entries) |
@@ -51,8 +55,9 @@ fork out.
 
 ## Minimum requirements
 
-Provisional — inherited from shepherd-traefik and Dokku's own documented minimums, not yet checked on a
-real box.
+Inherited from shepherd-traefik and Dokku's own documented minimums. The sizing is still provisional —
+what has actually been run is a 4 vCPU / 7.7 GB VM with 48 GB free, which built and served four Java
+apps comfortably, one at a time.
 
 * A VM with 8–16 GB of RAM; x86-64 or arm64. Ideally with a public IPv4 address.
   * Dokku's own documented minimum is 1 GB, but that is for Dokku, not for building JVM apps on the box.
@@ -88,8 +93,10 @@ real box.
 ## Installation
 
 One script, run as root from a checkout of this repository on a vanilla Ubuntu 24.04 box.
-**No box has been installed from it yet** — it is written but unproven, and the punch list in
-[RESEARCH.md](RESEARCH.md) is what proving it means.
+**The `http` mode has been installed from it, on a dev VM, and uninstalled again; the `https` mode has
+not been run anywhere** — that is punch-list item 4 in [RESEARCH.md](RESEARCH.md), and it needs a real
+DNS zone rather than a `/etc/hosts` file. Expect the certificate steps to want a first outing before
+you trust them with a domain you care about.
 
 ```bash
 # A real box: one wildcard certificate for *.mydomain.me, issued over DNS-01.
@@ -179,7 +186,9 @@ impossible to retrofit:
 
 ## Adding your project
 
-Unproven — no project has been onboarded onto a Shepherd2 box yet — but the contract is settled.
+The contract is settled, and **four projects have been through it on a box** — two Maven, one Gradle,
+and one deliberate duplicate — so the recipe below is what those builds actually needed rather than
+what was expected of them. No project anyone depends on has been migrated yet.
 **It has changed from both predecessors** — see
 [`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
 is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency

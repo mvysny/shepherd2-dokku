@@ -499,3 +499,64 @@ compared with Maven's `282.1M /cache/.m2`. The warm build shows the build cache 
 Item 20 closed. **The capacity note worth carrying forward: a Gradle app's cache volume is ~1.3 GB**,
 against Maven's ~280 MB, and `clearcache` never touches volumes by design. Nine Gradle apps would be
 ~12 GB of cache volumes on a box that currently has 42 GB free.
+
+### NOT RUN — punch-list 3's sub-bullet, the ~30-network wall, and why not
+
+The plan called for a VM snapshot before phase 1 and this run did not get one, so the rollback the
+sub-bullet needs was never available. The plan's fallback — move `daemon.json` aside, restart the
+daemon, loop `network:create` — looked more attractive once the box showed `live-restore: true` is
+set by Dokku's postinst, since app containers survive a daemon restart. **It was still not run, for a
+different and better reason:**
+
+> On stock pools Docker's *second* default pool is **`192.168.0.0/16` at size 20**, and this VM lives
+> on **`192.168.122.0/24`**. Allocating ~30 networks out of stock pools would hand one of them a
+> `/20` covering `192.168.122.0`, and the box's only route to the world is that subnet. The plan
+> already names this hazard in *The box*; running the drill on the live VM would have been a decent
+> chance of losing the machine mid-probe.
+
+So the arithmetic in `D_isolation` stays arithmetic until someone runs this on a throwaway with a
+snapshot. **Note that punch-list 10's result may make the whole question moot**: one shared
+`icc=false` network gives the same isolation and allocates exactly one subnet.
+
+### FINDING — punch-list 6: cache isolation is impossible to breach, demonstrated
+
+`vbm-a` and `vbm-b` are **the same repository deployed under two ids**, which is the only way to
+guarantee the shared Maven coordinates the item needs: both build
+`com.example:vaadin-boot-example-maven:1.0-SNAPSHOT`. `vbm-a` finished first and installed its
+artifact where a shared cache would have exposed it:
+
+```
+$ docker run --rm -v cache-vbm-a:/cache alpine \
+    ls /cache/.m2/repository/com/example/vaadin-boot-example-maven/1.0-SNAPSHOT/
+vaadin-boot-example-maven-1.0-SNAPSHOT.jar           7,044,343
+vaadin-boot-example-maven-1.0-SNAPSHOT-zip.tar.gz   21,811,646
+vaadin-boot-example-maven-1.0-SNAPSHOT-zip.zip      21,827,802
+vaadin-boot-example-maven-1.0-SNAPSHOT.pom
+maven-metadata-local.xml
+```
+
+Then `vbm-b` was registered from the same URL, minutes later. It resolved **nothing** of `vbm-a`'s:
+
+| | `vbm-a` | `vbm-b` |
+|---|---|---|
+| Maven `Total time`, cold | **1:00 min** | **1:02 min** |
+| `Downloaded from central` lines | **924** | **924** |
+| cache volume | `cache-vbm-a`, 205.2M | `cache-vbm-b`, 205.2M |
+
+**924 downloads each, to the artifact.** The second app re-fetched the entire dependency tree and
+rebuilt the identical `1.0-SNAPSHOT` into its own volume. There is no arrangement of app ids,
+coordinates or timing that would let one project see another's `.m2` — `D_builder`'s claim is not a
+policy the box enforces, it is a shape the box cannot express. **Item 6 closed as the demonstration
+it was meant to be.**
+
+Cache volumes after the run, for capacity planning:
+
+```
+cache-hello     282.1M   (Maven + Kotlin compiler)
+cache-vbm-a     205.2M   (Maven)
+cache-vbm-b     205.2M   (Maven, an exact duplicate of vbm-a's by construction)
+cache-gradle-a    1.3G   (Gradle: wrapper distribution + JDK + dependency and build caches)
+```
+
+The duplication is the price of the isolation and is worth naming out loud: two ids on one repo cost
+two full copies. Disk went 18G → 20G used of 62G across the four apps.

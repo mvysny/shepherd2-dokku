@@ -749,3 +749,52 @@ off, but it is *not* a reboot: it leaves the kernel, the bridges and nginx untou
 `reboot` test was not run because the agent driving this probe runs **on the VM**, so it would have
 killed the session mid-run. It stays worth doing — one command, and the only way to prove the box
 comes back unattended after a power cycle.
+
+## `shepherd2-uninstall` — run for the first time, as the teardown
+
+Never executed anywhere before this. It exited 0 and is **very nearly clean**; the audit is
+`uninstall-pre-state.txt` / `uninstall-post-state.txt`, the transcript `uninstall-http.log`.
+
+What it removed, all correctly: both projects (containers, caches, networks), the dokku package, the
+apt source, the keyring, the cron file, the CLI, the poll lock, and docker.io/buildx/compose-v2 —
+which takes nginx with it, since that arrived as a Dokku dependency. `ruby` stays, as the header
+promises. **The box's listening sockets afterwards are identical to `pre-install-baseline.txt`**
+(cups on 631, systemd-resolved on 53) — the strongest single statement that the install is reversible.
+
+Leftovers, all of them reported by the script rather than silently left:
+
+```
+1.5M  /home/dokku        ← warned about by name
+148K  /var/lib/dokku     ← NOT warned about (see below)
+4.0K  /var/lib/docker
+```
+
+### FINDING — the `--keep-pools` default is unreachable on any real box *(v1 gap)*
+
+```
+==> Docker address pools
+warning: /etc/docker/daemon.json is not what the install wrote; leaving it alone.
+       Remove the default-address-pools stanza by hand if you want Docker's defaults back.
+```
+
+This is the direct consequence of punch-list 3, and the two scripts disagree about it:
+
+- **The install `merge`s** its pools into the file Dokku's postinst already wrote (`live-restore: true`)
+  — that is the branch *every* install takes.
+- **The uninstall only removes the stanza if the file matches what the install wrote** — byte for byte,
+  a file containing nothing but the pools.
+
+Those two can never both be true. So the "remove the pools" default path is **dead code on a real box**,
+and every uninstall leaves `/etc/docker/daemon.json` carrying Shepherd2's `172.16.0.0/12` pools behind
+on a machine that no longer runs Shepherd2. It is safe — it warns clearly and refuses to touch a file
+it does not recognise, which is the right instinct — but the documented default never happens.
+
+The fix is to make the uninstall symmetric with the install: parse the JSON, delete the
+`default-address-pools` key, keep everything else, and write the file back (removing it entirely only
+if nothing is left). That is the same `python3` dependency the install already relies on.
+
+### Smaller: `/var/lib/dokku` is left behind unmentioned
+
+`apt purge dokku` leaves 148K in `/var/lib/dokku`. The script's *WHAT IT DELIBERATELY DOES NOT REMOVE*
+section and its closing summary both name `/home/dokku` and neither names this one, so an operator
+following the script's own advice cleans up one and not the other.

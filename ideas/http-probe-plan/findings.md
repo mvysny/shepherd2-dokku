@@ -500,7 +500,7 @@ Item 20 closed. **The capacity note worth carrying forward: a Gradle app's cache
 against Maven's ~280 MB, and `clearcache` never touches volumes by design. Nine Gradle apps would be
 ~12 GB of cache volumes on a box that currently has 42 GB free.
 
-### NOT RUN — punch-list 3's sub-bullet, the ~30-network wall, and why not
+### ~~NOT RUN~~ — punch-list 3's sub-bullet: deferred to the teardown, then run. See the result further down.
 
 The plan called for a VM snapshot before phase 1 and this run did not get one, so the rollback the
 sub-bullet needs was never available. The plan's fallback — move `daemon.json` aside, restart the
@@ -798,3 +798,34 @@ if nothing is left). That is the same `python3` dependency the install already r
 `apt purge dokku` leaves 148K in `/var/lib/dokku`. The script's *WHAT IT DELIBERATELY DOES NOT REMOVE*
 section and its closing summary both name `/home/dokku` and neither names this one, so an operator
 following the script's own advice cleans up one and not the other.
+
+### FINDING — punch-list 3's sub-bullet: the wall is **29 networks**, and Docker guards the collision itself
+
+Run after the uninstall, which is the natural moment: Docker was reinstalled with no `daemon.json` at
+all, so pools were genuinely stock (confirmed — the first network got a whole `172.18.0.0/16`, where
+Shepherd2's pools give a `/24`).
+
+```
+attempts  1–14   172.18.0.0/16 … 172.31.0.0/16      (14 × /16; 172.17 is docker0's)
+attempts 15–29   192.168.0.0/20 … 192.168.240.0/20  (15 × /20)
+attempt  30      Error response from daemon:
+                 all predefined address pools have been fully subnetted
+```
+
+**So the real number is 29 usable user-defined networks on this box, and the 30th fails.** The
+arithmetic in `D_isolation` said "about 30"; it was right. Against Shepherd2's `172.16.0.0/12` at
+size 24 — 4096 networks — the headroom is not close.
+
+**And the hazard this drill was postponed for does not exist.** The plan (and this file, earlier)
+refused to run it on the live VM because stock Docker's `192.168.0.0/16` pool would hand out a `/20`
+covering the box's own `192.168.122.0/24`. Look at the sequence: `192.168.96.0/20` is followed
+directly by `192.168.128.0/20`. **Docker skipped `192.168.112.0/20` by itself** — it will not allocate
+a pool range that overlaps an existing host route. The guard written into the drill to catch that
+collision never fired, and connectivity was intact throughout.
+
+That is worth keeping for two reasons: it retires a caution this repo has repeated twice, and it means
+**the stock-pool objection is purely about *count*, never about collision** — which makes
+`D_isolation`'s case simpler than it currently argues, not weaker.
+
+*(Verified on Docker 29.1.3, Ubuntu's `docker.io`. Older Docker may not have skipped it; this is not a
+claim about the version the plan was written against.)*

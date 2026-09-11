@@ -29,7 +29,13 @@
 #     interpreter stays.
 #   - /etc/nginx/sites-enabled, which installing Dokku emptied. That was Dokku's doing on the way in
 #     and cannot be undone on the way out — whatever was there is gone and this script cannot know
-#     what it was.
+#     what it was. Note that nginx *itself* does go: it arrived as a Dokku dependency and the purge's
+#     autoremove takes it, so a box that was serving other vhosts loses the server as well as the
+#     config. Use --keep-docker on such a box, or reinstall nginx afterwards.
+#
+# VERIFIED ONCE, on the 2026-09-11 http box: after a full run the box's listening sockets were
+# identical to the pre-install capture — cups on 631 and systemd-resolved on 53, nothing else — which
+# is the strongest single statement available that the install is reversible.
 #   - Dokku's two state directories, which apt purge leaves behind: /home/dokku (the app
 #     repositories) and /var/lib/dokku (plugin data, build records and their logs). Both are
 #     reported, not deleted, so an operator can look before losing them.

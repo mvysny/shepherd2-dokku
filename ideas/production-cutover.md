@@ -1,7 +1,9 @@
 # Going to production — the https box, and the nine apps that move onto it
 
-Written 2026-09-11. **Gated on `ideas/http-probe-plan.md` coming back green** — specifically items 2,
-8, 13, 17 and 19. Nothing here starts before that.
+Written 2026-09-11. **The gate is open**: the http probe run answered items 2, 8, 13, 17 and 19 on a
+box the same day, and its findings have graduated into `RESEARCH.md`, `DECISIONS.md`, `README.md` and
+`SOLUTION.md` — that note is gone. What is left for *this* run is the half no http box can reach,
+item 4, plus the migration itself.
 
 This note holds the cutover: the one place the https half of the punch list gets run, the nine projects
 that migrate off the Traefik + Jenkins farm, and the resource profile they run at. It is a scratchpad —
@@ -155,11 +157,11 @@ One open point: **the build CPU figure assumes ≥ 4 vCPU on the box**, so that 
 room for nine running apps. The admin UI does not report the old host's core count — check it before
 reusing the figure, because it is now a default rather than something typed per app.
 
-And one dependency: `--build-cpu` rests on punch-list item 17, which the VM run settles first.
-`ideas/http-probe-plan.md` argues the item is mis-framed and that the documented herokuish route
-(`resource:limit --process-type build --cpu N`) is what `create-app` already emits — but **do not put
-the production profile on an unverified flag**. If 17 fails, build CPU is uncapped in production until
-something else caps it.
+And one dependency that is now discharged: `--build-cpu` rested on punch-list item 17, and the VM run
+settled it. The documented herokuish route — `resource:limit --process-type build --cpu N`, which is
+what `create-app` already emits — reaches the build container as real `nanocpus`, with a build peaking
+at 202 % of a 4-core host (`RESEARCH.md` → *Resource limits*). The profile below is no longer resting
+on an unverified flag.
 
 ## Cutover order
 

@@ -13,7 +13,9 @@ convergence, the periodic-rebuild trigger, the wildcard-certificate story, and h
 `shepherd2` CLI and its tests exist, and on 2026-09-11 a dev VM was installed from them, torn down with
 `shepherd2-uninstall` and reinstalled. That run answered most of the punch list in `RESEARCH.md` and
 found three v1 bugs in our own code plus two teardown gaps, all five fixed — none of which any amount
-of reading would have found (`ideas/http-probe-plan.md`).
+of reading would have found. **Those findings have all graduated**, into `RESEARCH.md` (a struck
+punch-list item carries its answer), `DECISIONS.md`, `README.md` and `SOLUTION.md`; the run's note and
+its sidecars are deleted, so those four files are now the only record.
 **`SOLUTION.md` is the shape of the box** — its inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. What still gates a *finished* v1 is the half no `http` box can reach: the
@@ -22,8 +24,9 @@ mode one-way, so the dev VM cannot be promoted into one — that run, and the `P
 `system.properties` commits the nine migrating repos each need, are `ideas/production-cutover.md`. The feature survey that decided
 *what* the rebuilt thing does has graduated and is gone (`D_no_feature_list`); what is left in `ideas/`
 is five open questions carrying `Q_` slugs and two pieces of deferred work — **all of it v2** now that
-`Q_poll_churn`, the one v1 gap among them, has graduated into `D_poll_churn` — plus two plans for
-running the punch list, one per TLS mode, since `D_cert` means no single box can answer all of it.
+`Q_poll_churn`, the one v1 gap among them, has graduated into `D_poll_churn` — plus
+`ideas/production-cutover.md`, the one live plan, which is where the https half of the punch list and
+the nine repos' migration both happen.
 
 **It is the third implementation of the same product.** The predecessors, and what each one's decisions
 were:

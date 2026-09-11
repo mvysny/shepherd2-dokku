@@ -1,10 +1,14 @@
 # Shepherd2 (Dokku)
 
-> **DESIGN PHASE — there is nothing to install yet.**
+> **v1 is written, and it has been run — on one throwaway VM, in `http` mode.**
 >
-> This repo currently holds documentation only. The v1 design is settled and written up in
-> [SOLUTION.md](SOLUTION.md) — what gets installed, what the CLI is, and how a build flows through the
-> box. Code follows that file.
+> On 2026-09-11 a dev VM was installed from this repo, ran four real Vaadin apps end to end, and was
+> uninstalled again. That run fixed three bugs in this code and answered most of the punch list in
+> [RESEARCH.md](RESEARCH.md).
+>
+> **What has never run anywhere is the `https` half** — lego, the wildcard certificate and its renewal
+> (`D_cert`, punch-list item 4). It needs a real DNS zone, and the plan for it is
+> `ideas/production-cutover.md`. Nothing here has hosted a project anyone depends on yet.
 
 Builds given git repos periodically and automatically deploys them to a Linux box running
 [Dokku](https://dokku.com). Serves as a homebrew "replacement" for Heroku, to publish your own pet
@@ -40,7 +44,7 @@ fork out.
 
 | If you want to… | Read |
 |---|---|
-| run, install or troubleshoot this box | this file (once there is something to run) |
+| run, install or troubleshoot this box | this file |
 | see the whole box at once — what is installed, and how a build flows through it | [SOLUTION.md](SOLUTION.md) |
 | know what **Dokku** does — a command, a flag, a plugin, a gap | [RESEARCH.md](RESEARCH.md) |
 | know *why* it's built this way, and what was rejected | [DECISIONS.md](DECISIONS.md) (`D_` entries) |
@@ -51,8 +55,9 @@ fork out.
 
 ## Minimum requirements
 
-Provisional — inherited from shepherd-traefik and Dokku's own documented minimums, not yet checked on a
-real box.
+Inherited from shepherd-traefik and Dokku's own documented minimums. The sizing is still provisional —
+what has actually been run is a 4 vCPU / 7.7 GB VM with 48 GB free, which built and served four Java
+apps comfortably, one at a time.
 
 * A VM with 8–16 GB of RAM; x86-64 or arm64. Ideally with a public IPv4 address.
   * Dokku's own documented minimum is 1 GB, but that is for Dokku, not for building JVM apps on the box.
@@ -88,8 +93,10 @@ real box.
 ## Installation
 
 One script, run as root from a checkout of this repository on a vanilla Ubuntu 24.04 box.
-**No box has been installed from it yet** — it is written but unproven, and the punch list in
-[RESEARCH.md](RESEARCH.md) is what proving it means.
+**The `http` mode has been installed from it, on a dev VM, and uninstalled again; the `https` mode has
+not been run anywhere** — that is punch-list item 4 in [RESEARCH.md](RESEARCH.md), and it needs a real
+DNS zone rather than a `/etc/hosts` file. Expect the certificate steps to want a first outing before
+you trust them with a domain you care about.
 
 ```bash
 # A real box: one wildcard certificate for *.mydomain.me, issued over DNS-01.
@@ -134,7 +141,7 @@ sudo dokku plugin:install-dependencies --core
 sudo apt-mark hold dokku
 ```
 
-Five more things are already settled and are here so they are not forgotten, because each is awkward or
+Six more things are already settled and are here so they are not forgotten, because each is awkward or
 impossible to retrofit:
 
 * **Installing Dokku empties `/etc/nginx/sites-enabled`.** If that box was ever an nginx host, move
@@ -150,6 +157,17 @@ impossible to retrofit:
   squeamishness: nginx sends HSTS by default with a **182-day** max-age and `includeSubdomains`, so once
   a browser has loaded any app on the domain over https it will refuse plain http for half a year, and
   no amount of work *on the box* undoes that. To change modes, reinstall.
+
+  **An http box cannot leak HSTS by accident** — measured, not assumed. Dokku *computes* `hsts` as
+  `true` there and emits the header nowhere, because it hangs off an ssl listener that does not exist;
+  even `dokku nginx:set ID hsts true` changes nothing. The asymmetry is the whole point: the day a
+  certificate appears, that same already-`true` setting starts sending the 182-day header with no
+  configuration change at all.
+
+* **On an http box, port 443 is open, and that is fine.** Dokku's catch-all vhost listens there with
+  `ssl_reject_handshake on`, so every TLS handshake is refused (`tlsv1 unrecognized name`) and there is
+  no certificate to present or leak. The same vhost answers `444` — connection closed, no response —
+  to any unknown `Host:` on port 80, so an app is reachable by its exact hostname and by nothing else.
 
   **Testing an http box without wildcard DNS**: you need no DNS at all. Put the app names in the
   `/etc/hosts` of the machine doing the browsing — one line per app, all pointing at the VM:
@@ -179,7 +197,9 @@ impossible to retrofit:
 
 ## Adding your project
 
-Unproven — no project has been onboarded onto a Shepherd2 box yet — but the contract is settled.
+The contract is settled, and **four projects have been through it on a box** — two Maven, one Gradle,
+and one deliberate duplicate — so the recipe below is what those builds actually needed rather than
+what was expected of them. No project anyone depends on has been migrated yet.
 **It has changed from both predecessors** — see
 [`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
 is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency
@@ -349,8 +369,10 @@ exactly one command — `./gradlew $GRADLE_TASK` — and with `GRADLE_TASK` unse
 task, guesses a task for Spring Boot / Micronaut / Quarkus / Ratpack, and otherwise falls back to
 `stage` anyway. A Vaadin Boot app is none of those, so it fails with *Task 'stage' not found* until
 you say what to run. The four things below were worked out by rehearsing a Vaadin Boot + Karibu-DSL
-app against the same builder image the box uses — do the same with yours (*Rehearse the build
-locally*, below) before you ask for it to be registered.
+app against the same builder image the box uses, and then **confirmed on a box**: a repo carrying
+exactly these four files and nothing else was registered straight from GitHub, built, and came up in
+production mode. Do the same with yours (*Rehearse the build locally*, below) before you ask for it to
+be registered.
 
 - **`gradlew` must be committed** — the buildpack no longer supplies a wrapper and stops if yours is
   missing.
@@ -377,7 +399,13 @@ locally*, below) before you ask for it to be registered.
 
 Gradle's caching here is better than Maven's, and costs you nothing: the buildpack points
 `GRADLE_USER_HOME` at the per-app cache volume, so dependencies, the Gradle build cache, the wrapper's
-Gradle distribution and the JDK are all warm from the second build on.
+Gradle distribution and the JDK are all warm from the second build on — measured at 1.3 GB of cache
+volume for one app, against ~280 MB for a Maven one.
+
+**What a rebuild costs, measured on the box:** a warm `git:sync --build` is about a minute end to end
+for either build tool, of which the build itself is 15 s (Maven) or 33 s (Gradle); the rest is clone,
+slug and deploy, which no cache touches. A cold first build is roughly three minutes. Since the poll
+runs every five minutes, a commit is live within about six.
 
 ### The `.env` recipe
 
@@ -571,10 +599,19 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | add another hostname (http only — see below) | `dokku domains:add ID host.example.com` |
 | allow a bigger upload · a slower endpoint | `dokku nginx:set ID client-max-body-size 20m` · `dokku nginx:set ID proxy-read-timeout 300s` |
 | check the generated vhost | `dokku nginx:show-config ID`, `dokku nginx:validate-config` |
-| see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` |
+| see CPU and memory per container | `docker stats`, or `lazydocker` / `ctop` — app containers are named `ID.web.1` |
+| pick out one app's containers · the build in flight | `docker ps --filter label=com.dokku.app-name=ID` · `docker ps --filter label=com.dokku.image-stage=build` |
 | see what the box has been doing | `dokku events -t` |
 
-Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Eleven things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+
+- **Anything you bind on the box to `0.0.0.0` is reachable from inside every app container.** Measured:
+  a listener on all interfaces answered an app through the bridge gateway; the same service on
+  `127.0.0.1` did not. Per-app networks wall apps off from *each other* ([`D_isolation`](DECISIONS.md)),
+  not from the host — so when you run something on the box for yourself, a database console, an admin
+  port, a scratch service, **bind it to loopback** unless you mean every hosted app to see it. The
+  firewall rule that would cover the rest of this axis is a v2 topic
+  (`ideas/harden-container-egress.md`); loopback costs nothing today.
 
 - **Free memory does not tell you whether another project fits, and `shepherd2 stats` is the line that
   does.** The apps are idle but capped, so what matters is what the box has *promised* — `committed`
@@ -588,8 +625,10 @@ Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH
     disk        /var/lib/docker on /dev/sda1 — 78.2 GiB total · 29.1 GiB free (63% used)
   …
   projects    3 registered
-    hello         1.1 GiB
-    vaadin-demo   3.2 GiB
+    hello        1.1 GiB
+    vaadin-demo  3.2 GiB
+    karibu-demo  1.4 GiB
+    total        5.7 GiB
   ```
 
   Two things to know before the numbers confuse you. It **takes a few seconds** — the daemon walks
@@ -658,6 +697,11 @@ Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH
   cache *is* the per-app `cache-ID` volume, nothing garbage-collects it, and at a five-minute poll a
   build is always about to want it ([`D_builder`](DECISIONS.md)). `repo:purge-cache` is the per-app
   lever, and `shepherd2 clearcache` is the safe blanket one.
+
+  **Budget for them**, since nothing reclaims them on its own: a Maven app's volume measures
+  **~205–280 MB**, a Gradle app's **~1.3 GB** — the Gradle buildpack caches Gradle itself and the JDK,
+  not just dependencies. Two projects built from the same repo keep two full copies; that is the
+  isolation working, not a leak. `docker system df -v` is how you see the bill.
 
 **Prefer a `dokku` command to a `docker` one** — `dokku ps:restart` over `docker restart`, the reports
 over `docker inspect`. Reaching around Dokku to the daemon is how its state drifts out from under it.

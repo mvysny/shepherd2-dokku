@@ -14,7 +14,7 @@ convergence, the periodic-rebuild trigger, the wildcard-certificate story, and h
 `shepherd2-uninstall` and reinstalled. That run answered most of the punch list in `RESEARCH.md` and
 found three v1 bugs in our own code plus two teardown gaps, all five fixed — none of which any amount
 of reading would have found (`ideas/http-probe-plan.md`).
-**`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
+**`SOLUTION.md` is the shape of the box** — its inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
 underneath it) first. What still gates a *finished* v1 is the half no `http` box can reach: the
 `D_cert` chain, punch-list item 4, which needs an `https` box and a real DNS zone. `D_cert` makes the

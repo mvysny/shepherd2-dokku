@@ -367,6 +367,26 @@ dokku docker-options:report [<app>] [<flag>] [--format json|stdout]
 **Which mechanism you get is a property of the builder, and so is whether the *platform* or the *app*
 names the cache.** That is the fact `D_builder` turns on.
 
+**What it is worth, measured end to end on a box** — a trivial commit, then the same app rebuilt
+against its warm `cache-$APP` volume. The tool's own time is the cache's doing; the rest is clone,
+slug and deploy, which no cache touches: **[verified on a box 2026-09-11]**
+
+| App | cold, whole `git:sync --build` | warm | build tool alone, cold → warm |
+|---|---|---|---|
+| `hello` (Maven) | 3m02s | **1m05s** | 2m12s → **15.0s** |
+| `gradle-a` (Gradle) | 3m15s | **1m37s** | 46s → **33s** |
+
+Two things to read out of it. Maven's dependency resolution is the whole of its cold cost — warm, it
+is 15 seconds, and `Installing … to /cache/.m2/repository/…` confirms where the artifacts go. Gradle's
+own time moves far less, because its cold number never included a dependency download in the first
+place: the wrapper distribution, the JDK and the dependency cache all live in the volume, and the warm
+build shows the *build* cache working too (`> Task :compileKotlin FROM-CACHE`). Either way a warm
+rebuild is around a minute, most of it not the build.
+
+**The frontend half of the question did not arise**, because every app here is on Vaadin's
+pre-compiled production bundle and runs no frontend build at all — the measurement that would answer
+it needs an app that customises its frontend (punch-list 13, 14 and 16 all wait on the same app).
+
 | builder | cache mechanism | named by |
 |---|---|---|
 | herokuish | Docker volume `cache-$APP`, mounted at `/cache`, `CACHE_PATH=/cache` | **Dokku** |
@@ -384,12 +404,42 @@ names the cache.** That is the fact `D_builder` turns on.
 - **`dokku repo:purge-cache <app>` is literally `docker volume rm -f cache-<app>`** **[src]** — per-app
   purge granularity, and the only cache lever needed under herokuish. Documented as scoped to
   buildpack builds; a no-op under `pack`, which names its volume differently.
-- **Sizing it is Docker's job, not Dokku's: `docker system df -v --format '{{json .}}'` returns
+- **Two apps built from the same repo share nothing — demonstrated rather than reasoned.** The
+  hardest case available was run on purpose: one repository deployed under two ids, so both builds
+  install `com.example:vaadin-boot-example-maven:1.0-SNAPSHOT`. The first finished and put its jar,
+  tarball and `maven-metadata-local.xml` where a shared cache would have exposed them; the second was
+  registered minutes later and resolved **none** of it. **[verified on a box 2026-09-11]**
+
+  | | `vbm-a` | `vbm-b` |
+  |---|---|---|
+  | Maven `Total time`, cold | 1:00 min | 1:02 min |
+  | `Downloaded from central` lines | **924** | **924** |
+  | cache volume | `cache-vbm-a`, 205.2 MB | `cache-vbm-b`, 205.2 MB |
+
+  924 downloads each, right down to the artifact. There is no arrangement of app ids, coordinates or
+  timing that lets one project see another's `.m2`: the volume name is Dokku's and the app never
+  learns it. The duplication is the price, and it is exact — two ids on one repo cost two full copies.
+- **Sizing one is Docker's job, not Dokku's: `docker system df -v --format '{{json .}}'` returns
   `Images` / `Containers` / `Volumes` arrays, each volume carrying `Name`, `Mountpoint` and a `Size`
   that is a *human string in SI units* (`"1.2GB"`, `"67B"`).** **[observed, Docker 29.1.3]** Two
   consequences for any reader: the size has to be parsed back to bytes to be added up (3–4 significant
   figures survive), and the daemon **walks each volume's directory** to produce it — so the call costs
-  what `du` would cost over the whole cache. There is no Dokku command for this at any granularity.
+  what `du` would cost over the whole cache. There is no Dokku command for this at any granularity,
+  which is why `shepherd2 stats` attributes `cache-<app>` to its app itself (`D_stats`).
+- **Volume sizes, measured, for capacity planning: Gradle costs about 4.5× Maven.**
+  **[verified on a box 2026-09-11]**
+
+  ```
+  cache-hello     282.1M   (Maven + the Kotlin compiler)
+  cache-vbm-a     205.2M   (Maven)
+  cache-vbm-b     205.2M   (Maven, an exact duplicate of vbm-a's by construction)
+  cache-gradle-a    1.3G   (Gradle: 787.5M .gradle/wrapper — the distribution and the JDK — plus
+                            560.3M .gradle/caches)
+  ```
+
+  The Gradle figure is the one to plan against, and it is the direct cost of that buildpack's better
+  cache story: it keeps Gradle itself and the JDK, not just dependencies. Four apps took the box from
+  18 GB to 20 GB used of 62 GB.
 - **The Heroku Java buildpack puts the Maven repository inside that volume**: `lib/maven.sh` exports
   `MAVEN_OPTS="… -Duser.home=${build_dir} -Dmaven.repo.local=${cache_dir}/.m2/repository"`, and caches
   `.m2/wrapper` and the downloaded Maven under `${cache_dir}/.maven`. Its **default goals are
@@ -418,6 +468,18 @@ names the cache.** That is the fact `D_builder` turns on.
   for those same four frameworks, so **anything else must commit a `Procfile`**, and a committed
   `Procfile` short-circuits `bin/release` entirely. **[src]** A committed `gradlew` is mandatory —
   the buildpack stopped shipping a fallback wrapper. **[src]**
+- **All of that ran on a box, against an unmodified public repo** (`mvysny/karibu-helloworld-application`,
+  a Vaadin Boot + Karibu-DSL app — not a Spring Boot / Micronaut / Quarkus / Ratpack project, so
+  nothing about it is guessed for it). **[verified on a box 2026-09-11]**
+  - **`GRADLE_TASK` from a committed `.env` reaches the build verbatim** — the log echoes
+    `$ ./gradlew clean installDist -Pvaadin.productionMode`, flags and all. That confirms the ENV_DIR
+    path for the *app's own* files, as distinct from config vars the operator sets.
+  - **`-Pvaadin.productionMode` is how a Gradle project reaches a production build**, there being no
+    Maven profile to activate: `> Task :vaadinBuildFrontend` ran and the app reported
+    `Vaadin is running in production mode` at startup.
+  - **`GRADLE_USER_HOME` really does land in the cache volume** — `1.3G /cache/.gradle`, of which
+    787.5 MB is `.gradle/wrapper` (the Gradle distribution and the JDK) and 560.3 MB `.gradle/caches`,
+    plus a 480 KB `.gradle-project`. See *The herokuish cache volume* for what that costs per app.
 - **The Heroku Node.js buildpack caches into the same `CACHE_DIR`** — npm/pnpm/yarn caches and
   `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
   `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
@@ -592,6 +654,19 @@ the app to listen on `$PORT`. So a buildpack app is wired correctly with no `por
 follows applies to a `Dockerfile` app and is kept because the commands are still the ones to reach for
 when a mapping *is* wrong.
 
+**Confirmed on a box, and earlier than expected — the mapping is detected before the first deploy.**
+On an app created and never built: **[verified on a box 2026-09-11]**
+
+```
+$ dokku ports:report hello
+Ports map:                  (empty)          Ports map json:          null
+Ports map detected:         http:80:5000     Ports map detected json: [{"container_port":5000,…}]
+```
+
+It then survived three further builds and two successful deploys with `Ports map` still empty and
+`Ports map json` still `null` — so the detected mapping is *not* promoted into set state, and there is
+nothing of ours to write or re-assert. Punch-list 8 closed.
+
 ```bash
 dokku ports:list <app>
 dokku ports:add   <app> <scheme>:<host-port>:<container-port>
@@ -670,17 +745,52 @@ must be named `*-vhosts` for the scheduler integration to work. **[docs]**
 - **The https-only half of that table is conditional on a certificate, which is what makes a plain-http
   box possible.** An app with no cert gets an http-only vhost: the `hsts*` properties have no listener
   to attach to, and the http→https redirect Dokku emits for an SSL-enabled app has nothing to redirect
-  to. Both are `[unverified]` readings of the template rather than documented statements — punch-list
-  item 18 — and they matter twice over: they are why the http-only install mode needs no Dokku flag, and why
+  to. Both matter twice over: they are why the http-only install mode needs no Dokku flag, and why
   `D_cert` treats the mode as one-way. `hsts` is `true` by default with a **182-day** `max-age` and
   `includeSubdomains`, so a domain that has once served https over it cannot be walked back from the
   box.
+
+  **Confirmed on a box, both halves, against a deployed app serving 200:**
+  **[verified on a box 2026-09-11]**
+
+  ```
+  $ curl -D- http://hello.shepherd2.test/
+  HTTP/1.1 200 OK
+  Server: nginx … X-Frame-Options: SAMEORIGIN        # and no Strict-Transport-Security at all
+  $ curl -L -o /dev/null -w '%{num_redirects}' http://hello.shepherd2.test/   → 0
+  ```
+
+  **And `hsts` is inert rather than merely unset**, which is the half `D_cert` leans on:
+  `nginx:report` shows `Nginx computed hsts: true` — the default is *on* — yet
+  `nginx:show-config | grep -c Strict-Transport-Security` is **0**, and stays 0 after
+  `nginx:set <app> hsts true` asks for it explicitly. The header is attached to the ssl listener, and
+  that listener does not exist. So an http box cannot emit HSTS by accident, and the day a certificate
+  appears the same computed `true` starts sending a 182-day `max-age` with no configuration change.
 - Escape hatch: a per-app **`nginx.conf.sigil`** template, with `{{ .APP }}`, `{{ .PROXY_PORT }}`,
   `{{ .APP_SSL_PATH }}` and the listener variables. `nginx:show-config` and `nginx:validate-config`
   inspect and check the generated file. **[docs]**
 - **Since 0.38.0, an undeployed app still gets a minimal nginx config returning 502** — so its domain
   resolves and monitoring sees a non-200 rather than a connection failure. Replaced by the real config
-  on first successful deploy. **[docs]**
+  on first successful deploy. **[docs; confirmed on a box 2026-09-11, including the header check —
+  that 502 carries no HSTS either]**
+- **A box with no certificate still listens on 443, and that is Dokku being careful rather than a
+  half-configured TLS endpoint.** `/etc/nginx/conf.d/00-default-vhost.conf` is the deb's catch-all:
+  **[verified on a box 2026-09-11]**
+
+  ```nginx
+  server {
+      listen 80 default_server;       listen [::]:80 default_server;
+      listen 443 ssl default_server;  listen [::]:443 ssl default_server;
+      server_name _;
+      ssl_reject_handshake on;
+      return 444;
+  }
+  ```
+
+  So port 443 is **open but rejects every TLS handshake** (`tlsv1 unrecognized name`) with no
+  certificate to present or leak, and an unknown `Host:` on port 80 gets `444` — connection closed, no
+  response. An app is reachable by its exact vhost name and by nothing else. Worth knowing before
+  someone reports "443 is open on the http box" as a finding.
 - **`apps:create` reloads nginx; `apps:destroy` does not.** The asymmetry is invisible from the disk
   and bites hard. `apps:destroy` removes `/home/dokku/<app>/nginx.conf` *synchronously* — it is gone
   the instant the command returns, so there is no race — but nothing signals the running nginx, which
@@ -1030,11 +1140,34 @@ Load-bearing for the isolation design, and it is Docker's behaviour rather than 
   build phase too, so an egress-less initial network takes the build's package downloads with it.
   **[docs + inference]**
 - **Per-app networks do not hide the host.** Every container keeps a route to its bridge gateway, so an
-  app can reach anything bound on the box (sshd included) no matter which network it is on. That is a
-  `DOCKER-USER` rule, not a membership question, and it is the whole of what the Dokploy sibling's
-  "app → admin plane" axis becomes here — Dokku's control plane is a host binary and a git remote, with
-  no dashboard container and no control-plane database to move off the wire. **[inference from the
-  bridge model; unverified on a box]**
+  app can reach anything bound on the box no matter which network it is on. That is a `DOCKER-USER`
+  rule, not a membership question, and it is the whole of what the Dokploy sibling's "app → admin
+  plane" axis becomes here — Dokku's control plane is a host binary and a git remote, with no dashboard
+  container and no control-plane database to move off the wire.
+
+  **Measured from inside a running app, with a deliberate pair of listeners rather than by inference:**
+  **[verified on a box 2026-09-11]**
+
+  | Target | Result |
+  |---|---|
+  | host service bound **`0.0.0.0:9099`**, via the bridge gateway | **200 — reachable** |
+  | host service bound **`127.0.0.1:9098`**, via the bridge gateway | 000 — not reachable |
+  | host nginx by gateway IP, with another app's `Host:` header | **200** |
+  | host nginx by the box's LAN IP, same header | **200** |
+  | outbound `https://repo.maven.apache.org/` | 200 |
+  | `169.254.169.254/` (cloud metadata) · the KVM host's `:22` | 000 — **but nothing was listening** |
+
+  > **Anything bound to `0.0.0.0` on the box is reachable from inside every app container; anything
+  > bound to loopback is not.** Nothing is firewalled — the bridge gateway is simply the host.
+
+  Read the last row carefully: the probe VM ran no sshd and KVM offers no metadata service, so those
+  zeroes mean "nobody home", not "blocked". **On a real VPS `169.254.169.254` answers**, and that is
+  the one address with a genuinely bad worst case — see `ideas/harden-container-egress.md`, which this
+  measurement was taken to size.
+- **An app can reach any other app through the front door**, by sending host nginx a spoofed `Host:`
+  header — 200, measured. That bypasses nothing (it is nginx doing its job on a surface that is public
+  anyway), but it is what makes `D_isolation` a *container-to-container* boundary specifically, never a
+  container-to-anything one. **[verified on a box 2026-09-11]**
 
 **The address-pool ceiling is an install-time line, not a design constraint.** Per-app networks are
 *bridge* networks, i.e. Docker's **local**-scope pool: `172.17.0.0/12` at size 16 plus `192.168.0.0/16`
@@ -1121,6 +1254,21 @@ suffixes), `memory-swap` → `--memory-swap`, `nvidia-gpus` → `--gpus`; reserv
 
 **So with the Dockerfile builder, build *memory* can be capped and build *CPU* cannot.** That is a
 direct, documented regression against shepherd-traefik, which limits both.
+
+**The herokuish row is confirmed on a box, and it is the documented route that works — not the
+`docker-options` hack.** `resource:limit --process-type build --cpu 2 --memory 2g` reaches the build
+container as real Docker limits, read off the daemon mid-build: **[verified on a box 2026-09-11]**
+
+```
+$ docker inspect <build container>     mem=2147483648   nanocpus=2000000000
+$ docker stats                         MEM 146.3MiB / 2GiB
+```
+
+2147483648 is 2 GiB and 2000000000 nanocpus is 2 CPUs, and a real Maven build peaked at **202 % CPU on
+a 4-core host** — capped, and demonstrably using the cap. Nothing needed
+`docker-options:add <app> build '--cpus 2'`; that question was a Dockerfile-builder artefact
+(punch-list 17). It mattered more than it looks: Shepherd2 passes these limits by *default*, so had
+the documented route been inert, every app on the box would have built uncapped.
 
 **`resource:report <app> --format json` is a flat map of `<process-type>.<limit|reserve>.<key>` → the
 value exactly as it was set** — `{"_default_.limit.memory":"256m","build.limit.memory":"2g"}`. **[src]**
@@ -1274,6 +1422,26 @@ fixed `postgres-service` with a hardcoded password.
 - **No metrics, by design.** Dokku does not manage monitoring. Because apps are plain Docker
   containers with stable names, `docker stats`, `lazydocker` (52.8k★, MIT) or `ctop` (17.8k★, MIT)
   cover it for zero code. **[docs for the stance]**
+- **What those names actually are: `<app>.<process-type>.<index>`** — `hello.web.1`. Dokku creates the
+  container under a transient name and renames it once the deploy succeeds (`Renaming container
+  hello.web.1.upcoming-8948 (37d0f33c73cb) to hello.web.1`), so a container-list tool shows something
+  meaningful with no help from us. The image is `dokku/<app>:latest`. **Build containers get a random
+  Docker name** instead (`optimistic_rosalind`), because they are transient and never renamed.
+  **[verified on a box 2026-09-11]**
+- **Labels are the reliable handle, and they beat names for anything scripted.** Both build and
+  deployed containers carry them: **[verified on a box 2026-09-11]**
+
+  ```
+  com.dokku.app-name=hello   com.dokku.builder-type=herokuish   com.dokku.image-stage=build
+  com.gliderlabs.herokuish/stack=heroku-24   org.label-schema.vendor=dokku
+  # the deployed container adds:
+  com.dokku.container-type=deploy   com.dokku.dyno=web.1   com.dokku.process-type=web
+  com.dokku.image-stage=release
+  ```
+
+  So `docker ps --filter label=com.dokku.app-name=hello` selects everything of one app's, and
+  `--filter label=com.dokku.image-stage=build` isolates a build in flight — which is the query a name
+  cannot express, since that container's name is random.
 - **Event log:** Dokku writes events to `/var/log/syslog` and `/var/log/dokku/events.log`, with
   `dokku events [-t]`, `events:list`, `events:on`, `events:off`. (A separate third-party
   `alessio/dokku-events` logs to `/var/log/dokku.log` — don't confuse the two.) **[docs]**
@@ -1563,8 +1731,10 @@ The honest gap list, for the feature discussion:
 
 ## Questions only a box can answer
 
-The `[unverified]` claims above, plus the ones that decide the design. This is the punch list for the
-first throwaway VPS:
+The `[unverified]` claims above, plus the ones that decide the design. This was the punch list for the
+first throwaway VPS, and **most of it was run on 2026-09-11** — a struck item carries its answer and
+names the section that now owns it. What is left is **item 4** (the `D_cert` chain, which needs an
+https box and a real DNS zone) and the v2 items, 9 having been answered early:
 
 1. ~~Does the box's Docker route `docker image build` to buildx, so that a `--cache-to type=local`
    passed through `docker-options` actually *exports* a cache?~~ **Moot** — `D_builder` prohibits the
@@ -1600,15 +1770,23 @@ first throwaway VPS:
 5. ~~Are cache mounts, and a per-app `type=local` cache directory, preserved across `git:sync --build`
    runs, and for how long?~~ **Superseded by 13** — under `D_builder` the cache is the `cache-$APP`
    Docker volume, which has no TTL and no GC.
-6. **The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
+6. ~~**The two-build timing drill** from `COMPARISON.md`'s *How to settle it*: install, deploy one real
    Vaadin-Boot app, commit trivially, redeploy — timed. Then deploy a second app sharing Maven
    coordinates with the first and check whether it resolves the first one's `1.0-SNAPSHOT` jar. Under
    `D_builder` this should be **impossible by construction** (each app's `.m2` is its own
-   `cache-$APP` volume); run it anyway, once, as the demonstration.
-7. What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?
-8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
-   it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
-   Dockerfile-builder question, moot under `D_builder`.)
+   `cache-$APP` volume); run it anyway, once, as the demonstration.~~ **Done 2026-09-11, with one repo
+   deployed under two ids so the coordinates were guaranteed to collide: 924 downloads from Central
+   each, nothing shared.** In *The herokuish cache volume*, along with the measured volume sizes. The
+   timing half is item 13.
+7. ~~What does Dokku name app containers, and do `lazydocker` / `ctop` show them usefully?~~
+   **Answered 2026-09-11: `<app>.<process-type>.<index>`, so yes** — and the better answer is the
+   `com.dokku.*` labels, which also select a build container that has no meaningful name. In
+   *Observability*.
+8. ~~Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
+   it survive a rebuild?~~ **Answered 2026-09-11: yes, and it is detected before the first deploy**,
+   staying detected-not-set across three builds and two deploys. In *Ports — the `EXPOSE` trap*. (Was:
+   does `EXPOSE 8080` + `ports:set` behave as documented — a Dockerfile-builder question, moot under
+   `D_builder`.)
 9. ~~**(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work
    when the app is on a per-app network?** … Check that `postgres:create -N app-<id>` + `postgres:link`
    leaves `DATABASE_URL` connectable, and whether the `--link` flag errors, warns, or is silently
@@ -1622,13 +1800,15 @@ first throwaway VPS:
     foreign network and routes, Dokku keeps it visible but unmanaged, and *both* apps on one
     `icc=false` network isolate exactly as per-app networks do. Both in *Networking and app isolation*;
     what it changes in `D_isolation` is the rejected alternative's reasoning, not the decision.
-11. **(v2, but cheap.) What can an app reach on the host?** From inside a container, on both a shared
-    and a per-app network: `curl http://<gateway-ip>:22`, and nginx by gateway IP with a `Host:` header
-    for another app. Sizes the `DOCKER-USER` rule that is all that is left of the sibling's "unpublish
-    :3000" axis — and that rule is deferred to v2 (`ideas/harden-container-egress.md`), so this is
-    measured not to unblock v1 but to decide whether v2 should bother. Worth the ten minutes while
-    item 2 is being run anyway. Add `curl http://169.254.169.254/` to it: the metadata endpoint is the
-    one answer with a genuinely bad worst case.
+11. ~~**(v2, but cheap.) What can an app reach on the host?**~~ **Answered 2026-09-11, with a
+    deliberate pair of listeners so the result means something**: anything the box binds to `0.0.0.0`
+    is reachable from every container, anything on loopback is not, another app is reachable through
+    host nginx with a spoofed `Host:`, and outbound is open. The metadata endpoint and `:22` could
+    *not* be tested — a KVM guest has nothing listening on either, so those zeroes are "nobody home"
+    rather than "blocked", and on a real VPS the metadata address answers. In *Networking and app
+    isolation*; the verdict it was taken for — **v2 should bother, and the metadata rule is the one
+    that earns its keep** — is in `ideas/harden-container-egress.md`.
+
 12. ~~**Does `proxy:set <app> type traefik` still route an app whose `initial-network` is its own
     network?** The plugin has no attachment logic `[src]`, so the expectation is a 502.~~ **Answered
     2026-09-11: it does not route, and the expectation was too kind** — the request hangs until
@@ -1636,16 +1816,13 @@ first throwaway VPS:
     dropped rather than refused. Two things came free: `traefik-vhosts` is a *core* plugin, so the
     experiment installs nothing, and its compose file wants host port 80, so running it stops every app
     on the box. All in *Traefik (official plugin)*.
-13. **Does a Vaadin app's second build come back warm under herokuish?** Deploy one, commit trivially,
-    `git:sync --build` again, and split the timing: is Maven resolving from `/cache/.m2/repository`
-    (expected yes), and is the *frontend* half — `~/.vaadin` node download, `node_modules`, npm
-    fetches — re-done from scratch (expected yes, and this is the question that decides items 14–16).
-    **Answered for the Gradle half off-box on 2026-09-11**, by running `gliderlabs/herokuish:latest-24`
-    under plain Docker against a Vaadin Boot + Karibu-DSL app on the pre-compiled bundle: cold **2m13s**,
-    warm **21s**, with the cache volume holding the dependency cache, the Gradle build cache, the
-    wrapper's Gradle distribution *and* the JDK. No frontend build ran at all, so the frontend half of
-    the question is still open and still needs an app that customises its frontend. The Maven half is
-    untouched by this.
+13. ~~**Does a Vaadin app's second build come back warm under herokuish?**~~ **Answered 2026-09-11 on
+    a box, for both build tools**: Maven 2m12s cold → **15.0s** warm, Gradle 46s → 33s, and a whole
+    warm `git:sync --build` about a minute end to end. The table is in *Build caching*. The **frontend**
+    half of the question did not arise — no app here runs a frontend build at all (item 15) — so it is
+    still open, and still waits on an app that customises its frontend, as do 14's Java half and 16.
+    The earlier off-box Gradle measurement (cold 2m13s, warm 21s under plain Docker) stands and agrees.
+
 14. **(v2.) ~~Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
     rebuilds?~~** **Answered 2026-09-11, and the premise was wrong twice over** — both halves are in
     *The herokuish cache volume*. The Node buildpack already caches npm into `cache-$APP` with nothing
@@ -1674,16 +1851,20 @@ first throwaway VPS:
     `docker container create` unfiltered `[src]`~~ — **the bind mount was confirmed on a box
     2026-09-11** (*The herokuish builder*), so the mechanism is settled and only the Maven `-D`
     question is left, which is a Maven question rather than a box one.
-17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
-    `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
-    all, and the gap the feature survey recorded was a Dockerfile-builder artefact.
-18. **What exactly does an app look like on a box with no certificate?** The http-only install mode
+17. ~~**Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
+    `docker-options:add <app> build '--cpus 2'`.~~ **Mis-framed, and answered 2026-09-11 without the
+    hack:** the *documented* route — `resource:limit --process-type build`, which is what `create-app`
+    already emits — reaches the build container as `mem` and `nanocpus`, and a real build peaked at
+    202 % CPU on a 4-core host. In *Resource limits*. The gap the feature survey recorded was indeed a
+    Dockerfile-builder artefact.
+18. ~~**What exactly does an app look like on a box with no certificate?** The http-only install mode
     (`D_cert`) is defined by *absence* — no lego, no `global-cert` — so what needs confirming is that
     absence behaves: an app on a `domains:set-global`'d box serves plain http on port 80, emits **no**
-    `Strict-Transport-Security` header, and does **not** redirect to https. Both halves are
-    `[unverified]` inferences from the nginx template (see *nginx*), and the second is the one that
-    would make the mode useless if wrong. While there: check that `nginx:set <app> hsts` is genuinely
-    inert without a certificate, since that is why the mode is one-way.
+    `Strict-Transport-Security` header, and does **not** redirect to https.~~ **Answered 2026-09-11:
+    all three hold, on both an undeployed app's 502 vhost and a deployed app serving 200.** ~~While
+    there: check that `nginx:set <app> hsts` is genuinely inert without a certificate.~~ **It is —
+    computed `true`, emitted nowhere, and still nowhere after asking for it explicitly.** In *nginx
+    (the default)*, along with the catch-all vhost that leaves 443 open and rejecting handshakes.
 19. ~~**The no-op-tick record drill** — three `git:sync --build-if-changes` ticks with no upstream
     commit, then a real deploy, and watch the records.~~ **Answered 2026-09-11, and all three
     `[src]` claims held**: three ticks → three `running`/`abandoned` records with a 244-byte log each,
@@ -1695,20 +1876,20 @@ first throwaway VPS:
     `shepherd2 last-build` read past days of churn. And the churn turned out not to be cosmetic — it
     broke `shepherd2 wait-idle`, which filtered on `status`, a value an abandoned tick holds forever.
     Decided in `D_poll_churn`.
-20. **Does a Vaadin *Gradle* app build under `heroku/gradle` at all?** Everything above quietly assumes
-    Maven, and roughly half the farm is Gradle (`ideas/production-cutover.md`), so this is a hole rather
-    than a detail. Three parts, all `[unverified]` because nothing in this file covers that buildpack
-    beyond its place in the detection order: which task it runs with no configuration (Heroku's
-    convention is a `stage` task, overridable with a `GRADLE_TASK` config var); whether Vaadin's
-    `-Pvaadin.productionMode` is the way to reach a production build, there being no Maven profile to
-    activate; and whether `~/.gradle` lands in the `cache-$APP` volume the way `.m2/repository` does,
-    since if it does not, every Gradle build re-downloads its dependency tree.
+20. ~~**Does a Vaadin *Gradle* app build under `heroku/gradle` at all?**~~ **Answered 2026-09-11: yes,
+    all three parts, against an unmodified public repo** — which doubles as the confirmation that
+    `README.md` §4's four-file recipe is complete, since that repo carries exactly those four files and
+    needed nothing else. `GRADLE_TASK` from a committed `.env` reaches the build verbatim;
+    `-Pvaadin.productionMode` is the way to a production build; and `GRADLE_USER_HOME` lands in the
+    cache volume — 1.3 GB of it, the Gradle distribution and the JDK included. In *The herokuish cache
+    volume*; the cost per app is in *Build caching* and `D_builder`.
 21. **How long does `docker system df -v` take once the caches are warm?** `shepherd2 stats` is built
-    on it (`D_stats`), and the daemon walks every volume's directory to answer, so the cost scales with
-    the `.m2` repositories inside `cache-$APP` — hundreds of thousands of small files across nine
-    projects. `[unverified]`: measured at 0.4s on a dev machine whose volumes were empty, which
-    establishes nothing. If it turns out to be tens of seconds, the fallback is `du -sb` on the
-    `Mountpoint` the same listing hands us, per app, skipping the images and containers entirely.
+    on it (`D_stats`), and the daemon walks every volume's directory to answer — so the cost scales with
+    the file *count* inside `cache-$APP`, which item 20 has now sized: a 1.3 GB Gradle volume and
+    205 MB Maven ones, nine of them on the production box. `[unverified]`: 0.4s measured on a dev
+    machine whose volumes were empty, which establishes nothing. If it turns out to be tens of seconds,
+    the fallback is `du -sb` on the `Mountpoint` the same listing hands us, per app, skipping the
+    images and containers entirely.
 
 ## Sources
 

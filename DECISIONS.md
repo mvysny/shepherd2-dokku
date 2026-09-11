@@ -50,7 +50,9 @@ shepherd-traefik". A `D_` heading in *this* file is always a Shepherd2 decision.
 
 ## D_dokku — Rebuild on Dokku instead of maintaining our own PaaS (2026-09-09)
 
-**Status:** Accepted 2026-09-09. Not yet implemented — this repo is the implementation.
+**Status:** Accepted 2026-09-09, and **implemented**: this repo is the implementation, and on
+2026-09-11 a dev VM was installed from it in `http` mode, ran four real apps, and was torn down again.
+What that run did *not* touch is the https half — see `D_cert`.
 
 **Context.** Shepherd-Traefik works, but every part of it is ours to maintain: a Jenkins container per
 box, a `docker-compose.yaml`, five Bash scripts, a Traefik network-reattachment repair tool, and a
@@ -399,11 +401,14 @@ properties of Dokku's version make the predecessor's price disappear:
   a Docker network per project destroyed.
 - **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
   a reconciler cron. Do not switch proxies without re-reading both entries.
-- **Two things isolation does not buy.** The L7 front door stays open — any app can reach nginx by the
-  bridge gateway IP and ask for another app's vhost with a `Host:` header, which is harmless because
-  that surface is public anyway. And **the host stays reachable**: every container keeps a route to its
-  bridge gateway regardless of membership, so sshd and anything else bound on the box are reachable from
-  every app. That axis needs a `DOCKER-USER` rule and is **deferred to v2** (2026-09-10) — see
+- **Two things isolation does not buy, both now measured** (2026-09-11, `RESEARCH.md` → *Networking and
+  app isolation*). The L7 front door stays open — any app can reach nginx by the bridge gateway IP and
+  ask for another app's vhost with a `Host:` header: **200**, confirmed, and harmless because that
+  surface is public anyway. And **the host stays reachable**, with a sharper edge than this entry
+  assumed: a host service bound to `0.0.0.0` answered a container on the gateway address, one bound to
+  `127.0.0.1` did not. So the exposure is exactly "whatever the operator binds to all interfaces", and
+  the cheap half of the mitigation needs no firewall at all — bind admin things to loopback. The rest
+  of that axis needs a `DOCKER-USER` rule and is **deferred to v2** (2026-09-10) — see
   `ideas/harden-container-egress.md`, which also records the two things v1 must not do if that fix is to
   stay cheap: no firewall state on the per-app path, and a deliberately chosen address pool, since the
   pool subnet is probably what the rule matches on. It is also where the sibling's "app → admin plane"
@@ -412,9 +417,10 @@ properties of Dokku's version make the predecessor's price disappear:
 
 ## D_dokku_is_truth — Dokku's own state is the source of truth; Shepherd2 supplements it, never fronts it (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented — there is no code yet. The two source-level facts
-it leans on (what `git:sync` persists; `apps:set` having no metadata slot) are `[src]`-verified at
-v0.38.27 but not yet seen on a box.
+**Status:** Accepted 2026-09-10, **implemented and exercised on a box 2026-09-11**. The two
+source-level facts it leans on (what `git:sync` persists; `apps:set` having no metadata slot) held in
+practice: four projects were registered, polled, rebuilt and destroyed with no descriptor of ours
+anywhere, and every project fact read back out of `dokku *:report`.
 
 **Context.** shepherd-java's per-project JSON file was the source of truth, and a control plane converged
 Docker onto it, because there was nothing else to converge onto: plain Docker has no persisted per-app
@@ -559,8 +565,13 @@ per app; `D_dokku_is_truth` already does.
 
 ## D_cert — One wildcard certificate: lego DNS-01 on the host, propagated by `dokku-global-cert` — or plain http, chosen at install (2026-09-10)
 
-**Status:** Accepted 2026-09-10, awaiting implementation — it lands as `install` steps (lego, the plugin,
-the first issuance, one root cron line) and nothing per app. Depends on `D_proxy`: the `certs` plugin
+**Status:** Accepted 2026-09-10, **written, and half-proven**. Both modes are implemented as `install`
+steps (lego, the plugin, the first issuance, one root cron line — nothing per app). The **`http` mode
+ran end to end on a box 2026-09-11**, including the two claims that make it safe to run and one-way to
+leave: no HSTS header and no redirect without a certificate, and `nginx:set hsts true` emitting nothing
+at all (`RESEARCH.md` → *nginx*). **The `https` mode has never been executed anywhere** — lego, the
+`global-cert` push and the renewal hook are punch-list item 4, which needs a real DNS zone and is
+planned in `ideas/production-cutover.md`. Depends on `D_proxy`: the `certs` plugin
 this rides on is ignored under the Traefik plugin. **Amended the same day** with the http-only mode: https as
 described here is one of *two* install modes, and the second one is the absence of all of it.
 
@@ -685,15 +696,23 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   is still set and apps are still `PROJECTID.mydomain.me`; what http mode drops is the zone, the `*`
   record and the API token. Resolution can then come from the client's `/etc/hosts`, one line per app —
   which is exactly why this mode is the one a test VM uses, and why `README.md` owns that recipe.
-- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*):
-  that `lego run --dns godaddy` succeeds with the current credentials; that `global-cert:set` on renewal
-  re-applies to every app and reloads nginx without dropping connections; that an app created and
-  never yet deployed serves the global cert on its first successful deploy; and — for the http mode —
-  that an app on a box with no certificate serves plain http with no redirect and no HSTS header.
+- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*).
+  The http half is **answered** (2026-09-11): an app on a box with no certificate serves plain http on
+  80, emits no `Strict-Transport-Security` and issues no redirect, and `hsts` is *inert* rather than
+  merely unset — `nginx:report` computes it `true`, and the header still appears nowhere, because it
+  hangs off an ssl listener that does not exist. That is what makes the mode safe to run and
+  unrepairable to leave. **Nothing of the https half has been run**: that `lego run --dns godaddy`
+  succeeds with the current credentials; that `global-cert:set` on renewal re-applies to every app and
+  reloads nginx without dropping connections; and that an app created and never yet deployed serves
+  the global cert on its first successful deploy. Those are punch-list item 4 and need their own box —
+  `ideas/production-cutover.md`.
 
 ## D_builder — Apps are built by a buildpack, never a Dockerfile; herokuish by default (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented. The one `[unverified]` that could have forced a
+**Status:** Accepted 2026-09-10, and **the requirement it exists for was demonstrated on a box
+2026-09-11**: one repository deployed under two ids, both installing the same
+`1.0-SNAPSHOT` coordinates, downloaded 924 artifacts from Central *each* and shared nothing
+(`RESEARCH.md` → *The herokuish cache volume*). The one `[unverified]` that could have forced a
 re-read — whether a Vaadin *frontend* build stays warm across rebuilds — **stopped being load-bearing
 the same day**: every app on this box uses Vaadin's pre-compiled production bundle, so it runs no
 frontend build at all, and caching one is deferred to v2 (see *Consequences*).
@@ -876,6 +895,13 @@ whole decision in one sentence.
   becomes one lever — `repo:purge-cache <app>` — and the successor to `shepherd-clearcache` prunes
   *volumes*, not buildx caches. Punch-list item 1 (does `--cache-to type=local` export at all) is moot
   and has been struck.
+- **Isolation is paid for in disk, and the bill is now measured.** A Maven app's cache volume is
+  ~205–280 MB; **a Gradle app's is ~1.3 GB**, because that buildpack caches Gradle itself and the JDK
+  as well as dependencies. Two ids on one repo cost two full copies — that is the same property the
+  requirement asks for, seen from the cost side. Roughly half the farm is Gradle
+  (`ideas/production-cutover.md`), so nine Gradle apps is ~12 GB of volumes that nothing reclaims on
+  its own: `clearcache` never touches volumes by design, and `repo:purge-cache <app>` is the only
+  lever. Worth watching on the production box rather than assuming the dev VM's headroom.
 - **The frontend half of a Vaadin build is the one thing this decision does not solve — and v1 does not
   need it solved.** It is not a herokuish weakness: the frontend is driven by Maven, so it is invisible
   to the node buildpack that would otherwise have cached it, on any builder. What retires the problem
@@ -912,8 +938,10 @@ whole decision in one sentence.
 
 ## D_ruby — The `shepherd2` CLI is Ruby; `install` and `uninstall` stay Bash (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented — it decides what the first
-file written into this repo is.
+**Status:** Accepted 2026-09-10, **implemented**: the Ruby CLI, both Bash installers and the minitest
+suite exist, and all three ran on a box on 2026-09-11. The split held under the one pressure that could
+have broken it — the installers needed JSON surgery on `/etc/docker/daemon.json` before Ruby exists on
+the box, and reached for `python3` rather than for an interpreter that is not there yet.
 
 **Context.** Both predecessors wrote their glue in Bash, and `CLAUDE.md` carried "scripts are Bash with
 `set -euo pipefail`" as a convention inherited from them. `D_dokku_is_truth` then removed that
@@ -1189,8 +1217,10 @@ wait, not a reason to hack.
 
 ## D_install_apt — Install Dokku from the authors' deb with apt, not by running `bootstrap.sh` (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Lands as the first half of `shepherd2-install`. It changes *how*
-Dokku is installed, not *what* is installed: the package is upstream's own, at the pinned version.
+**Status:** Accepted 2026-09-10, **implemented as the first half of `shepherd2-install` and run on a
+box 2026-09-11** — twice, since the install is re-runnable and the first attempt failed at a later
+step. It changes *how* Dokku is installed, not *what* is installed: the package is upstream's own, at
+the pinned version.
 
 **Context.** Dokku's documented install is two commands — fetch `bootstrap.sh`, run it as root with
 `DOKKU_TAG` set. The operator does not want to run a shell script fetched from the internet as root,

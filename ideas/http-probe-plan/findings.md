@@ -106,7 +106,12 @@ Everything *before* the clone in `create-app` ran correctly on the first attempt
 leaves a registered project behind. Re-running `create-app` after the fix is the documented repair
 and is what was done.
 
-### FINDING — punch-list 17: build limits *are* honoured. The item was mis-framed, and the documented route works
+### ~~FINDING — punch-list 17: build limits *are* honoured. The item was mis-framed, and the documented route works~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Resource limits*, under the builder table whose herokuish row it confirms,
+with punch-list 17 struck and re-framed: the documented `resource:limit --process-type build` route is
+what works, and the `docker-options` hack the item asked about was never needed. The CLI header's
+`--build-cpu` line already carried the result. Evidence kept below.
 
 `create-app` emits `resource:limit --process-type build --cpu 2 --memory 2g`, and the build container
 Dokku creates carries exactly that — read straight off the daemon, mid-build:
@@ -124,7 +129,13 @@ $ docker stats   MEM 146.3MiB / 2GiB
 `--build-mem 2g` are *defaults*, this was load-bearing: had it not held, every app on the box would
 build uncapped.
 
-### FINDING — punch-list 7: container naming, plus something better than names
+### ~~FINDING — punch-list 7: container naming, plus something better than names~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Observability*, next to the `lazydocker` / `ctop` stance the item was really
+about: the `<app>.<process-type>.<index>` name, the rename-on-success, the random build-container name
+and the `com.dokku.*` label table. Punch-list 7 struck; `README.md`'s cheat sheet gains the two
+`--filter label=` queries. The build-container-on-the-app-network half went earlier, with finding E.
+Evidence kept below.
 
 **Deployed app containers are named `<app>.<process-type>.<index>` — `hello.web.1`.** Dokku creates
 them under a transient name and renames on success: `Renaming container hello.web.1.upcoming-8948
@@ -151,7 +162,11 @@ So `docker ps --filter label=com.dokku.app-name=hello` selects everything of an 
 **And a bonus that matters to `D_isolation`: the build container is on the app's own network** —
 `app-hello (172.16.1.2)`. `initial-network` covers the build, not just the runtime container.
 
-### FINDING — punch-list 8: ports are auto-wired, and before the first deploy at that
+### ~~FINDING — punch-list 8: ports are auto-wired, and before the first deploy at that~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Ports — the `EXPOSE` trap*, on the paragraph that already said a buildpack
+app needs no `ports:set`: it now carries the report output, the before-first-deploy timing and the
+detected-never-promoted behaviour across three builds. Punch-list 8 struck. Evidence kept below.
 
 ```
 $ dokku ports:report hello          # app created, never deployed
@@ -164,7 +179,14 @@ Ports map json:                     null
 Nothing in `ports:set`; `http:80:5000` is detected. **It survived** three further builds and two
 successful deploys — `Ports map` is still empty and `Ports map json` still `null`. Item 8 closed.
 
-### FINDING — punch-list 18: the http-only mode behaves, and `hsts` is genuinely inert
+### ~~FINDING — punch-list 18: the http-only mode behaves, and `hsts` is genuinely inert~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *nginx (the default)*, on the bullet whose `[unverified]` template reading it
+settles: the deployed-app headers, the absent redirect, and the inert-rather-than-unset `hsts`.
+Punch-list 18 struck. `D_cert`'s "box questions" consequence now separates its answered http half from
+its untouched https half, and `README.md`'s mode-choice bullet carries the asymmetry an operator needs
+— an http box cannot leak HSTS by accident, and the day a certificate appears the same computed `true`
+starts sending it. Evidence kept below.
 
 On the undeployed app, `nginx:show-config hello` is a plain-http vhost — `listen 80` / `listen [::]:80`
 and **no `ssl`, no `443`, no redirect, no `Strict-Transport-Security` anywhere in the generated file**.
@@ -261,7 +283,12 @@ Three things fall out of that, all of which the docs currently get half-right:
 - **The buildpack's default goals already include `-DskipTests`**, so an app that needs nothing else
   needs no `MAVEN_CUSTOM_OPTS` line whatsoever.
 
-### FINDING — punch-list 13, the Maven half: **cold 2m12s → warm 15.0s**
+### ~~FINDING — punch-list 13, the Maven half: **cold 2m12s → warm 15.0s**~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Build caching*, as one table covering both build tools and both scopes (the
+tool's own time, and the whole `git:sync --build`), with punch-list 13 struck down to its still-open
+frontend half. `README.md` §4 carries the operator-facing version: a warm rebuild is about a minute,
+so a commit is live within about six. Evidence kept below.
 
 Second build of the same app after a one-line commit, same `cache-hello` volume:
 
@@ -390,7 +417,14 @@ globally in the install; have `poll` pre-check the remote ref so a no-op never e
 accept it and document `--status succeeded` as the way to read build history. The first is one line in
 `shepherd2-install` and needs no code.
 
-### FINDING — punch-list 11: what an app reaches on the host, measured
+### ~~FINDING — punch-list 11: what an app reaches on the host, measured~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Networking and app isolation*, as the table plus the one-line rule it
+supports, and explicitly carrying which two rows prove nothing; punch-list 11 struck. `D_isolation`'s
+*two things isolation does not buy* stops being inference and gains the loopback-versus-`0.0.0.0`
+distinction, which is the half an operator can act on today. The verdict went to
+`ideas/harden-container-egress.md`, which is the note that commissioned the measurement: v2 should
+bother, and if it does exactly one thing it is the metadata rule. Evidence kept below.
 
 From inside `hello.web.1` (on `app-hello`, `172.16.1.3`, gateway `172.16.1.1`). The container image
 ships `curl`, so no tooling had to be added.
@@ -419,7 +453,12 @@ never a container-to-anything boundary. And on a real VPS, `169.254.169.254` wou
 the one with a genuinely bad worst case, and it is the strongest argument for the v2 `DOCKER-USER`
 rule. Measured, as the item asked, to decide whether v2 bothers: **it should.**
 
-### FINDING — an http-mode box still listens on 443, and that is Dokku being careful
+### ~~FINDING — an http-mode box still listens on 443, and that is Dokku being careful~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *nginx (the default)*, next to the undeployed-app 502 vhost: the catch-all's
+`ssl_reject_handshake on` and `return 444`, and what each means for reachability. `README.md` gains it
+as its own settled-thing bullet, since "443 is open on the http box" is exactly the sort of thing that
+gets reported as a finding. Evidence kept below.
 
 Worth recording under item 18 because it looks alarming and is not. `/etc/nginx/conf.d/00-default-vhost.conf`
 is Dokku's catch-all, installed by the deb:
@@ -516,7 +555,14 @@ flag the CLI can't express, and survive `network:list --dokku-managed` as a legi
 **`D_isolation`'s "rejected alternatives" section is now factually wrong where it implies this cannot
 be done through Dokku**, and should be corrected when the findings graduate.
 
-### FINDING — punch-list 20: the Gradle buildpack works, all three parts
+### ~~FINDING — punch-list 20: the Gradle buildpack works, all three parts~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *The herokuish cache volume*, on the Gradle buildpack bullets whose `[src]`
+readings it confirms — the committed `.env` reaching the build verbatim, `-Pvaadin.productionMode` as
+the production switch, and `GRADLE_USER_HOME` landing in the volume. Punch-list 20 struck, and its
+answer records that the repo was unmodified, which is what makes it a check of `README.md` §4's recipe
+rather than only of the buildpack. §4 now says so. The volume sizes went earlier, with finding G.
+Evidence kept below.
 
 Against `mvysny/karibu-helloworld-application` **unmodified from GitHub** — it already carries the four
 files README §4 prescribes, which is itself the confirmation that the §4 recipe is complete.
@@ -567,7 +613,14 @@ So the arithmetic in `D_isolation` stays arithmetic until someone runs this on a
 snapshot. **Note that punch-list 10's result may make the whole question moot**: one shared
 `icc=false` network gives the same isolation and allocates exactly one subnet.
 
-### FINDING — punch-list 6: cache isolation is impossible to breach, demonstrated
+### ~~FINDING — punch-list 6: cache isolation is impossible to breach, demonstrated~~ — **GRADUATED 2026-09-11**
+
+Landed: the drill and its 924-downloads-each table in `RESEARCH.md` → *The herokuish cache volume*,
+with punch-list 6 struck; the measured volume sizes in the same place, since they are a property of
+the buildpacks rather than of us. `D_builder`'s Status now cites the demonstration instead of waiting
+for it, and a new consequence carries the cost side — ~1.3 GB per Gradle app against ~205–280 MB per
+Maven one, so ~12 GB for nine Gradle apps, reclaimed by nothing but `repo:purge-cache`. `README.md`'s
+*Never prune volumes* gains the same budget line. Evidence kept below.
 
 `vbm-a` and `vbm-b` are **the same repository deployed under two ids**, which is the only way to
 guarantee the shared Maven coordinates the item needs: both build

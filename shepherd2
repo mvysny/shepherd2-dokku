@@ -318,6 +318,18 @@ class Shepherd2
     network = network_name(id)
     @dokku.run('network:destroy', '--force', network) if @dokku.ok?('network:exists', network)
 
+    # apps:destroy removes the app's vhost file but does not reload nginx, so the *running* nginx goes
+    # on serving the destroyed app's hostname from a config it still holds in memory — proxying to a
+    # container that no longer exists. Requests then hang for proxy_connect_timeout (60s) instead of
+    # being refused, until some unrelated deploy happens to reload nginx. Verified on a box.
+    # Best-effort: the app is already gone, and a box whose nginx will not reload is a bigger problem
+    # than a stale vhost.
+    begin
+      @dokku.run('nginx:reload')
+    rescue Shepherd2Error => e
+      oops "could not reload nginx (#{e.message}); #{id}'s hostname may hang until the next deploy"
+    end
+
     EXIT_OK
   end
 

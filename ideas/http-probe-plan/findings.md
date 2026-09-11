@@ -560,3 +560,98 @@ cache-gradle-a    1.3G   (Gradle: wrapper distribution + JDK + dependency and bu
 
 The duplication is the price of the isolation and is worth naming out loud: two ids on one repo cost
 two full copies. Disk went 18G → 20G used of 62G across the four apps.
+
+### PARTIAL — punch-list 12: the mechanism is confirmed off the box's own config; the live 502 is not run
+
+First correction to the plan: **`traefik-vhosts` is a Dokku *core* plugin**, installed and enabled by
+the deb like `nginx-vhosts` and `haproxy-vhosts`. Nothing has to be installed to test this, and the
+plan's "it installs a plugin the product deliberately does not use, so do it last" caution is milder
+than written — the plugin is already on every Shepherd2 box, merely unused.
+
+`dokku traefik:show-config vbm-b` renders what it *would* run, and that is the evidence `D_proxy`
+wants:
+
+```yaml
+services:
+  traefik:
+    image: "traefik:v3.7.10"
+    command:
+      - --entrypoints.http.address=:80
+      - --providers.docker
+      - --providers.docker.exposedByDefault=false
+    network_mode: bridge          # <-- the whole finding
+    ports:
+      - "80:80"                   # <-- and the second one
+```
+
+- **`network_mode: bridge`.** Traefik is put on Docker's *default* bridge and nothing anywhere
+  attaches it to an app's network. An app whose `initial-network` is `app-vbm-b` (172.16.x) is
+  therefore on a different L2 from the proxy meant to reach it — which is exactly the `[src]` reading
+  ("no network attachment logic anywhere in it"), now confirmed against generated output rather than
+  source. The expected 502 follows directly.
+- **`ports: "80:80"`.** Traefik wants the host's port 80, which Dokku's own nginx already holds. So on
+  a Shepherd2 box `traefik:start` cannot even bind without stopping nginx first — every app on the box
+  goes dark to run the experiment.
+
+**Not run:** `proxy:set vbm-b type traefik` + `traefik:start` + the observed 502. It needs nginx
+stopped box-wide, and the agent running this probe was denied both the plugin-fetch and the
+proxy-switch commands by its own tooling. Given the two lines above, the remaining value is
+confirmatory rather than decisive — but it should be finished by hand on a box that is about to be
+rebuilt anyway.
+
+## Bugs the box found in our own code, beyond the punch list
+
+The punch list asks about Dokku. These are three things wrong with **Shepherd2**, none of which any
+amount of reading would have found. All three are fixed and the fixes are verified on the box.
+
+### BUG 1 — `shepherd2-install` aborted at the admin-key step
+
+Covered above under *Phase 1*. `dokku ssh-keys:add admin < FILE` is invisible to Dokku, and a trailing
+blank line in a `.pub` file defeats the argument form.
+
+### BUG 2 — `shepherd2 wait-idle` could never return on a live box
+
+`running_builds` selected build records with `status == 'running'`. **Every no-op poll tick leaves a
+record at exactly that, permanently** — there is no `finished_at` for a build that never started — and
+the cron writes one every five minutes. So on any box that has been up for five minutes, `wait-idle`
+blocked until its timeout and exited 1. The box at the time of the test:
+
+```
+Counter({('running', 'abandoned'): 14, ('running', 'running'): 1})
+```
+
+Dokku already computes the distinction — it checks whether the recorded pid is still alive and
+publishes the answer as `display_status`. A live build reads `running`/`running`; an abandoned tick
+reads `running`/`abandoned`. Keying off `display_status` (falling back to `status`) fixes it:
+with 12 abandoned records present, `wait-idle` went from *timing out at 30s with exit 1* to
+**returning in 0.116s with exit 0**.
+
+This is the direct operational consequence of `Q_poll_churn` and is the strongest argument yet for
+settling it: the churn did not merely clutter a listing, it broke the verb that exists to make a
+reboot safe.
+
+### BUG 3 — `destroy-app` left the destroyed app's hostname black-holing requests
+
+`dokku apps:destroy` removes the per-app vhost file (`/home/dokku/<app>/nginx.conf`) but **does not
+reload nginx**. The running nginx therefore keeps serving the destroyed app's hostname from the config
+it still holds in memory, proxying to a container that no longer exists — so requests **hang for
+`proxy_connect_timeout` (60s)** instead of being refused.
+
+Isolated by elimination, which is why it is worth writing down: `nginx -T` showed **no** `vbm-b`
+server block, `/home/dokku/vbm-b/` was gone, and `grep -r vbm-b /etc/nginx` found nothing — yet only
+that one hostname misbehaved, case-insensitively:
+
+```
+nosuchapp.shepherd2.test -> code=000 time=0.000282     # catch-all `return 444`, instant
+vbm-b.shepherd2.test     -> code=000 time=6.002944     # hangs
+vbm-c.shepherd2.test     -> code=000 time=0.000386     # instant
+```
+
+`systemctl reload nginx` made `vbm-b` behave like the others immediately. So the stale config was in
+the *running* nginx, not on disk — which is exactly the failure the operator would never diagnose,
+because every tool that inspects config says the app is gone.
+
+Fixed with Dokku's own command rather than a reach-around: `destroy_app` now ends with
+`dokku nginx:reload`, best-effort. Note this is **not** a Dokku bug to report upstream so much as a
+consequence of `apps:destroy` being designed for a box where the next deploy reloads nginx soon
+anyway; on Shepherd2 a destroyed project may be the last thing that happens for days.

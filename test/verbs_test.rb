@@ -12,8 +12,25 @@ class DestroyAppTest < Minitest::Test
     assert_equal [
       'repo:purge-cache demo',
       'apps:destroy --force demo',
-      'network:destroy --force app-demo'
+      'network:destroy --force app-demo',
+      'nginx:reload'
     ], dokku.mutations
+  end
+
+  # apps:destroy removes the vhost file but leaves the running nginx serving it, so the destroyed
+  # app's hostname hangs for proxy_connect_timeout instead of being refused. Verified on a box.
+  def test_nginx_is_reloaded_even_when_there_was_no_network
+    dokku = DokkuDouble.new(exists: ['apps:exists'])
+    shepherd(dokku).destroy_app('demo', yes: true)
+
+    assert_includes dokku.mutations, 'nginx:reload'
+  end
+
+  def test_a_failed_nginx_reload_does_not_fail_the_destroy
+    dokku = DokkuDouble.new(exists: ['apps:exists', 'network:exists'], fail_on: ['nginx:reload'])
+
+    assert_equal EXIT_OK, shepherd(dokku).destroy_app('demo', yes: true)
+    assert_includes dokku.mutations, 'apps:destroy --force demo'
   end
 
   def test_a_failed_cache_purge_does_not_stop_the_destroy

@@ -418,3 +418,84 @@ Not a bug in what the installer *does* — but its preflight checks `hostname -f
 network, and does not check the one service the key it asks for depends on. A one-line preflight
 warning would have saved the next person the confusion. (On a real VPS sshd is always there, which is
 why it took a local VM to notice.)
+
+### FINDING — punch-list 2: `D_isolation` works exactly as claimed, both halves
+
+Two real apps, `hello` (Maven) and `gradle-a` (Gradle), each serving on its unpublished port 5000.
+The before/after the item insists on, run by unsetting `initial-network` and restarting, then setting
+it back:
+
+| State | hello → gradle-a :5000 by IP | gradle-a → hello :5000 by IP | nginx `hello` | nginx `gradle-a` |
+|---|---|---|---|---|
+| **before** — no `initial-network`, both on the default `bridge` (172.17.0.2 / .3) | **200** | **200** | 200 | 200 |
+| **after** — per-app networks (`app-hello` 172.16.1.3 / `app-gradle-a` 172.16.2.3) | **timeout** | **000** | 200 | 200 |
+
+And the control that makes the "after" row mean something: **each app still reached *itself* on
+:5000 → 200**, so the port is genuinely open and listening and it is the network, not the app, doing
+the refusing.
+
+`dokku network:set <app> initial-network` + `ps:restart` is all it takes; nothing re-attaches anything,
+and host-nginx routing is untouched in every state. **Item 2 closed, and `D_isolation`'s central claim
+is confirmed on a box.**
+
+### FINDING — punch-list 10: a foreign network works, **and the rung `D_isolation` rejected is reachable**
+
+`initial-network` accepts a network Dokku did not create:
+
+```bash
+docker network create -o com.docker.network.bridge.enable_icc=false foreign-icc-off   # 172.16.3.0/24
+dokku network:set hello initial-network foreign-icc-off && dokku ps:restart hello
+```
+
+The app deploys, gets `172.16.3.2`, and **routes: 200**. Dokku keeps the distinction visible —
+`network:list` lists it, `network:list --dokku-managed` shows only `app-hello` / `app-gradle-a`.
+
+Then the part the item said "only matters if `D_isolation` is ever revisited" — so it was worth five
+more minutes. **Both apps on that one shared `icc=false` network:**
+
+| | hello → gradle-a :5000 | gradle-a → hello :5000 | nginx both |
+|---|---|---|---|
+| one shared network, `enable_icc=false` | **timeout** | **000** | 200 |
+
+So a **single** shared network with inter-container communication disabled gives the *same* isolation
+as N per-app networks, and routes identically. `D_isolation` recorded that rung as rejected; this says
+it is **available**, not unreachable — which matters because it side-steps the address-pool wall
+entirely (one network, not one per app) and would make punch-list 3's sub-bullet moot.
+
+It does not overturn the decision — per-app networks are Dokku-native, need no `docker network create`
+flag the CLI can't express, and survive `network:list --dokku-managed` as a legible inventory — but
+**`D_isolation`'s "rejected alternatives" section is now factually wrong where it implies this cannot
+be done through Dokku**, and should be corrected when the findings graduate.
+
+### FINDING — punch-list 20: the Gradle buildpack works, all three parts
+
+Against `mvysny/karibu-helloworld-application` **unmodified from GitHub** — it already carries the four
+files README §4 prescribes, which is itself the confirmation that the §4 recipe is complete.
+
+- **Which task runs:** the committed `.env` was honoured verbatim —
+  `$ ./gradlew clean installDist -Pvaadin.productionMode`. So `GRADLE_TASK` reaches the build from a
+  committed `.env`, confirming the ENV_DIR path `[src]` for the app's own files.
+- **`-Pvaadin.productionMode` is the way in:** `> Task :vaadinBuildFrontend` ran, and the app says so
+  at runtime — `Vaadin is running in production mode`, `Vaadin production mode is on: … "productionMode": true`.
+- **`~/.gradle` does land in the cache volume**, and it is the whole toolchain:
+
+```
+$ docker run --rm -v cache-gradle-a:/cache alpine du -sh /cache/.[!.]*
+1.3G  /cache/.gradle          →  787.5M  .gradle/wrapper   (the Gradle distribution + JDK)
+                                 560.3M  .gradle/caches    (dependencies + build cache)
+480.0K  /cache/.gradle-project
+```
+
+compared with Maven's `282.1M /cache/.m2`. The warm build shows the build cache working:
+`> Task :compileKotlin FROM-CACHE`.
+
+**Timings, from Dokku's own build records** (whole `git:sync --build`, clone to deployed):
+
+| App | cold | warm |
+|---|---|---|
+| `gradle-a` (Gradle) | **3m15s** (Gradle itself 46s) | **1m37s** (Gradle itself 33s) |
+| `hello` (Maven) | **3m02s** (Maven itself 2m12s) | **1m05s** (Maven itself 15s) |
+
+Item 20 closed. **The capacity note worth carrying forward: a Gradle app's cache volume is ~1.3 GB**,
+against Maven's ~280 MB, and `clearcache` never touches volumes by design. Nine Gradle apps would be
+~12 GB of cache volumes on a box that currently has 42 GB free.

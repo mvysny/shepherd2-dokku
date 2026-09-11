@@ -9,12 +9,17 @@ and deploys them as Docker containers at `https://PROJECTID.<domain>` on a singl
 the building, running, routing and TLS; this repo is the **glue** — host setup, per-project
 convergence, the periodic-rebuild trigger, the wildcard-certificate story, and housekeeping.
 
-**Status: the design is agreed and v1 is written but unproven** — both installers, the `shepherd2` CLI
-and its tests exist, and **no box has been installed from any of it yet**.
+**Status: v1 is written and it has been run — on one box, in `http` mode.** Both installers, the
+`shepherd2` CLI and its tests exist, and on 2026-09-11 a dev VM was installed from them, torn down with
+`shepherd2-uninstall` and reinstalled. That run answered most of the punch list in `RESEARCH.md` and
+found three v1 bugs in our own code plus two teardown gaps, all five fixed — none of which any amount
+of reading would have found (`ideas/http-probe-plan.md`).
 **`SOLUTION.md` is what is to be built** — the box's inventory, the install order, the CLI surface and the flows. Write against
 that file rather than inventing a shape; if the shape is wrong, change `SOLUTION.md` (and the `D_` entry
-underneath it) first. One thing still gates a *finished* v1: the punch list in `RESEARCH.md` needs a
-box, and the dev VM is now ready to be one (`ideas/http-probe-plan.md`). The feature survey that decided
+underneath it) first. What still gates a *finished* v1 is the half no `http` box can reach: the
+`D_cert` chain, punch-list item 4, which needs an `https` box and a real DNS zone. `D_cert` makes the
+mode one-way, so the dev VM cannot be promoted into one — that run, and the `Procfile` /
+`system.properties` commits the nine migrating repos each need, are `ideas/production-cutover.md`. The feature survey that decided
 *what* the rebuilt thing does has graduated and is gone (`D_no_feature_list`); what is left in `ideas/`
 is five open questions carrying `Q_` slugs and two pieces of deferred work — **all of it v2** now that
 `Q_poll_churn`, the one v1 gap among them, has graduated into `D_poll_churn` — plus two plans for

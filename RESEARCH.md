@@ -875,8 +875,23 @@ shared bridge; reachability is unchanged. **[docs]**
 values are settable afterwards with e.g. `dokku postgres:set <service> post-create-network <net>`.
 **[docs]** So an app and its own Postgres can share one per-project network with no raw-Docker escape
 hatch — see *Services: Postgres*. Note `postgres:link` "will use native docker links via the
-docker-options plugin", i.e. it adds a `--link`, which is a *legacy default-bridge* mechanism; what the
-link flag does to a container whose `initial-network` is a user-defined bridge is **[unverified]**.
+docker-options plugin", i.e. it adds a `--link`, which is a *legacy default-bridge* mechanism.
+
+**What that legacy `--link` does on a user-defined bridge: nothing that matters.** Run end to end —
+`postgres:create <svc> -N app-<id>` then `postgres:link <svc> <app>` — it neither errors nor warns; it
+sets `DATABASE_URL`, adds `--link dokku.postgres.<svc>:dokku-postgres-<svc>` to *all three*
+docker-options phases (build, deploy and run) and redeploys the app. Docker accepts the flag and
+records it **network-scoped** — `HostConfig.Links` stays `null` while
+`NetworkSettings.Networks[<net>].Links` carries it — and the app connects.
+
+But it is **redundant rather than inert**, and the difference matters for the design: a throwaway
+container on the same network with *no link at all* runs a query against the same DSN quite happily,
+because `postgres:create -N` gives the service container the network alias `dokku-postgres-<svc>` and
+Docker's embedded DNS serves it. **`-N` is the load-bearing flag; `postgres:link` only writes
+`DATABASE_URL`.** The same container on a *different* network cannot even resolve the name
+(`could not translate host name … Temporary failure in name resolution`) — so per-app isolation covers
+services as well as apps, and a service on app A's network is not merely unreachable from app B but
+invisible to it. **[verified on a box, 2026-09-11, dokku-postgres against postgres:18.4]**
 
 `network:rebuild <app>` / `network:rebuildall` re-apply network config to running containers — a
 first-party re-assert, so keeping isolation true after drift does not need a tool of ours. **[docs]**
@@ -1427,12 +1442,13 @@ first throwaway VPS:
 8. Does a buildpack app get `http:80:5000` wired automatically, with nothing in `ports:set`, and does
    it survive a rebuild? (Was: does `EXPOSE 8080` + `ports:set` behave as documented — a
    Dockerfile-builder question, moot under `D_builder`.)
-9. **(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work when
-   the app is on a per-app network?** The link is a legacy
-   default-bridge `--link`; on a user-defined bridge the app resolves the service by DNS name
-   (`dokku-postgres-<svc>`), so it plausibly works *because* both sit on the per-app network rather than
-   because of the link. Check that `postgres:create -N app-<id>` + `postgres:link` leaves `DATABASE_URL`
-   connectable, and whether the `--link` flag errors, warns, or is silently inert.
+9. ~~**(v2 — a managed database is deferred, so nothing here blocks v1.) Does `postgres:link` still work
+   when the app is on a per-app network?** … Check that `postgres:create -N app-<id>` + `postgres:link`
+   leaves `DATABASE_URL` connectable, and whether the `--link` flag errors, warns, or is silently
+   inert.~~ **Answered 2026-09-11**, and the item's own guess was right: it works, and it works
+   *because* both containers sit on the per-app network, not because of the link. The `--link` is
+   accepted silently and is **redundant rather than inert**. Isolation covers services too — from
+   another network the service name does not even resolve. See *Networking and app isolation*.
 10. **Can `initial-network` point at a network Dokku did not create** — one made with
     `docker network create -o com.docker.network.bridge.enable_icc=false` — and does the app still
     deploy and route? Only matters if `D_isolation` is ever revisited — it decides whether that entry's

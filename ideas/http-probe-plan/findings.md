@@ -913,34 +913,15 @@ The same build's incidental readings — `$CACHE_DIR` is `/cache` on the `cache-
 already covered by *Resource limits*: "only limits explicitly set against the `build` process type are
 applied at build time".
 
-### FINDING — punch-list 9: `postgres:link` works on a per-app network, and the `--link` is redundant rather than inert
+### ~~FINDING — punch-list 9: `postgres:link` works on a per-app network, and the `--link` is redundant~~ — **GRADUATED 2026-09-11**
 
-Item 9 is v2 and blocks nothing, but it is twenty minutes and it settles the `[unverified]` under
-*Datastore plugins*. `dokku-postgres` installed, `postgres:create probedb -N app-demo`,
-`postgres:link probedb demo`.
-
-- **`postgres:create -N` puts the service straight on the app's network**, with a network alias:
-  `Aliases: ["dokku-postgres-probedb"]`, `172.16.0.2` on `app-demo`.
-- **`postgres:link` neither errors nor warns.** It sets `DATABASE_URL` and adds
-  `--link dokku.postgres.probedb:dokku-postgres-probedb` to *all three* docker-options phases
-  (build, deploy, run), then redeploys the app.
-- Docker accepts `--link` on a user-defined bridge and records it **network-scoped** —
-  `HostConfig.Links` is `null` while `NetworkSettings.Networks["app-demo"].Links` carries it.
-- **`DATABASE_URL` is connectable.** From inside `demo.web.1`, `dokku-postgres-probedb` resolves to
-  `172.16.0.2` and TCP connects. A real query works too.
-
-The interesting half is *why*, which the item guessed correctly. A throwaway container on `app-demo`
-with **no link at all** runs `select version()` against the same DSN and gets `PostgreSQL 18.4`; the
-same container on a *different* network cannot even resolve the name
-(`could not translate host name … Temporary failure in name resolution`). So:
-
-> The link is **redundant, not inert** — it is accepted and recorded, but the connection works because
-> both containers share the per-app network and Docker's embedded DNS serves the service's alias.
-> `-N app-<id>` is the load-bearing flag; `postgres:link` is doing nothing but writing `DATABASE_URL`.
-
-And the second half of that is the reassuring one for `D_isolation`: **per-app isolation covers
-services too.** A service created on app A's network is not merely unreachable from app B, it is
-unresolvable.
+Landed in `RESEARCH.md` → *Networking and app isolation*, replacing the `[unverified]` on the
+`postgres:link` caveat under *Datastore plugins* with the whole result: what the legacy `--link` does
+(accepted, network-scoped, no warning), why the connection actually works (`-N` plus Docker's embedded
+DNS serving the service alias), and the corollary that isolation covers services too. Punch-list 9 is
+struck. *Services: Postgres* already defers to that section for the caveat, so it needed no edit, and
+`D_isolation` already prescribes `postgres:create --initial-network` as the flag that must not be
+forgotten — the research now says why, and the decision links rather than restates.
 
 ### FINDING — a wildcard app domain is accepted, and it routes
 

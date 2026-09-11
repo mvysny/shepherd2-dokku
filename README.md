@@ -116,7 +116,9 @@ renewal cron line too, so issuance and renewal always talk to the same ACME serv
 unrepairable from here ([`D_cert`](DECISIONS.md)). To change it, reinstall.
 
 Every step is guarded, so the script is safe to re-run: that is how a failed install is fixed —
-correct the script and run it again, rather than repairing the box by hand.
+correct the script and run it again, rather than repairing the box by hand. That workflow has been
+used in anger: a first run failed at the admin-key step, and the second reported `(already done)` for
+the packagecloud key, the apt source, the `dokku` package and the address pools before carrying on.
 `shepherd2-install --help` is the authority on its arguments; [SOLUTION.md](SOLUTION.md) lists the
 steps in order.
 
@@ -283,6 +285,15 @@ appassembler `bin/run` script or an exploded directory. Three things about it th
   them. When a process needs a variable, put `env` in front of it:
   `web: env SERVER_PORT=$PORT ./bin/myapp`.
 - **Keep `-Xmx` under the memory limit** (256 MB by default), for the reason at the end of this section.
+
+**One trap worth naming, because it follows from the `Procfile` rule above: an assembly that emits
+only archives gives the `Procfile` nothing to name.** Both of the Maven repos tried here produced just
+`zip` + `tar.gz`, and a `Procfile` line has no shell, so it cannot untar anything. Add
+`<format>dir</format>` to `src/main/assembly/*.xml`: you get an exploded `target/<finalName>-zip/` to
+point at, and the `dir` format preserves the `0755` on `bin/<app>`.
+
+Whether your app *runs* once started is yours, not the box's — `dokku logs ID` is where you find out,
+and *Rehearse the build locally* is where you find out before anyone registers it.
 
 ### Vaadin under herokuish
 

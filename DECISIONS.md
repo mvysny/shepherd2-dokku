@@ -952,7 +952,8 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
 **Decision.**
 
 - **One `shepherd2` dispatcher, written in Ruby**, holding every verb: `create-app`, `destroy-app`,
-  `poll`, `rebuild`, `wait-idle`, `clearcache`. One file on `PATH`, one place to look.
+  `poll`, `rebuild`, `wait-idle`, `clearcache`. One command on `PATH`, one place to look — split into a
+  library and its executable by `D_api_surface`, which leaves the command itself exactly where it is.
 - **Ruby standard library only.** `json` and `optparse` are in it. No `Gemfile`, no bundler, no gem to
   pin, and nothing to re-install after a distro upgrade.
 - **`shepherd2-install` and `shepherd2-uninstall` stay Bash** with `set -euo pipefail`. They run on a
@@ -1592,3 +1593,144 @@ cheat sheet already points at it. A `stats` that grows a time axis has become th
 - **Shepherd2 now parses two size conventions.** Docker's SI strings on the way in, binary limit
   suffixes out of `resource:limit`, one renderer in IEC units. Anything added here has to pick a side
   deliberately; the units test is what keeps that honest.
+
+## D_api_surface — The verbs are a Ruby API that returns data; rendering belongs to the front-end (2026-09-11)
+
+**Status:** Accepted 2026-09-11 and **implemented the same day**: `shepherd2.rb` and `shepherd2-cli`
+exist, both installers place them, and the suite is split along the same seam. Not yet run on a box.
+Refines `D_ruby`, whose "one file on `PATH`" this splits in two without moving the command.
+
+**Context.** The CLI is one file of 1180 lines, 621 of them code, and the layering a second front-end
+would need is already most of the way there: `CLI` does argument parsing and nothing else, `Shepherd2`
+holds one public method per verb, and the four process seams (`Dokku`, `Docker`, `Machine`,
+`BuildLock`) are constructor arguments. What it does not have is a *boundary*. `Shepherd2` takes
+`out:`/`err:` and prints prose (`say "polling demo"`), owns ~120 lines of renderer (`print_box` …
+`human_bytes`), reads `$stdin` directly to confirm a destroy, and returns an exit code from every verb.
+
+That is invisible while the only caller is a terminal. `Q_web_admin`'s option 4 — a Tuile TUI — is
+the candidate `D_ruby` already leaned on when it put Ruby on the box ("that TUI shells out to — or
+eventually requires — the same code"), and *requires* is the half that does not work today. A TUI
+calling `poll` gets an integer and a stream of prose to scrape; a TUI calling `destroy_app` has its
+keyboard stolen mid-frame by a `$stdin.gets` inside the API; and every verb that builds streams Dokku's
+build log straight to fd 1, because `Dokku#run` is `system` with the terminal attached.
+
+**Decision.**
+
+- **The verbs return data, never text.** `stats` returns the hash it already assembles, `last_build` a
+  build record or `nil` — and, with `log:`, that build's captured output as a string — `poll` a
+  per-app result list, `rebuild` `:built` or `:busy`. The mapping from those onto `EXIT_OK` /
+  `EXIT_FAILURE` / `EXIT_BUSY` is the executable's job, and `EXIT_*` exist only there.
+- **Progress leaves through a listener; the confirmation comes in as a callback.** No `out:`, no `err:`,
+  no `$stdin` in the API. `destroy_app` takes `confirm:`, defaulting to the tty prompt the CLI wants.
+- **Nothing renders, nothing streams, every return value is a snapshot.** `Dokku#run` **discards** the
+  child's output by default; the executable opts into inheriting the terminal, because watching a build
+  scroll past is what an operator onboarding a project wants. Discarding loses nothing: Dokku captures
+  every build's output to `<build-id>.log` itself (`RESEARCH.md` → *Build tracking*), which is what
+  `last-build` then reads.
+- **Three verbs block for the length of a build, and that is Dokku's execution model rather than ours.**
+  `git:sync` is fully synchronous and its exit code *is* the build's (`RESEARCH.md` → *`git:sync`*,
+  from source), so `create-app`, `poll` and `rebuild` return when the container is up. Blocking and
+  streaming are separate properties and only the second is ours to remove: a front-end that cannot
+  block calls these off its UI thread and watches the listener. `wait-idle` blocks by design.
+- **Each verb's rdoc says what it waits for**, in the concrete terms a caller needs — "blocks until the
+  project has been built and deployed, which is minutes" rather than a flag. `stats` walks every
+  Docker volume and `clearcache` prunes the daemon, so the honest reading is that no verb belongs on a
+  UI thread; the rdoc is there to say which ones will hold it for minutes rather than a moment.
+- **Two artifacts.** `shepherd2.rb` is the library, named for the class it defines; `shepherd2-cli` is
+  the executable, holding `CLI`, every renderer, the exit codes and the root check.
+- **Everything nests under `Shepherd2`** — `Shepherd2::Dokku`, `::Docker`, `::Machine`, `::BuildLock`,
+  `::Error` (was `Shepherd2Error`), `::UsageError`, and the defaults `create-app` reads.
+- **The installed command does not change.** Both files go to `/usr/local/lib/shepherd2/`, with
+  `/usr/local/bin/shepherd2` a symlink to the executable. `shepherd2 poll` stays `shepherd2 poll`.
+
+**Why.**
+
+- **The split enforces what discipline would not.** Returning data is a rule someone breaks six months
+  later with one `@out.puts` in a verb, and a reviewer will not catch it. With the renderer in another
+  file there is no `@out` in scope: the API *cannot* print. That is the whole reason for two files —
+  not length, which barely moves (roughly 850 lines of library against 300 of executable).
+- **The confirmation is the sharp case.** Prose on stdout merely makes a TUI ugly; `$stdin.gets` in the
+  middle of `destroy_app` takes its input away. Nothing short of removing it from the API fixes that.
+- **Named for its class because a loader will care.** Zeitwerk maps file to constant, so
+  `shepherd2-api.rb` would demand the constant be `Shepherd2Api`. Nesting the seams is the same
+  argument one level down: `shepherd2/dokku.rb` → `Shepherd2::Dokku` later, with no rename. It also
+  stops a `require` of this library dropping bare `Docker` and `Machine` into a caller's namespace —
+  which a Docker-adjacent TUI is entitled to want for itself.
+- **The installed name is an interface and the repo name is not.** There are 66 `shepherd2 <verb>`
+  references across `README.md`, `SOLUTION.md`, `DECISIONS.md` and `ideas/`, plus both cron lines
+  (`shepherd2-install`, step 10) and the hint `last-build` prints. A symlink keeps every one of them
+  true, so the rename costs four lines across the two installers.
+- **This adds no layer.** The API is not something new between the CLI and Dokku; it is the object that
+  exists today with its printer removed. Nothing gains an indirection, and the verbs keep reaching
+  `dokku` directly.
+
+**Alternatives rejected.**
+
+- *Leave it one file and keep the discipline.* Free today, and the failure mode is the one above: the
+  boundary is unenforced exactly where it is easiest to cross. The data-returning half would still be
+  needed for the TUI, so this saves only the split.
+- *Keep rendering in the API behind an injected formatter*, one implementation per front-end. Tempting
+  — one file, one seam more. Rejected because it puts the API in charge of *what to say*, which is
+  precisely what differs between a scrolling terminal and a repainted pane: the TUI would be writing
+  against an interface shaped by the CLI's needs. Data out, and each front-end decides.
+- *Detach the build so every verb returns immediately* — spawn `git:sync` and hand back a build id,
+  which would make the whole API non-blocking and is the shape a UI would prefer. Rejected because
+  Dokku offers no detached build and doing it ourselves discards the two things that make the design
+  work. The **exit code is the only trustworthy status** — `D_poll_churn` exists because the build
+  *records* are not, and `RESEARCH.md` puts it plainly: a caller branches on `$?` and needs no other
+  progress signal. And **the lock's duration is the build's**: `poll` holds `BuildLock` until the build
+  ends, which is what makes the next `*/5` tick skip and `rebuild` fail fast with `EXIT_BUSY`. A poll
+  that returns at once releases the lock at once, and the next tick starts a second build.
+- *Skip the Ruby API; have the TUI shell out to `shepherd2 <verb> --json`.* **Not rejected — still
+  open**, and this decision is what makes either road cheap, since both need the verbs to return data
+  first. It is the heavier contract of the two (a JSON shape per verb, versioned across the wire) and
+  it would reopen `D_ruby`'s "nothing on the box parses `shepherd2` output"; `stats --json` (`D_stats`)
+  is the one place that line is already spent.
+- *Rename the installed command to `shepherd2-cli` too.* 66 doc references, two cron lines and the
+  operator's fingers, in exchange for a name nobody outside the repo ever types.
+- *Adopt Zeitwerk now.* It is a gem. `D_ruby` forbids gems on the box and `test/stdlib_only_test.rb`
+  enforces that with `ruby --disable-gems`. Honour the naming convention, take no dependency.
+- *A third artifact for `stats`' data gathering* — `app_inventory`, `disks`, `project_stats`, the size
+  parsers, ~150 lines with a genuine single purpose. Deferred, not refused: one file per boundary that
+  has actually shown up, and this one has not.
+- *Put both files in `/usr/local/bin`.* No symlink and no change to `uninstall`, at the price of a
+  non-executable library sitting in `bin`.
+
+**Consequences.**
+
+- **`D_ruby` is refined, not reversed.** Ruby, standard library only, Bash installers: untouched. Its
+  "one file on `PATH`" becomes one *command* on `PATH` backed by two files, and its "nothing on the box
+  parses `shepherd2` output" is untouched too — the data contract is in-process, and stdout is
+  unchanged.
+- **The `*/5` poll goes quiet, which is what cron wants.** Its build output is discarded rather than
+  inherited, so a tick no longer mails root a build log; the log itself is untouched, in
+  `builds:output` where `last-build` finds it. `create-app` and `rebuild` keep their live output,
+  because the executable asks for it.
+- **The tests change shape, and improve.** `test/helper.rb` loads the *library* rather than the
+  executable, which is exactly what a TUI does, so the suite proves that path. Assertions on `@out`
+  strings (`last-build`, `stats`) become assertions on returned data; the prose they pin moves to a
+  thinner set of CLI tests. `stdlib_only_test.rb` grows a second case for the library alone, since the
+  TUI loads it without the executable.
+- **`D_testing`'s seam-as-constructor-argument surface gains two members.** The progress listener and
+  the confirm callback are seams like `Dokku` and `BuildLock`, injected the same way and faked the same
+  way.
+- **A verb that must ask the operator something goes through the callback**, or it is not allowed to
+  ask. Extending that contract is a deliberate act, which is the point.
+- **The listener and `confirm:` run on whatever thread called the verb**, and marshalling onto a UI
+  thread is the front-end's job — the API knows nothing about threads and must not learn. `confirm:`
+  blocks its caller until answered, so a TUI hands the question to its UI thread and waits there
+  rather than answering inline. The CLI, single-threaded, is unaffected by all of this.
+- **`last-build --log` reads a log instead of handing over the terminal**, and the snapshot rule makes
+  two of Dokku's sharp edges ours to handle. `builds:output` **`tail -f`s a live build and `cat`s a
+  finished one**, so the status on the record is consulted first and the log is fetched only for a
+  build that has finished — a running build returns its record and no log, never a call that would
+  block. And `builds:output` **exits 0 having printed nothing** for a pruned or mistyped id
+  ([dokku#9031](https://github.com/dokku/dokku/issues/9031)), so "rotated away" and "printed nothing"
+  must come back as distinguishable values rather than both as `""`. Today's code is exposed to
+  neither, because it hands the terminal to Dokku and lets the operator see whatever appears.
+- **Two script headers, with the audiences split.** The executable's keeps USAGE, `create-app` OPTIONS
+  and EXIT CODES — the operator's half; the library's owns the verbs and what each returns, the
+  listener contract, PREREQUISITES and WHAT THIS STORES — the caller's half. They will drift into
+  duplicates if that line is not held.
+- **`uninstall` removes a directory rather than a file**, so a third file added later cannot leak.
+  `CLAUDE.md`'s *Script index* grows a row and `SOLUTION.md`'s inventory grows the lib directory.

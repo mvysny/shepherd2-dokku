@@ -1,0 +1,567 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# shepherd2-cli — the Shepherd2 command line, installed as `shepherd2`.
+#
+# Every verb here exists because Dokku has no single command for it. Anything Dokku *does* have a
+# command for is used as-is and documented in README.md's cheat sheet: `dokku logs`, `ps:restart`,
+# `config:set`, `domains:add` are Dokku's, not ours, and a `shepherd2 logs` would be the shepherd-cli
+# this design deliberately retired (D_dokku_is_truth).
+#
+# `stats` is a *snapshot*, not monitoring: one read of what the box holds and what is left of it. Dokku
+# does no monitoring by design, so there is no command to wrap — but the boundary is the point. No
+# `--watch`, no history, no thresholds, no exit code that depends on how full the disk is, and no
+# per-container CPU (that is `docker stats`, in README.md's cheat sheet). A `stats` that grows a time
+# axis has become the status page in `ideas/web-admin-ui.md`, which is a different decision (D_stats).
+#
+# `last-build` is the one verb here with an expiry date, and it is not a log surface — it answers a
+# question Dokku has no command for. `builds:report` names the *newest* record, which under a
+# five-minute poll is always an abandoned tick, and `--status failed` selects reaped ticks alongside
+# real failures. Delete the verb when the upstream capture-before-check ordering is fixed, or when
+# `poll` pre-checks the remote ref; both roads are in D_poll_churn.
+#
+# Every sentence the box prints is written here rather than in shepherd2.rb, which returns data and
+# renders nothing (D_api_surface). The build output an operator watches scroll past is the one thing
+# that does not come through this file: `create-app` and `rebuild` hand the terminal to Dokku, and
+# `poll` does not — a cron tick stays quiet, and its build log is read back with `last-build --log`.
+#
+# USAGE
+#   shepherd2 create-app ID URL [REF] [options]   register a project and build it for the first time
+#   shepherd2 destroy-app ID [--yes]              its exact inverse: cache volume, app, network, and
+#                                                 the nginx reload apps:destroy omits
+#   shepherd2 poll                                the */5 cron: build every project whose ref moved
+#   shepherd2 rebuild ID                          force a build of an unchanged ref; the retry
+#   shepherd2 last-build [ID] [--log]             the last *real* build, past the poll's churn
+#   shepherd2 wait-idle [--timeout SECONDS]       block until no build is running
+#   shepherd2 clearcache                          the weekly prune
+#   shepherd2 stats [--json]                      what the box holds: memory, disk, per-project cache
+#
+# create-app OPTIONS
+#   --owner EMAIL      contact address, stored as SHEPHERD_OWNER. Not an ACL (D_single_operator).
+#   --mem SIZE         runtime memory limit. Default 256m.
+#   --cpu N            runtime CPU limit. Default 1. Pass `clear` for no limit.
+#   --build-mem SIZE   build-phase memory limit. Default 2g. One build runs at a time box-wide, so
+#                      this is a peak rather than a per-app multiplier.
+#   --build-cpu N      build-phase CPU limit. Default 2. Pass `clear` for no limit. Verified on a box:
+#                      the build container gets NanoCpus, and a build peaks at 200% of a 4-core host.
+#   --buildpack NAME   buildpack to pin, e.g. heroku/java. Strongly recommended: herokuish detects
+#                      nodejs before java, and a Vaadin app commits a package.json, so *relying on
+#                      detection is a bug* (D_builder). Without it the repo's own .buildpacks decides.
+#   --build-dir PATH   subdirectory of the repo to build, for a monorepo.
+#
+# EXIT CODES
+#   0 success · 1 failure · 2 usage error · 3 poll/rebuild skipped because a build is already running
+#
+# PREREQUISITES
+#   Runs as root on a box built by shepherd2-install. Ruby 3.2 (Ubuntu 24.04's), standard library
+#   only — no Gemfile, no gems (D_ruby). Loads shepherd2.rb from its own directory, so the two files
+#   are installed side by side and `/usr/local/bin/shepherd2` is a symlink to this one.
+#
+# SEE ALSO
+#   shepherd2.rb — the verbs themselves, and what each returns
+#   README.md — the day-to-day cheat sheet, including everything that is a `dokku` command
+
+require 'English'
+require 'json'
+require 'optparse'
+require_relative 'shepherd2'
+
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_USAGE = 2
+EXIT_BUSY = 3
+
+# Everything the box says, in one place. Subscribe it to a verb's progress, then hand it whatever the
+# verb returned:
+#
+#   report = Report.new
+#   shepherd = Shepherd2.new(on_event: report.listener)
+#   report.stats(shepherd.stats)   # …having already printed `box` from the :box_measured event
+#
+# A verb emits data, so every word is composed here: +(:polling, {app: 'demo'})+ becomes
+# "shepherd2: polling demo" on stdout, +:nginx_reload_failed+ a warning on stderr.
+class Report
+  STATS_LABEL_WIDTH = 12
+
+  # @param out [IO] where progress and reports go.
+  # @param err [IO] where warnings go.
+  def initialize(out: $stdout, err: $stderr)
+    @out = out
+    @err = err
+    @json_only = false
+  end
+
+  # Silences the progress that would otherwise be printed alongside a report — `stats --json` must
+  # emit JSON and nothing else, and `stats` reports its box half through an event.
+  #
+  # @return [void]
+  def json_only!
+    @json_only = true
+  end
+
+  # @return [Proc] the callback to hand to Shepherd2's +on_event:+.
+  def listener = ->(kind, fields) { event(kind, fields) }
+
+  # Says whatever one progress event is worth saying, and nothing for a kind it does not know — a verb
+  # that grows an event must not crash a front-end that has not learned it yet.
+  #
+  # @param kind [Symbol] the event, as emitted by a verb.
+  # @param fields [Hash{Symbol => Object}] its data.
+  # @return [void]
+  def event(kind, fields)
+    case kind
+    when :app_exists     then say "app #{fields[:app]} already exists"
+    when :network_exists then say "network #{fields[:network]} already exists"
+    when :polling        then say "polling #{fields[:app]}"
+    when :polled         then oops "#{fields[:app]}: #{fields[:error]}" unless fields[:ok]
+    when :cache_purge_failed
+      oops "could not purge the build cache (#{fields[:error]}); destroying anyway"
+    when :nginx_reload_failed
+      oops "could not reload nginx (#{fields[:error]}); " \
+           "#{fields[:app]}'s hostname may hang until the next deploy"
+    when :box_measured then box(fields) unless @json_only
+    end
+  end
+
+  # Progress, prefixed and on stdout: +say 'polling demo'+ prints "shepherd2: polling demo".
+  #
+  # @param message [String] the sentence, without the prefix.
+  # @return [void]
+  def say(message) = @out.puts("shepherd2: #{message}")
+
+  # The same, on stderr — for what went wrong without stopping the verb.
+  #
+  # @param message [String] the sentence, without the prefix.
+  # @return [void]
+  def oops(message) = @err.puts("shepherd2: #{message}")
+
+  # A line of a report, unprefixed: this is output the operator reads as content, not as progress.
+  #
+  # @param text [String] the line.
+  # @return [void]
+  def line(text) = @out.puts(text)
+
+  # One project's last build, as the line `last-build` leads with:
+  #
+  #   demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30.914Z · duration 1m43s
+  #
+  # @param app [String] the app id.
+  # @param build [Hash{String => Object}] the build record.
+  # @param live [Boolean] whether it is building right now, as the verb reported it.
+  # @return [String]
+  def build_line(app, build, live:)
+    fields = [live ? 'building now' : build_outcome(build), "id #{build['id']}"]
+    fields << "started #{build['started_at']}" if build['started_at']
+    fields << "duration #{build['duration']}" if build['duration'] && !live
+    "#{app}: #{fields.join(' · ')}"
+  end
+
+  # The whole of `last-build ID`:
+  #
+  #   demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30.914Z · duration 1m43s
+  #     log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
+  #     read it: shepherd2 last-build demo --log
+  #
+  # With +log:+ the last line is the build's output instead — or, where there is none to print, which
+  # of the four reasons for that it was.
+  #
+  # @param result [Hash{Symbol => Object}] one app's +last_build+ result.
+  # @param log [Boolean] whether the log was asked for.
+  # @return [void]
+  def last_build(result, log:)
+    app = result[:app]
+    line build_line(app, result[:build], live: result[:live])
+    line "  log: #{log_location(result)}"
+
+    unless log
+      line "  read it: shepherd2 last-build #{app} --log"
+      return
+    end
+
+    line ''
+    case result[:log_status]
+    when :file then @out.print result[:log]
+    when :syslog
+      line '  the log file is gone; this is the copy journald still holds'
+      line ''
+      @out.print result[:log]
+    when :running      then line "  still building — `dokku builds:output #{app} current` follows it live"
+    when :rotated      then line '  the log is gone: pruned from disk, and journald no longer has it either'
+    when :not_recorded then line '  no log path on record'
+    end
+  end
+
+  # The docker and projects sections of `stats`:
+  #
+  #     docker
+  #       images      11.5 GiB in 14 · 2.9 GiB dangling, which `shepherd2 clearcache` reclaims
+  #       volumes     9.1 GiB in 11 · never pruned — mostly the build caches below
+  #
+  #     projects    3 registered · 1 unregistered (not polled — no SHEPHERD_GIT_URL)
+  #       hello        1.1 GiB
+  #       total        1.1 GiB
+  #
+  # The `box` section above these is printed from the +:box_measured+ event instead, which arrives
+  # before the daemon's per-volume walk — the slow part — rather than after it.
+  #
+  # @param stats [Hash{Symbol => Object}] what +Shepherd2#stats+ returned.
+  # @return [void]
+  def stats(stats)
+    docker(stats[:docker])
+    projects(stats[:projects])
+  end
+
+  # The `box` section — memory, what is committed to apps, swap if there is any, and Docker's disk:
+  #
+  #     box
+  #       memory      7.8 GiB total · 4.1 GiB available
+  #       committed   768.0 MiB runtime + 2.0 GiB build peak, of 7.8 GiB
+  #       disk        /var/lib/docker on /dev/sda1 — 78.2 GiB total · 29.1 GiB free (63% used)
+  #
+  # @param box [Hash{Symbol => Object}] the +:memory+ and +:disks+ half of +stats+.
+  # @return [void]
+  def box(box)
+    memory = box[:memory]
+    line 'box'
+    line stat_line('memory', "#{human_bytes(memory[:total])} total · " \
+                             "#{human_bytes(memory[:available])} available")
+    line stat_line('committed', committed_sentence(memory))
+    unless memory[:unmeasured].empty?
+      line stat_line('', "#{memory[:unmeasured].size} app(s) with no readable runtime limit: " \
+                         "#{memory[:unmeasured].join(', ')}")
+    end
+    if memory[:swap_total].to_i.positive?
+      line stat_line('swap', "#{human_bytes(memory[:swap_total])} total · " \
+                             "#{human_bytes(memory[:swap_free])} free")
+    end
+    box[:disks].each { |disk| line stat_line('disk', disk_sentence(disk)) }
+  end
+
+  private
+
+  def build_outcome(build)
+    exit_code = build['exit_code']
+    return build['status'].to_s if exit_code.nil? || exit_code.to_i.zero?
+
+    "#{build['status']} (exit #{exit_code})"
+  end
+
+  # `builds:output` falls back to the syslog tag when the log file is gone, and that fallback can come
+  # back empty, so the difference is worth printing rather than hiding.
+  def log_location(result)
+    path = result[:log_path]
+    return 'not recorded' if path.nil?
+
+    result[:log_path_exists] ? path : "#{path} (gone — builds:output falls back to the syslog copy)"
+  end
+
+  def docker(docker)
+    line ''
+    line 'docker'
+    dangling = if docker[:images_dangling].positive?
+                 "#{human_bytes(docker[:images_dangling])} dangling, which `shepherd2 clearcache` reclaims"
+               else
+                 'nothing dangling'
+               end
+    line stat_line('images', "#{human_bytes(docker[:images_unique])} in #{docker[:images_count]} · #{dangling}")
+    line stat_line('volumes', "#{human_bytes(docker[:volumes])} in #{docker[:volumes_count]} · " \
+                              'never pruned — mostly the build caches below')
+  end
+
+  def projects(projects)
+    rows = projects[:apps].map { |app| [project_name(app), app[:cache]] } +
+           projects[:orphan_caches].map { |orphan| ["#{orphan[:volume]} (orphan, no such app)", orphan[:cache]] }
+
+    line ''
+    line "projects    #{project_counts(projects)}"
+    return if rows.empty?
+
+    width = rows.map { |name, _| name.length }.max
+    rows.each { |name, cache| line "  #{name.ljust(width + 2)}#{cache ? human_bytes(cache) : 'no cache volume'}" }
+    line "  #{'total'.ljust(width + 2)}#{human_bytes(projects[:cache_total])}"
+  end
+
+  def project_name(app)
+    app[:registered] ? app[:app] : "#{app[:app]} (unregistered)"
+  end
+
+  def project_counts(projects)
+    counts = ["#{projects[:registered]} registered"]
+    if projects[:unregistered].positive?
+      counts << "#{projects[:unregistered]} unregistered (not polled — no #{Shepherd2::GIT_URL_VAR})"
+    end
+    counts.join(' · ')
+  end
+
+  def committed_sentence(memory)
+    text = "#{human_bytes(memory[:committed])} runtime"
+    # The largest build limit, not their sum: one build runs at a time box-wide (the poll's lock).
+    text += " + #{human_bytes(memory[:build_peak])} build peak" if memory[:build_peak]
+    "#{text}, of #{human_bytes(memory[:total])}"
+  end
+
+  def disk_sentence(disk)
+    used = disk[:total] - disk[:free]
+    percent = disk[:total].positive? ? (used * 100.0 / disk[:total]).round : 0
+    "#{disk[:path]} on #{disk[:device]} — #{human_bytes(disk[:total])} total · " \
+      "#{human_bytes(disk[:free])} free (#{percent}% used)"
+  end
+
+  def stat_line(label, text) = "  #{label.ljust(STATS_LABEL_WIDTH)}#{text}"
+
+  # Binary units, not Docker's SI even though half these numbers were parsed out of it: the operator
+  # checks this page against `free -h` and `df -h`, and an 8 GiB box printed as "8.6 GB" reads as a
+  # bug. The IEC suffix is what keeps that honest — Docker's 1.2GB volume appears here as 1.1 GiB.
+  def human_bytes(bytes)
+    return '—' if bytes.nil?
+    return "#{bytes} B" if bytes < 1024
+
+    value = bytes.to_f
+    %w[KiB MiB GiB TiB PiB].each do |unit|
+      value /= 1024
+      return format('%.1f %s', value, unit) if value < 1024 || unit == 'PiB'
+    end
+  end
+end
+
+# Parses argv, calls one verb, and turns what it returned into an exit code:
+#
+#   exit CLI.new.run(ARGV)
+#
+# The verb decides nothing about exit codes and the CLI decides nothing about the box — every mapping
+# from a returned value onto 0/1/2/3 lives here.
+class CLI
+  USAGE = <<~TEXT
+    usage: shepherd2 VERB [arguments]
+
+      create-app ID URL [REF]     register a project and build it
+      destroy-app ID              its exact inverse
+      poll                        build every project whose ref moved
+      rebuild ID                  force a build of an unchanged ref
+      last-build [ID] [--log]     the last real build of a project, past the poll's churn
+      wait-idle                   block until no build is running
+      clearcache                  weekly prune of dangling images and stopped containers
+      stats [--json]              what the box holds: memory, disk, per-project build cache
+
+    `shepherd2 VERB --help` describes one verb. Anything Dokku already has a command for — logs,
+    ps:restart, config:set, domains:add — is a `dokku` command; see README.md's cheat sheet.
+  TEXT
+
+  # @param shepherd [Shepherd2, nil] the API to drive. Built per verb when nil, because only some
+  #   verbs hand the terminal to Dokku.
+  # @param report [Report] where every sentence goes.
+  def initialize(shepherd: nil, report: Report.new)
+    @shepherd = shepherd
+    @report = report
+  end
+
+  # @param argv [Array<String>] the command line, verb first.
+  # @return [Integer] the exit code.
+  def run(argv)
+    verb = argv.shift
+    case verb
+    when 'create-app'  then create_app(argv)
+    when 'destroy-app' then destroy_app(argv)
+    when 'poll'        then no_arguments!(argv, 'poll') { poll }
+    when 'rebuild'     then rebuild(argv)
+    when 'last-build'  then last_build(argv)
+    when 'wait-idle'   then wait_idle(argv)
+    when 'clearcache'  then no_arguments!(argv, 'clearcache') { clearcache }
+    when 'stats'       then stats(argv)
+    when '--version'   then puts "shepherd2 #{Shepherd2::VERSION}"; EXIT_OK
+    when nil, '-h', '--help' then puts USAGE; EXIT_OK
+    else raise Shepherd2::UsageError, "unknown verb: #{verb}"
+    end
+  rescue Shepherd2::UsageError => e
+    warn "shepherd2: #{e.message}"
+    warn USAGE
+    EXIT_USAGE
+  rescue Shepherd2::Error => e
+    warn "shepherd2: #{e.message}"
+    EXIT_FAILURE
+  rescue Interrupt
+    warn 'shepherd2: interrupted'
+    EXIT_FAILURE
+  end
+
+  private
+
+  # +verbose+ hands the terminal to Dokku, so the operator watches the build scroll past. The poll
+  # does not: a cron tick stays quiet, and its build log is read back with `last-build --log`.
+  def shepherd(verbose: false)
+    return @shepherd if @shepherd
+
+    output = verbose ? $stdout : nil
+    Shepherd2.new(dokku: Shepherd2::Dokku.new(output: output),
+                  docker: Shepherd2::Docker.new(output: output),
+                  on_event: @report.listener,
+                  confirm: method(:ask_to_destroy))
+  end
+
+  def create_app(argv)
+    options = {}
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 create-app ID URL [REF] [options]'
+      o.on('--owner EMAIL', 'contact address, stored as SHEPHERD_OWNER') { |v| options[:owner] = v }
+      o.on('--mem SIZE', "runtime memory limit (default #{Shepherd2::DEFAULT_MEMORY})") { |v| options[:mem] = v }
+      o.on('--cpu N', "runtime CPU limit (default #{Shepherd2::DEFAULT_CPU}; `clear` for none)") { |v| options[:cpu] = v }
+      o.on('--build-mem SIZE', "build memory limit (default #{Shepherd2::DEFAULT_BUILD_MEMORY})") { |v| options[:build_mem] = v }
+      o.on('--build-cpu N', "build CPU limit (default #{Shepherd2::DEFAULT_BUILD_CPU}; `clear` for none)") { |v| options[:build_cpu] = v }
+      o.on('--buildpack NAME', 'buildpack to pin, e.g. heroku/java') { |v| options[:buildpack] = v }
+      o.on('--build-dir PATH', 'subdirectory of the repo to build') { |v| options[:build_dir] = v }
+    end
+    rest = parse!(parser, argv)
+    raise Shepherd2::UsageError, parser.banner if rest.size < 2 || rest.size > 3
+
+    shepherd(verbose: true).create_app(rest[0], rest[1], rest[2], options)
+    EXIT_OK
+  end
+
+  def destroy_app(argv)
+    options = {}
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 destroy-app ID [--yes]'
+      o.on('--yes', '-y', 'do not ask for confirmation') { options[:yes] = true }
+    end
+    rest = parse!(parser, argv)
+    raise Shepherd2::UsageError, parser.banner unless rest.size == 1
+
+    shepherd.destroy_app(rest[0], options)
+    EXIT_OK
+  end
+
+  # Quiet by design: a tick's build output is discarded rather than mailed to root by cron, and is read
+  # back with `last-build --log`.
+  def poll
+    result = shepherd.poll
+    if result == :busy
+      @report.say 'a build is already running; skipping this tick'
+      return EXIT_OK # Not a failure: skipping is the designed behaviour, and cron should stay quiet.
+    end
+
+    result.all? { |app| app[:ok] } ? EXIT_OK : EXIT_FAILURE
+  end
+
+  def rebuild(argv)
+    raise Shepherd2::UsageError, 'usage: shepherd2 rebuild ID' unless argv.size == 1
+
+    if shepherd(verbose: true).rebuild(argv[0]) == :busy
+      @report.oops 'a build is already running; try again when it finishes (shepherd2 wait-idle)'
+      return EXIT_BUSY
+    end
+
+    EXIT_OK
+  end
+
+  def last_build(argv)
+    log = false
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 last-build [ID] [--log]'
+      o.on('--log', "print that build's output as well") { log = true }
+    end
+    rest = parse!(parser, argv)
+    raise Shepherd2::UsageError, parser.banner if rest.size > 1
+    raise Shepherd2::UsageError, '--log needs an app id' if log && rest.empty?
+
+    rest.empty? ? last_build_everywhere : last_build_one(rest[0], log: log)
+  end
+
+  def last_build_one(id, log:)
+    result = shepherd.last_build(id, log: log)
+    if result.nil?
+      @report.line "#{id}: no real build on record"
+      @report.line '  either it has never built, or a later deploy pruned the last one (D_poll_churn).'
+      @report.line "  what is on record: dokku builds:list #{id} --kind build"
+      return EXIT_OK
+    end
+
+    @report.last_build(result, log: log)
+    EXIT_OK
+  end
+
+  def last_build_everywhere
+    results = shepherd.last_build
+    if results.empty?
+      @report.line 'no registered projects'
+      return EXIT_OK
+    end
+
+    results.each do |result|
+      if result[:error]
+        @report.oops "#{result[:app]}: #{result[:error]}"
+      elsif result[:build]
+        @report.line @report.build_line(result[:app], result[:build], live: result[:live])
+      else
+        @report.line "#{result[:app]}: no real build on record"
+      end
+    end
+
+    results.any? { |result| result[:error] } ? EXIT_FAILURE : EXIT_OK
+  end
+
+  def stats(argv)
+    json = false
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 stats [--json]'
+      o.on('--json', 'emit the snapshot as JSON, byte counts as integers') { json = true }
+    end
+    rest = parse!(parser, argv)
+    raise Shepherd2::UsageError, parser.banner unless rest.empty?
+
+    @report.json_only! if json
+    snapshot = shepherd.stats
+    json ? @report.line(JSON.pretty_generate(snapshot)) : @report.stats(snapshot)
+    EXIT_OK
+  end
+
+  def wait_idle(argv)
+    timeout = 3600
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 wait-idle [--timeout SECONDS]'
+      o.on('--timeout SECONDS', Integer, 'give up after this long (default 3600)') { |v| timeout = v }
+    end
+    rest = parse!(parser, argv)
+    raise Shepherd2::UsageError, parser.banner unless rest.empty?
+
+    return EXIT_OK if shepherd.wait_idle(timeout: timeout) == :idle
+
+    @report.oops "still building after #{timeout}s"
+    EXIT_FAILURE
+  end
+
+  def clearcache
+    shepherd(verbose: true).clearcache
+    EXIT_OK
+  end
+
+  # The tty check is the CLI's, not the API's: a front-end with no terminal has its own way to ask.
+  def ask_to_destroy(id)
+    unless $stdin.tty?
+      raise Shepherd2::Error, "refusing to destroy #{id} without a terminal to confirm at; pass --yes"
+    end
+
+    print "Destroy #{id}, its containers, its build cache and its network? Type the id to confirm: "
+    $stdin.gets&.strip == id
+  end
+
+  def no_arguments!(argv, verb)
+    raise Shepherd2::UsageError, "#{verb} takes no arguments" unless argv.empty?
+
+    yield
+  end
+
+  def parse!(parser, argv)
+    parser.parse(argv)
+  rescue OptionParser::ParseError => e
+    raise Shepherd2::UsageError, e.message
+  end
+end
+
+# Loaded by the tests, executed on the box. The tests need the classes above without running anything.
+if $PROGRAM_NAME == __FILE__
+  unless Process.uid.zero?
+    warn 'shepherd2: must run as root'
+    exit EXIT_FAILURE
+  end
+  exit CLI.new.run(ARGV)
+end

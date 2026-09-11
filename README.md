@@ -79,7 +79,7 @@ apps comfortably, one at a time.
   `shepherd2-install` ([`D_install_apt`](DECISIONS.md)). 24.04 carries 29.1.3, well above the 19.03
   Dokku asks for. No BuildKit requirement applies here: nothing on this box runs `docker build` at all
   (see [`D_builder`](DECISIONS.md) — the build cache is a per-app Docker volume, not a BuildKit cache).
-* **Ruby**, from the distro archive — the `shepherd2` CLI is a Ruby script using nothing but the
+* **Ruby**, from the distro archive — the `shepherd2` CLI is Ruby, using nothing but the
   standard library. The installer runs `apt install ruby`; there is no gem to install and no version
   manager. See [`D_ruby`](DECISIONS.md).
 * **A listening `sshd`**, for everything remote: your own session, `git push dokku@box`, and

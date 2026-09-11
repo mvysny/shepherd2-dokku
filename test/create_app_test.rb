@@ -44,12 +44,26 @@ class CreateAppTest < Minitest::Test
 
   def test_rerun_over_an_existing_app_skips_creation_and_still_builds
     dokku = DokkuDouble.new(exists: ['apps:exists', 'network:exists'])
-    shepherd(dokku).create_app('demo', 'https://github.com/me/demo', 'main')
+    events = EventLog.new
+    result = shepherd(dokku, events: events).create_app('demo', 'https://github.com/me/demo', 'main')
 
     refute_includes dokku.mutations, 'apps:create demo'
     refute_includes dokku.mutations, 'network:create app-demo'
     assert_includes dokku.mutations, 'network:set demo initial-network app-demo'
     assert_includes dokku.mutations, 'git:sync --build demo https://github.com/me/demo main'
+
+    # A re-run is the *normal* retry after a failed first build, so it has to be legible as one.
+    refute result[:app_created]
+    refute result[:network_created]
+    assert_equal [{ app: 'demo' }], events[:app_exists]
+    assert_equal [{ network: 'app-demo' }], events[:network_exists]
+  end
+
+  def test_a_first_registration_reports_what_it_made
+    result = shepherd(DokkuDouble.new).create_app('demo', 'https://github.com/me/demo')
+
+    assert_equal({ app: 'demo', network: 'app-demo', app_created: true, network_created: true },
+                 result)
   end
 
   # The farm's one profile (operator, 2026-09-11). All four are emitted every time rather than left
@@ -107,7 +121,7 @@ class CreateAppTest < Minitest::Test
   def test_admin_ids_are_refused_before_anything_is_mutated
     %w[admin admin-status admintools].each do |id|
       dokku = DokkuDouble.new
-      error = assert_raises(UsageError) { shepherd(dokku).create_app(id, 'https://github.com/me/demo') }
+      error = assert_raises(Shepherd2::UsageError) { shepherd(dokku).create_app(id, 'https://github.com/me/demo') }
 
       assert_match(/reserved/, error.message)
       assert_empty dokku.calls, "#{id}: nothing may be mutated before validation"
@@ -118,7 +132,7 @@ class CreateAppTest < Minitest::Test
   # `*.mydomain.me`, so a dotted id would work over http and fail over https.
   def test_dotted_ids_are_refused
     dokku = DokkuDouble.new
-    error = assert_raises(UsageError) { shepherd(dokku).create_app('foo.bar', 'https://github.com/me/demo') }
+    error = assert_raises(Shepherd2::UsageError) { shepherd(dokku).create_app('foo.bar', 'https://github.com/me/demo') }
 
     assert_match(/one DNS label/, error.message)
     assert_empty dokku.calls
@@ -127,7 +141,7 @@ class CreateAppTest < Minitest::Test
   def test_malformed_ids_are_refused
     ['Demo', '-demo', 'demo_app', 'demo app', ''].each do |id|
       dokku = DokkuDouble.new
-      assert_raises(UsageError, "#{id.inspect} should be refused") do
+      assert_raises(Shepherd2::UsageError, "#{id.inspect} should be refused") do
         shepherd(dokku).create_app(id, 'https://github.com/me/demo')
       end
       assert_empty dokku.calls
@@ -136,7 +150,7 @@ class CreateAppTest < Minitest::Test
 
   def test_a_missing_url_is_refused
     dokku = DokkuDouble.new
-    assert_raises(UsageError) { shepherd(dokku).create_app('demo', nil) }
+    assert_raises(Shepherd2::UsageError) { shepherd(dokku).create_app('demo', nil) }
     assert_empty dokku.calls
   end
 end

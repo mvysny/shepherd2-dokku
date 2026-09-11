@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
-# Test doubles for the seams in `shepherd2`: every process the CLI would start, recorded instead of
-# run. What the tests then assert is the *sequence* — which is the design (SOLUTION.md's registration
-# flow), not an implementation detail. A reordering that put `network:set` after the first build would
-# still work on a happy path and quietly build the first image on the wrong network.
+# Test doubles for Shepherd2's seams: every process a verb would start, recorded instead of run, plus
+# the two callbacks a front-end supplies. What the tests then assert is the *sequence* — which is the
+# design (SOLUTION.md's registration flow), not an implementation detail. A reordering that put
+# `network:set` after the first build would still work on a happy path and quietly build the first
+# image on the wrong network.
 
 # Records `dokku` invocations and replays canned answers.
 #
@@ -22,7 +23,7 @@ class DokkuDouble
 
   def run(*args)
     @calls << args
-    raise Shepherd2Error, "dokku #{args.join(' ')} failed" if fails?(args)
+    raise Shepherd2::Error, "dokku #{args.join(' ')} failed" if fails?(args)
 
     true
   end
@@ -34,7 +35,7 @@ class DokkuDouble
 
   def capture(*args)
     @calls << args
-    raise Shepherd2Error, "dokku #{args.join(' ')} failed" if fails?(args)
+    raise Shepherd2::Error, "dokku #{args.join(' ')} failed" if fails?(args)
 
     canned(args) || ''
   end
@@ -64,6 +65,30 @@ class DokkuDouble
     key = @output.keys.find { |prefix| args.join(' ').start_with?(prefix) }
     key && @output[key]
   end
+end
+
+# The progress a verb emitted, in order:
+#
+#   events = EventLog.new
+#   shepherd(dokku, events: events).poll
+#   events[:polling]   # => [{app: 'demo'}, {app: 'other'}]
+#
+# A verb renders nothing, so this is where a test looks for what the CLI would have printed.
+class EventLog
+  # @return [Array<Array(Symbol, Hash)>] every event, as +[kind, fields]+, in the order emitted.
+  attr_reader :events
+
+  def initialize = @events = []
+
+  # @return [Proc] the callback to hand to Shepherd2's +on_event:+.
+  def listener = ->(kind, fields) { @events << [kind, fields] }
+
+  # @return [Array<Symbol>] the kinds emitted, in order.
+  def kinds = @events.map(&:first)
+
+  # @param kind [Symbol] the event to select.
+  # @return [Array<Hash>] the fields of every event of that kind.
+  def [](kind) = @events.select { |emitted, _| emitted == kind }.map(&:last)
 end
 
 # A lock that is always free, or never.

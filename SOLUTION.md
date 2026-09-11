@@ -264,8 +264,8 @@ two tails matters. Without the network destroy the box leaks a Docker network pe
 (`D_isolation`). Without the reload the *running* nginx keeps serving `demo.mydomain.me` from a config
 it still holds in memory, so requests to a destroyed project hang for 60s each rather than being
 refused: `apps:destroy` removes the vhost file without signalling nginx (`RESEARCH.md` → *nginx*).
-Whether `apps:destroy` also removes the `cache-demo` volume is `[unverified]`; if it does not,
-`destroy-app` removes it via `repo:purge-cache` before destroying the app. There is nothing else per
+`apps:destroy` removes the `cache-demo` volume itself (verified on a box), so `destroy-app`'s
+`repo:purge-cache` first is belt-and-braces rather than load-bearing. There is nothing else per
 project: no file, no certificate, no service, no firewall rule.
 
 ## Housekeeping

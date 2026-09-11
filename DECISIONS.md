@@ -287,9 +287,10 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 
 ## D_isolation — One Dokku-managed bridge network per project (2026-09-10)
 
-**Status:** Accepted 2026-09-10. Not yet implemented; `initial-network` isolating apps while leaving
-nginx routing intact is `[unverified]` until the first box (punch-list items 2 and 12; item 9 went to v2
-with the managed database).
+**Status:** Accepted 2026-09-10, **confirmed on a box 2026-09-11**. The central claim — `initial-network`
+isolating apps while leaving nginx routing intact — was run with the before/after and a self-reach
+control, and holds; so does the per-app network for a *build* container, and (item 9, run early) an
+app's own Postgres. The claim about the Traefik proxy is item 12, which belongs to `D_proxy`.
 
 **Context.** The box hosts other people's example projects and addons — mutually untrusted code, on one
 Docker daemon. Both predecessors gave each project its own network (`D_network_per_project` in
@@ -321,6 +322,9 @@ properties of Dokku's version make the predecessor's price disappear:
   re-applied every time Dokku creates a container, so it survives deploys, `ps:restart`, rebuilds and
   reboots; `network:rebuild` / `network:rebuildall` re-assert on demand. Nothing of ours needs to
   re-assert it — which `D_dokku_is_truth` later made a requirement rather than a convenience.
+  **Every** container Dokku creates for the app, which the box showed includes the *build* container:
+  a build in flight is on the project's own network, so the isolation covers untrusted code while it
+  is being compiled and not only once it is running.
 - **The proxy needs no membership at all** — `D_proxy`. Between them, **`shepherd-traefik-connect-networks`
   has no successor in this repo.** That is the whole reason this decision is cheap here and was not
   cheap before.
@@ -335,12 +339,24 @@ properties of Dokku's version make the predecessor's price disappear:
   dropped in the host's `FORWARD` chain). Genuinely available here and worth recording as a road not
   taken, because it is **structurally impossible on the Docker Swarm sibling** — a Dokku app's bridge
   lives in the root network namespace, so host netfilter sees app-to-app traffic, where intra-overlay
-  traffic never does. Rejected on three counts: `network:create` passes no driver options, so the network
-  would be a hand-made `docker network create -o …` living outside Dokku's model and outside a
-  reinstall; topology beats filtering for untrusted code, since under per-app networks app A cannot
-  *address* app B and there is nothing left to filter; and an iptables rule can be silently absent with
-  nothing in Dokku noticing. Its one advantage was avoiding the address-pool ceiling, which turned out
-  to be an install-time line rather than a cost.
+  traffic never does. **Measured on a box 2026-09-11, and it works**: `initial-network` accepts a
+  hand-made `icc=false` network, the app routes, and two apps sharing that one network isolate exactly
+  as two per-app networks do (`RESEARCH.md` → *Networking and app isolation*). So this is a live option
+  rejected on judgement, not a dead end — and the three counts against it survive the measurement with
+  one correction:
+  - `network:create` passes no driver options, so the network is a hand-made `docker network create
+    -o …`. **The correction:** Dokku does not spit it out — it accepts it as `initial-network` and
+    lists it, merely excluding it from `network:list --dokku-managed`. What is true is narrower and
+    still decisive: the network is outside Dokku's model in the sense that *nothing in a reinstall
+    recreates it*, so the box stops being reproducible from this repo alone.
+  - Topology beats filtering for untrusted code: under per-app networks app A cannot *address* app B,
+    and there is nothing left to filter.
+  - An iptables rule can be silently absent with nothing in Dokku noticing, where a missing
+    `initial-network` is visible in `network:report`.
+
+  Its one advantage was avoiding the address-pool ceiling — one subnet rather than one per app — which
+  is real but bought at install time instead, by a line in `daemon.json` that takes the ceiling from 29
+  to 4096.
 - *The sibling's n+1 shape* — per-app networks **plus** a separate network for the admin plane. Not
   needed: Dokku's control plane is a host binary and a git remote, with no dashboard container, no
   control-plane database and no published admin port to move off the app wire.

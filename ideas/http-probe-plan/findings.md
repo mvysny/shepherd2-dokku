@@ -893,32 +893,13 @@ time" bullet, which now says the ENV_DIR carries the **merged** view and marks i
 `[src; verified on a box]`; punch-list 14's global half is struck. Nothing else owns any of it — it is
 a Dokku fact and nothing about it changes a choice of ours.
 
-### FINDING — punch-list 14, first half: it is `NPM_CONFIG_CACHE`, uppercase, and a Node app does not need it
+### ~~FINDING — punch-list 14, first half: it is `NPM_CONFIG_CACHE`, uppercase~~ — **GRADUATED 2026-09-11**
 
-Two runs on `demo`, both warm, both ~64s, so the timing says nothing — the volume is the evidence.
-
-1. `npm_config_cache=/cache/npm`, the spelling the punch list names: **ignored.** No `/cache/npm`
-   appeared. That spelling is the one *npm* reads, but the buildpack never consults it.
-2. `NPM_CONFIG_CACHE=/cache/npm`: **honoured.** `/cache/npm` appeared in the volume.
-
-The reason is one line of `heroku-buildpack-nodejs` (v367, `bin/compile:209`) `[src]`:
-
-```bash
-[[ -z "${NPM_CONFIG_CACHE}" ]] && NPM_CONFIG_CACHE=$(mktemp -d -t npmcache.XXXXX)
-```
-
-…and `lib/cache.sh` then **`mv`s** `$CACHE_DIR/node/cache/npm` into that path on restore and back out
-on save. So the variable does not add a cache, it *relocates* the buildpack's own one.
-
-**Which matters less than it looks, because the Node buildpack already caches npm into the app's
-volume with nothing set at all**: `cache-demo` held a 45 MB `node/cache/npm` before any of this began.
-The var is only interesting where a buildpack does *not* manage an npm cache — i.e. the Java/Vaadin
-frontend build the item was really aimed at, where the mechanism is now proven end to end even though
-the Vaadin half still wants an app that customises its frontend (punch-list 13/15).
-
-One trap for whoever writes that up: pointing `NPM_CONFIG_CACHE` *inside* `/cache` makes the buildpack
-move a directory to a sibling of itself and back, and npm then recreates the emptied path afterwards
-during `npm prune`. The leftover `/cache/npm` holding only `_logs` is that, not a failure.
+Landed in `RESEARCH.md` → *The herokuish cache volume*: the Node buildpack bullet now records that a
+Node app needs no cache configuration at all, and a new bullet under it carries the uppercase-only
+relocation, the `mv`-based restore/save, and the two traps. Punch-list 14 is struck down to the one
+piece still open — the Java buildpack's unmanaged npm cache, which needs an app that customises its
+frontend.
 
 ### FINDING — punch-list 16, mechanism half: **a build-phase `docker-options -v` bind mount does reach the herokuish build container**
 

@@ -405,7 +405,18 @@ names the cache.** That is the fact `D_builder` turns on.
   `node_modules`, under `${CACHE_DIR}/node/cache/`, plus any relative paths listed in the app's
   `package.json` `cacheDirectories`. It skips `node_modules` if that directory is checked into source
   control, and honours `NODE_MODULES_CACHE=false`. It **prunes devDependencies** at the end of its
-  own compile. **[src]**
+  own compile. **[src]** So a Node app needs no cache configuration of any kind: one deploy of
+  `heroku/node-js-getting-started` left a 45 MB `node/cache/npm` in the volume with nothing set.
+  **[verified on a box, 2026-09-11]**
+- **Its npm cache is relocatable, but only under the *uppercase* name.** `bin/compile` does
+  `[[ -z "${NPM_CONFIG_CACHE}" ]] && NPM_CONFIG_CACHE=$(mktemp -d …)`, and `lib/cache.sh` then **`mv`s**
+  `${CACHE_DIR}/node/cache/npm` to whatever that names on restore and back again on save — so the
+  variable *relocates* the buildpack's own cache rather than adding one. The lowercase
+  `npm_config_cache`, which is the spelling npm itself reads, is never consulted by the buildpack and
+  has no effect. **[src at v367; verified on a box, 2026-09-11]** Two traps if anyone reaches for it:
+  pointing it inside `/cache` makes the buildpack move a directory to a sibling of itself and back, and
+  npm then recreates the emptied path during the devDependency prune that follows, leaving a decoy
+  directory holding only `_logs`.
 - **Nothing garbage-collects this volume.** Unlike a BuildKit mount cache it has no TTL and no GC
   policy; it grows until `repo:purge-cache` or a volume prune removes it.
 - **The CNB equivalent, for when `pack` is revisited:** Heroku's CNB Maven buildpack creates a
@@ -1443,13 +1454,17 @@ first throwaway VPS:
     wrapper's Gradle distribution *and* the JDK. No frontend build ran at all, so the frontend half of
     the question is still open and still needs an app that customises its frontend. The Maven half is
     untouched by this.
-14. **(v2.) Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
-    rebuilds?** It should: config vars reach the build via the ENV_DIR `[src]` and `/cache` is the
-    per-app volume. Confirm npm honours it under whatever package manager Vaadin picks (npm vs pnpm —
-    pnpm reads `store-dir`, not `npm_config_cache`). ~~And the variant that would keep the setting off
-    the app's repo entirely: does a **`config:set --global`** var reach the build's ENV_DIR too?~~
-    **Answered 2026-09-11: yes — the ENV_DIR is the merged view**, so a global var reaches every
-    build. See *The herokuish builder*.
+14. **(v2.) ~~Does `dokku config:set <app> npm_config_cache=/cache/npm` actually warm npm across
+    rebuilds?~~** **Answered 2026-09-11, and the premise was wrong twice over** — both halves are in
+    *The herokuish cache volume*. The Node buildpack already caches npm into `cache-$APP` with nothing
+    set, so a Node app needs none of this; and the variable it honours is **`NPM_CONFIG_CACHE`**,
+    uppercase, the lowercase spelling named here being npm's own and ignored by the buildpack.
+    ~~And the variant that would keep the setting off the app's repo entirely: does a
+    **`config:set --global`** var reach the build's ENV_DIR too?~~ **Also answered: yes — the ENV_DIR
+    is the merged view**, so a global var reaches every build (*The herokuish builder*). What survives
+    is the half the item was really aimed at: the **Java** buildpack manages no npm cache, so nothing
+    caches a Vaadin frontend build's npm traffic, and whether `NPM_CONFIG_CACHE` — or pnpm's
+    `store-dir` — reaches it needs an app that customises its frontend, the same app 13 and 15 want.
 15. **Does Vaadin's pre-compiled production bundle skip the frontend build entirely** for an app with
     no custom frontend and no add-ons (Vaadin 24.1+)? **Answered for this farm on 2026-09-10, not on a
     box**: the operator confirms every app here uses that bundle, so items 13, 14 and 16 stop mattering

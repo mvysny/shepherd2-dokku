@@ -203,7 +203,17 @@ $ curl -L -o /dev/null -w '%{url_effective} %{num_redirects}'
 Plain http on 80, **no `Strict-Transport-Security`**, **no redirect to https**. Both `[unverified]`
 inferences from the nginx template are confirmed, and item 18 is closed.
 
-### FINDING — the unnumbered one: **a Vaadin app builds under herokuish, first time, with no coaxing**
+### ~~FINDING — the unnumbered one: **a Vaadin app builds under herokuish, first time, with no coaxing**~~ — **GRADUATED 2026-09-11**
+
+Landed, all in `README.md` → *Vaadin under herokuish*, because this is app-author advice rather than
+Dokku behaviour: §1 is rewritten to key on **whether the pom carries a `production` profile** rather
+than on the Vaadin version — checked against Vaadin's own 25.2 docs while graduating, which still
+offer the profile to plain-Java and Jakarta EE projects, so a 25 app may legitimately have one. The
+"you need nothing at all" branch, the `grep` that decides it, the warning-not-failure behaviour of a
+stale `-Pproduction`, and the buildpack's default `-DskipTests` all go with it; the *Coming from a
+Dockerfile* table, *What the repo needs* §3, the `.env` recipe and the rehearsal checklist are swept
+to match. Punch-list 15 is struck in `RESEARCH.md` as confirmed on a box, and
+`ideas/vaadin-build-under-herokuish.md` records the same. Evidence kept below.
 
 `shepherd2 create-app hello file:///srv/probe-repos/karibu-helloworld-application-maven master
 --owner mavi@vaadin.com --buildpack heroku/java`, and the build half worked on the first attempt:

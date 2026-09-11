@@ -5,7 +5,9 @@ Opened 2026-09-10, as the one thing `D_builder` decided *around* rather than sol
 
 **This is now a v2 note.** On 2026-09-10 the operator answered the question the whole file hung on
 (punch-list 15, for this farm rather than in general): **every app on this box uses Vaadin's
-pre-compiled production bundle**, so there is no npm and no Vite run to cache. Candidate 1 below is the
+pre-compiled production bundle**, so there is no npm and no Vite run to cache. **Confirmed on a box
+2026-09-11** — a 25.2 app built with the buildpack's default goals downloaded the prod-bundle jar and
+ran no frontend tooling whatsoever, with no config var set. Candidate 1 below is the
 answer, and it costs the box nothing — the frontend half of the build cache is **deferred to v2**, and
 candidates 2 and 3 are what v2 reaches for on the first app that needs a real frontend build.
 

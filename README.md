@@ -193,9 +193,10 @@ cache is isolated from every other's.
 3. For any JVM project, a `system.properties` pinning `java.runtime.version` — without one you get
    whatever the newest LTS JDK is, currently 25. The Maven buildpack then runs
    `mvn clean dependency:list install -DskipTests`, the Gradle one `./gradlew stage`, unless
-   `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS` / `GRADLE_TASK` say otherwise — and a **Vaadin** project
-   has to say otherwise either way, or it is built in development mode (*Vaadin under herokuish*,
-   below).
+   `MAVEN_CUSTOM_GOALS` / `MAVEN_CUSTOM_OPTS` / `GRADLE_TASK` say otherwise. A **Vaadin Gradle**
+   project always has to say otherwise; a **Vaadin Maven** project has to only if its `pom.xml` still
+   carries a `production` profile, which is a question of its Vaadin version (*Vaadin under
+   herokuish*, below). Get that wrong and the app is built in development mode.
 4. **The buildpack, named — one way or the other** (next section). Don't rely on auto-detection: a
    Java project that commits a `package.json`, which Vaadin tells you to do, is detected as a *Node*
    app, because `nodejs` is tried before `java`.
@@ -245,7 +246,7 @@ it — the box simply ignores it — and add the herokuish equivalents beside it
 | What the `Dockerfile` did | What replaces it here |
 |---|---|
 | `FROM openjdk:21-…` — picked the JDK | `system.properties` in the repo root: `java.runtime.version=21` |
-| `RUN ./mvnw … -Pproduction` — ran the build | the buildpack's own goals, adjusted with `MAVEN_CUSTOM_OPTS` (next section — **Vaadin apps must adjust them**) |
+| `RUN ./mvnw … -Pproduction` — ran the build | the buildpack's own goals, adjusted with `MAVEN_CUSTOM_OPTS` (next section — **a Vaadin app with a `production` profile must adjust them; one without needs nothing**) |
 | `CMD java -jar …` — named the process | `Procfile` in the repo root: `web: java -Xmx200m -jar target/your-app.jar` |
 | `EXPOSE 8080` | nothing. Listen on `$PORT` — see the end of this section |
 | `ARG offlinekey` / `ENV VAADIN_OFFLINE_KEY=…` | a config var the operator sets; build args are gone with the Dockerfile |
@@ -268,10 +269,18 @@ appassembler `bin/run` script or an exploded directory. Three things about it th
 Everything above applies to any JVM app. These four are specific to Vaadin, and the first one is not
 optional.
 
-**1. The production build is not what you get by default.** The Java buildpack runs
-`mvn clean dependency:list install -DskipTests` — which does *not* activate Vaadin's `production`
-profile. Without it your app is built in development mode and tries to start a Vite dev server at
-runtime, on a box with no Node and no network to fetch one. So every Vaadin Maven project needs:
+**1. Does your `pom.xml` have a `production` profile? That one question decides what you need here.**
+The Java buildpack runs `mvn clean dependency:list install -DskipTests` and activates no profile, so a
+project whose production build lives behind one is built in **development mode** — and then tries to
+start a Vite dev server at runtime, on a box with no Node and no network to fetch one.
+
+```bash
+grep -n '<id>production</id>' pom.xml        # ten seconds, and it is the whole decision
+```
+
+**If it matches, activate the profile.** This is every Vaadin **24 and earlier** project, and any
+hand-made 25 project that kept the profile — Vaadin's 25 docs still offer it for plain-Java and
+Jakarta EE projects, which is what a Vaadin Boot app is.
 
 ```dotenv
 # .env in the repo root — MAVEN_CUSTOM_OPTS *replaces* the default opts, so keep -DskipTests
@@ -285,9 +294,30 @@ repository:
 dokku config:set myproject MAVEN_CUSTOM_OPTS='-DskipTests -Pproduction'
 ```
 
+**If it does not match, you need nothing at all** — no `MAVEN_CUSTOM_OPTS`, no `.env` line. Vaadin
+**25.0** moved the production build out of a dedicated profile: `build-frontend` runs in the default
+lifecycle and the dev-mode tooling is excluded by default, so `mvn install` *is* the production build.
+The buildpack's default goals already carry `-DskipTests`, which is the other half of what that
+variable was ever for. Confirmed on this box: a Vaadin 25.2 app deployed with no config var of any
+kind, pulled `vaadin-prod-bundle-25.2.6.jar`, ran no npm and no Vite, and reported
+`Vaadin production mode is on` at runtime.
+
+**Why the rule keys on the pom rather than on the version:** the farm will straddle 24 and 25 for as
+long as any app is still on 24, and a 25 project may carry the profile anyway. The pom is the fact;
+the version only explains why poms differ. Passing `-Pproduction` where no such profile exists is a
+**warning, not a failure** (`The requested profile could not be activated`), so a stale setting will
+not break a deploy — but it is one more thing to keep in step with the buildpack's defaults, so drop
+it when you drop the profile.
+
+**Check the first build rather than trusting either branch of this.** The build log should show the
+prod-bundle jar and no npm/Vite chatter, and `dokku logs myproject` should say production mode on
+startup. *Rehearse the build locally*, below, gets you the same evidence before anyone registers
+anything.
+
 **2. Do this if your app builds Vite.** It only does when it has to: an app with no custom JS/TS and no
 frontend-customising add-ons uses Vaadin's **pre-compiled production bundle** (24.1+) and skips npm and
-Vite entirely. That is the recommended state — **stay on the default bundle** — because on this box the
+Vite entirely — confirmed on this box, where a 25.2 app's build downloaded the prod-bundle jar and ran
+no frontend tooling at all. That is the recommended state — **stay on the default bundle** — because on this box the
 frontend build is slow and stays slow: `vaadin-maven-plugin` downloads its own Node into `~/.vaadin`
 and installs `node_modules` into the source checkout, and both are thrown away after every build, since
 `$HOME` *is* that checkout during the Maven build. If your app genuinely must customise the frontend:
@@ -310,8 +340,9 @@ dokku config:set --no-restart myproject VAADIN_OFFLINE_KEY='the-key'
 - **Never put it in `.env`.** That file is committed to your repository; a licence key is a secret, and
   `dokku config:set` is what keeps it on the box. (Ask the operator to set it: config vars are theirs.)
 - It reaches the build because the herokuish builder bundles every app config var into an `ENV_DIR`
-  before the buildpack runs — see [RESEARCH.md](RESEARCH.md#config-env-vars-and-app-metadata). That is
-  read from Dokku's source, not yet confirmed on a running box.
+  before the buildpack runs — confirmed on a box, and the `ENV_DIR` carries the *merged* view, so a
+  var the operator sets globally reaches your build too. See
+  [RESEARCH.md](RESEARCH.md#config-env-vars-and-app-metadata).
 
 **4. Gradle projects need four things, and none of the defaults will do.** The Gradle buildpack runs
 exactly one command — `./gradlew $GRADLE_TASK` — and with `GRADLE_TASK` unset it looks for a `stage`
@@ -357,8 +388,9 @@ builds, which is what stops the Maven tree being re-downloaded on every schedule
 **As this box actually runs, you need nothing here for *caching*** — not for Maven, and not for
 Vaadin. The buildpack already puts `.m2/repository` in the cache volume, and an app on Vaadin's
 pre-compiled production bundle runs no frontend build, so there is nothing to cache. (The one `.env`
-line a Vaadin app *does* generally need is `MAVEN_CUSTOM_OPTS`, and that is about the production
-profile rather than the cache — see *Vaadin under herokuish* above.)
+line a Vaadin app may still need is `MAVEN_CUSTOM_OPTS`, and only if its pom carries a `production`
+profile — that is about the production build rather than the cache, see *Vaadin under herokuish*
+above.)
 
 **If you do need a real frontend build on the box, expect it to be slow — the fix is a v2 topic.**
 `vaadin-maven-plugin` downloads its own Node into `~/.vaadin` and installs `node_modules` into the
@@ -369,17 +401,22 @@ box** — and are tracked in `ideas/vaadin-build-under-herokuish.md`:
 ```dotenv
 # .env — build-time only; not your runtime config. UNVERIFIED; see above.
 npm_config_cache=/cache/npm
-MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction -Duser.home=/cache/home
+MAVEN_CUSTOM_OPTS=-DskipTests -Duser.home=/cache/home      # add -Pproduction only if your pom has it
 ```
 
 - `npm_config_cache` keeps npm's downloads across rebuilds. It does not stop `npm install` running,
-  only its trips to the network.
+  only its trips to the network. **Lowercase is deliberate**: this is npm's own spelling, and under the
+  Java buildpack it is npm — run by `vaadin-maven-plugin` — that would read it. Do not reach for the
+  uppercase `NPM_CONFIG_CACHE` you may find elsewhere: that one is the *Node* buildpack's own variable,
+  it relocates that buildpack's cache rather than adding one, and no Vaadin Maven app runs it.
+  Confirmed on the box, which is also why the Java buildpack caches no npm traffic at all.
 - `-Duser.home=/cache/home` moves `~/.vaadin` — where Vaadin installs its own Node — into the cache
   volume, so that download happens once rather than every build. Vaadin has no setting for *where* that
   directory lives, so relocating `user.home` is the only lever. Drop it if your build doesn't like a
   relocated home.
-- `-Pproduction` is Vaadin's production profile; keep `-DskipTests`, which is the buildpack default
-  you are replacing.
+- Keep `-DskipTests`, which is the buildpack default you are replacing. Add `-Pproduction` **only if
+  `grep '<id>production</id>' pom.xml` matches** — on Vaadin 25 there is no such profile and the flag
+  would only raise a warning.
 - **`/cache` exists only on this box**, which is the argument against carrying these lines in a repo at
   all. Nothing on your own machine reads `.env` — not Maven, not npm — so they are inert locally; but
   `dokku config:set` from the box side does the same job without putting a platform path in your source,
@@ -477,7 +514,8 @@ killer finds it in production.
 |---|---|
 | `-----> <X> app detected` | `X` is the language you meant. If it says Node and you meant Java, name the buildpack |
 | `Installing … OpenJDK <N>` | `N` is your JDK. With no `system.properties` this is the newest LTS, currently 25 |
-| the build command it echoes | the goals and flags are yours, production profile included |
+| the build command it echoes | the goals and flags are yours — including `-Pproduction`, if and only if your pom has that profile |
+| `vaadin-prod-bundle-…jar` downloaded, and no npm/Vite chatter | the app is on the pre-compiled bundle, which is the state you want (*Vaadin under herokuish*, §2) |
 | `Procfile declares types -> web` | it says `web`. `No process types found` means the app will never start |
 | the container answers `200` | …and the log shows production mode, not a dev-mode server looking for Vite |
 

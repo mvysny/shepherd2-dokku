@@ -384,6 +384,12 @@ names the cache.** That is the fact `D_builder` turns on.
 - **`dokku repo:purge-cache <app>` is literally `docker volume rm -f cache-<app>`** **[src]** — per-app
   purge granularity, and the only cache lever needed under herokuish. Documented as scoped to
   buildpack builds; a no-op under `pack`, which names its volume differently.
+- **Sizing it is Docker's job, not Dokku's: `docker system df -v --format '{{json .}}'` returns
+  `Images` / `Containers` / `Volumes` arrays, each volume carrying `Name`, `Mountpoint` and a `Size`
+  that is a *human string in SI units* (`"1.2GB"`, `"67B"`).** **[observed, Docker 29.1.3]** Two
+  consequences for any reader: the size has to be parsed back to bytes to be added up (3–4 significant
+  figures survive), and the daemon **walks each volume's directory** to produce it — so the call costs
+  what `du` would cost over the whole cache. There is no Dokku command for this at any granularity.
 - **The Heroku Java buildpack puts the Maven repository inside that volume**: `lib/maven.sh` exports
   `MAVEN_OPTS="… -Duser.home=${build_dir} -Dmaven.repo.local=${cache_dir}/.m2/repository"`, and caches
   `.m2/wrapper` and the downloaded Maven under `${cache_dir}/.maven`. Its **default goals are
@@ -1116,6 +1122,21 @@ suffixes), `memory-swap` → `--memory-swap`, `nvidia-gpus` → `--gpus`; reserv
 **So with the Dockerfile builder, build *memory* can be capped and build *CPU* cannot.** That is a
 direct, documented regression against shepherd-traefik, which limits both.
 
+**`resource:report <app> --format json` is a flat map of `<process-type>.<limit|reserve>.<key>` → the
+value exactly as it was set** — `{"_default_.limit.memory":"256m","build.limit.memory":"2g"}`. **[src]**
+(`plugins/resource/resource.go`, `plugins/common/common.go` at `v0.38.2` and at `master`.) Three
+things about it:
+
+- The keys are the plugin's property names, so a limit that was never set is **absent**, not zero or
+  empty — the difference between "capped at 0" and "uncapped" is only visible as a missing key.
+- The value is a string passed to Docker verbatim: `256m` is binary (`m` = MiB), and a bare number is
+  **bytes**, not megabytes, despite the documentation example `--memory 100`.
+- 0.38.2 emits the key with the `--resource-` prefix trimmed; `master` emits **both** the trimmed and a
+  legacy `resource-`-prefixed copy of every key, controlled by a new `EmitLegacyPrefix` flag. A reader
+  that hardcodes one spelling breaks on the other, so accept both.
+
+Nothing sums these across apps — see *What Dokku does not do*. `shepherd2 stats` does (`D_stats`).
+
 ## Processes, restarts and reboot
 
 ```bash
@@ -1682,6 +1703,12 @@ first throwaway VPS:
     `-Pvaadin.productionMode` is the way to reach a production build, there being no Maven profile to
     activate; and whether `~/.gradle` lands in the `cache-$APP` volume the way `.m2/repository` does,
     since if it does not, every Gradle build re-downloads its dependency tree.
+21. **How long does `docker system df -v` take once the caches are warm?** `shepherd2 stats` is built
+    on it (`D_stats`), and the daemon walks every volume's directory to answer, so the cost scales with
+    the `.m2` repositories inside `cache-$APP` — hundreds of thousands of small files across nine
+    projects. `[unverified]`: measured at 0.4s on a dev machine whose volumes were empty, which
+    establishes nothing. If it turns out to be tens of seconds, the fallback is `du -sb` on the
+    `Mountpoint` the same listing hands us, per app, skipping the images and containers entirely.
 
 ## Sources
 

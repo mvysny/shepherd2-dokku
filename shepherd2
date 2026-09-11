@@ -1,12 +1,18 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# shepherd2 — the Shepherd2 CLI: register, destroy, poll, rebuild, wait, prune.
+# shepherd2 — the Shepherd2 CLI: register, destroy, poll, rebuild, wait, prune, measure.
 #
 # Every verb here exists because Dokku has no single command for it. Anything Dokku *does* have a
 # command for is used as-is and documented in README.md's cheat sheet: `dokku logs`, `ps:restart`,
 # `config:set`, `domains:add` are Dokku's, not ours, and a `shepherd2 logs` would be the shepherd-cli
 # this design deliberately retired (D_dokku_is_truth).
+#
+# `stats` is a *snapshot*, not monitoring: one read of what the box holds and what is left of it. Dokku
+# does no monitoring by design, so there is no command to wrap — but the boundary is the point. No
+# `--watch`, no history, no thresholds, no exit code that depends on how full the disk is, and no
+# per-container CPU (that is `docker stats`, in README.md's cheat sheet). A `stats` that grows a time
+# axis has become the status page in `ideas/web-admin-ui.md`, which is a different decision (D_stats).
 #
 # `last-build` is the one verb here with an expiry date, and it is not a log surface — it answers a
 # question Dokku has no command for. `builds:report` names the *newest* record, which under a
@@ -23,6 +29,7 @@
 #   shepherd2 last-build [ID] [--log]             the last *real* build, past the poll's churn
 #   shepherd2 wait-idle [--timeout SECONDS]       block until no build is running
 #   shepherd2 clearcache                          the weekly prune
+#   shepherd2 stats [--json]                      what the box holds: memory, disk, per-project cache
 #
 # create-app OPTIONS
 #   --owner EMAIL      contact address, stored as SHEPHERD_OWNER. Not an ACL (D_single_operator).
@@ -74,6 +81,17 @@ DEFAULT_BUILD_CPU    = '2'
 # poll tick, once a later deploy reaps it. Nothing else on disk distinguishes such a record from a
 # build that really failed (D_poll_churn).
 REAPED_EXIT_CODE = -1
+
+# Docker prints sizes for people — `"785.4MB"` — and in SI units. `stats` parses them back so that
+# totals can be added up; the round trip keeps Docker's three or four significant figures, which is
+# plenty for a number that is printed rounded again.
+DOCKER_SIZE_UNITS = { 'b' => 1, 'kb' => 1000, 'mb' => 1000**2, 'gb' => 1000**3,
+                      'tb' => 1000**4, 'pb' => 1000**5 }.freeze
+
+# A *limit* uses the other convention: b/k/m/g, binary, no trailing B. `resource:limit --memory 256m`
+# stores that string verbatim and passes it to `docker --memory` unchanged, so this is Docker's
+# parsing, reimplemented to add the limits up.
+MEMORY_LIMIT_UNITS = { 'b' => 1, 'k' => 1024, 'm' => 1024**2, 'g' => 1024**3 }.freeze
 
 # The statuses a record reaches once its build is over. A `running` record is either a live build or an
 # abandoned tick, and only `display_status` separates those two.
@@ -148,12 +166,13 @@ class Dokku
   end
 end
 
-# Prunes the Docker daemon:
+# Prunes and measures the Docker daemon:
 #
-#   Docker.new.prune   # dangling images and stopped containers, never volumes
+#   Docker.new.prune        # dangling images and stopped containers, never volumes
+#   Docker.new.disk_usage   # what images, containers and volumes cost
 #
-# Separate from Dokku so that reaching around Dokku to the daemon cannot happen by accident: this is
-# the one thing Dokku has no command for.
+# Separate from Dokku so that reaching around Dokku to the daemon cannot happen by accident: these are
+# the things Dokku has no command for — it has no prune, and it does no monitoring at all.
 class Docker
   # @return [true]
   # @raise [Shepherd2Error] if the prune fails.
@@ -162,6 +181,105 @@ class Docker
     raise Shepherd2Error, 'docker system prune failed' unless ok
 
     true
+  end
+
+  # The daemon's disk usage — images, containers and volumes in one call:
+  #
+  #   {"Images" => [{"Repository" => "dokku/hello", "UniqueSize" => "785.4MB", …}, …],
+  #    "Volumes" => [{"Name" => "cache-hello", "Mountpoint" => "/var/lib/docker/volumes/…",
+  #                   "Size" => "1.2GB"}, …], …}
+  #
+  # Sizes are the human strings Docker prints, in SI units, never bytes. The daemon walks every
+  # volume's directory to answer, so on a box with a warm multi-gigabyte build cache this takes
+  # seconds — which is why nothing periodic calls it.
+  #
+  # @return [Hash{String => Array<Hash>}] `Images`, `Containers`, `Volumes`, `BuildCache`.
+  # @raise [Shepherd2Error] if the command fails or its output is not JSON.
+  def disk_usage
+    JSON.parse(capture('system', 'df', '-v', '--format', '{{json .}}'))
+  rescue JSON::ParserError
+    raise Shepherd2Error, 'docker system df did not return JSON'
+  end
+
+  # Where the daemon keeps images, containers and volumes — `/var/lib/docker` on the box, but asked
+  # rather than hardcoded: a rootless daemon puts it under the invoking user's home instead.
+  #
+  # @return [String] an absolute path.
+  # @raise [Shepherd2Error] if the command fails.
+  def root_dir = capture('info', '--format', '{{.DockerRootDir}}').strip
+
+  private
+
+  def capture(*args)
+    out, err, status = Open3.capture3('docker', *args)
+    raise Shepherd2Error, "docker #{args.join(' ')} failed: #{err.strip}" unless status.success?
+
+    out
+  end
+end
+
+# The host underneath Docker — the two numbers no daemon knows:
+#
+#   machine = Machine.new
+#   machine.memory                 # => {total: 6785806336, available: 3324674048, swap_total: …}
+#   machine.filesystem('/var/lib/docker')
+#                                  # => {path: "/var/lib/docker", device: "/dev/vda2", mount: "/",
+#                                  #     total: 133569777664, free: 34647625728}
+#
+# Both read the source rather than a formatted-for-people summary: `/proc/meminfo` rather than `free`,
+# and `df` in bytes because Ruby's standard library has no statvfs and `D_ruby` rules out the gem that
+# would (`sys-filesystem`).
+class Machine
+  MEMINFO_PATH = '/proc/meminfo'
+
+  # @param meminfo_path [String] injected for tests.
+  def initialize(meminfo_path: MEMINFO_PATH)
+    @meminfo_path = meminfo_path
+  end
+
+  # @return [Hash{Symbol => Integer, nil}] bytes: +:total+, +:available+, +:swap_total+, +:swap_free+.
+  #   +:available+ is the kernel's MemAvailable — what a new process could get without swapping — not
+  #   "free", which on a box doing builds is mostly page cache and reads alarmingly low.
+  # @raise [Shepherd2Error] if /proc/meminfo cannot be read.
+  def memory
+    fields = meminfo
+    { total: fields['MemTotal'], available: fields['MemAvailable'],
+      swap_total: fields['SwapTotal'], swap_free: fields['SwapFree'] }
+  end
+
+  # @param path [String] any path on the filesystem to measure.
+  # @return [Hash{Symbol => Object}] +:path+, +:device+, +:mount+ and the byte counts +:total+, +:free+.
+  # @raise [Shepherd2Error] if df fails or its output cannot be read.
+  def filesystem(path)
+    # -P is POSIX output: exactly one line per filesystem, never wrapped. -B1 makes it bytes, so
+    # nothing here has to guess at a block size.
+    out, err, status = Open3.capture3('df', '-P', '-B1', '--', path)
+    raise Shepherd2Error, "df #{path} failed: #{err.strip}" unless status.success?
+
+    fields = out.lines.last.to_s.split
+    raise Shepherd2Error, "df #{path} returned no filesystem" if fields.size < 6
+
+    # Read from the right: a device name may contain spaces, the five columns after it may not.
+    { path: path, device: fields[0..-6].join(' '), mount: fields[-1],
+      total: fields[-5].to_i, free: fields[-3].to_i }
+  end
+
+  private
+
+  # `MemTotal:  16316092 kB` — the unit is always kB (kibibytes, despite the spelling) for every field
+  # that carries one, and a handful of fields carry none.
+  def meminfo
+    File.readlines(@meminfo_path).each_with_object({}) do |line, fields|
+      name, value = line.split(':', 2)
+      next if value.nil?
+
+      amount = value.strip.split
+      next if amount.empty?
+
+      fields[name] = amount[1] == 'kB' ? amount[0].to_i * 1024 : amount[0].to_i
+    end
+  rescue SystemCallError => e
+    raise Shepherd2Error, "cannot read #{@meminfo_path}: #{e.message}"
   end
 end
 
@@ -216,13 +334,16 @@ end
 # the whole sequence without a Dokku.
 class Shepherd2
   # @param dokku [Dokku] runs dokku commands.
-  # @param docker [Docker] prunes the daemon, for +clearcache+ alone.
+  # @param docker [Docker] prunes and measures the daemon, for +clearcache+ and +stats+.
+  # @param machine [Machine] reads the host's memory and disk, for +stats+.
   # @param lock [BuildLock] serialises builds box-wide.
   # @param out [IO] where progress goes.
   # @param err [IO] where warnings go.
-  def initialize(dokku: Dokku.new, docker: Docker.new, lock: BuildLock.new, out: $stdout, err: $stderr)
+  def initialize(dokku: Dokku.new, docker: Docker.new, machine: Machine.new, lock: BuildLock.new,
+                 out: $stdout, err: $stderr)
     @dokku = dokku
     @docker = docker
+    @machine = machine
     @lock = lock
     @out = out
     @err = err
@@ -507,6 +628,54 @@ class Shepherd2
     EXIT_OK
   end
 
+  # --- stats -----------------------------------------------------------------------------------
+
+  # Reports what the box holds and what is left of it.
+  #
+  #   stats   # prints:
+  #
+  #     box
+  #       memory      7.8 GiB total · 4.1 GiB available
+  #       committed   768.0 MiB runtime + 2.0 GiB build peak, of 7.8 GiB
+  #       disk        /var/lib/docker on /dev/sda1 — 78.2 GiB total · 29.1 GiB free (63% used)
+  #
+  #     docker
+  #       images      11.5 GiB in 14 · 2.9 GiB dangling, which `shepherd2 clearcache` reclaims
+  #       volumes     9.1 GiB in 11 · never pruned — mostly the build caches below
+  #
+  #     projects    3 registered
+  #       hello        1.1 GiB
+  #       vaadin-demo  3.2 GiB
+  #       karibu-demo  1.4 GiB
+  #       total        5.7 GiB
+  #
+  # *Committed* is what answers "can another project fit", which free memory does not — the apps are
+  # idle but capped. It is a report and never a refusal: the enforcement point a real quota would need
+  # is still open (`Q_quota`, ideas/box-memory-quota.md).
+  #
+  # The box section prints before the daemon's per-volume walk, which is the slow part.
+  #
+  # @param json [Boolean] emit the same snapshot as JSON, byte counts as integers.
+  # @return [Integer] EXIT_OK. A full disk is a thing to report, not an exit code (D_stats).
+  # @raise [Shepherd2Error] if the daemon or the host cannot be measured at all.
+  def stats(json: false)
+    inventory = app_inventory
+    box = box_stats(inventory)
+    print_box(box) unless json
+
+    usage = @docker.disk_usage
+    projects = project_stats(inventory, usage)
+
+    if json
+      @out.puts JSON.pretty_generate(box.merge(projects))
+    else
+      print_docker(projects)
+      print_projects(projects)
+    end
+
+    EXIT_OK
+  end
+
   # --- shared ----------------------------------------------------------------------------------
 
   private
@@ -668,6 +837,199 @@ class Shepherd2
 
     File.exist?(path) ? path : "#{path} (gone — builds:output falls back to the syslog copy)"
   end
+
+  # --- stats internals -------------------------------------------------------------------------
+
+  STATS_LABEL_WIDTH = 12
+
+  # Every app on the box, ours or not: a hand-made `dokku apps:create` is invisible to the poll but
+  # eats the box's memory and disk all the same, so it is counted — and named as unregistered.
+  def app_inventory
+    app_names.map do |app|
+      limits = memory_limits(app)
+      { name: app, registered: !git_url_for(app).nil?,
+        memory: limits[:runtime], build_memory: limits[:build] }
+    end
+  end
+
+  # `resource:report --format json` is a flat map — `{"_default_.limit.memory" => "256m",
+  # "build.limit.memory" => "2g"}` — whose keys Dokku 0.38 trims and later versions also emit with a
+  # legacy `resource-` prefix, so both spellings are read. An unset limit is **absent**, not zero,
+  # which is why an app with none is named rather than added in as free capacity.
+  def memory_limits(app)
+    report = @dokku.json('resource:report', app, '--format', 'json')
+    report = {} unless report.is_a?(Hash)
+    { runtime: parse_memory_limit(report_value(report, '_default_.limit.memory')),
+      build: parse_memory_limit(report_value(report, 'build.limit.memory')) }
+  rescue Shepherd2Error, JSON::ParserError
+    { runtime: nil, build: nil }
+  end
+
+  def report_value(report, key)
+    _, value = report.find { |name, _| name == key || name.end_with?("-#{key}") }
+    value
+  end
+
+  def parse_memory_limit(value)
+    match = /\A(\d+(?:\.\d+)?)([bkmg])?\z/i.match(value.to_s.strip)
+    return nil if match.nil?
+
+    (match[1].to_f * (match[2] ? MEMORY_LIMIT_UNITS[match[2].downcase] : 1)).round
+  end
+
+  def parse_docker_size(value)
+    match = /\A(\d+(?:\.\d+)?)\s*([kmgtp]?b)\z/i.match(value.to_s.strip)
+    return nil if match.nil?
+
+    (match[1].to_f * DOCKER_SIZE_UNITS[match[2].downcase]).round
+  end
+
+  def box_stats(inventory)
+    limited = inventory.select { |app| app[:memory] }
+    { memory: @machine.memory.merge(
+        committed: limited.sum { |app| app[:memory] },
+        build_peak: inventory.filter_map { |app| app[:build_memory] }.max,
+        unmeasured: (inventory - limited).map { |app| app[:name] }
+      ),
+      disks: disks }
+  end
+
+  # The filesystem that fills up is Docker's, so that is the one reported. `/` follows only when it is
+  # a different device — on a stock box it is the same one, and printing it twice would be noise.
+  def disks
+    root = @machine.filesystem(@docker.root_dir)
+    slash = @machine.filesystem('/')
+    slash[:device] == root[:device] ? [root] : [root, slash]
+  end
+
+  # A project's build cache is the `cache-<app>` volume Dokku names (D_builder). Nothing in Dokku
+  # knows that, which is why the attribution happens here, by name, against the daemon's own listing.
+  def project_stats(inventory, usage)
+    volumes = Array(usage['Volumes'])
+    sizes = volumes.to_h { |volume| [volume['Name'].to_s, parse_docker_size(volume['Size'])] }
+    apps = inventory.map do |app|
+      { app: app[:name], registered: app[:registered], cache: sizes["cache-#{app[:name]}"] }
+    end
+
+    { docker: docker_stats(usage, volumes, sizes),
+      projects: {
+        registered: apps.count { |app| app[:registered] },
+        unregistered: apps.count { |app| !app[:registered] },
+        cache_total: apps.filter_map { |app| app[:cache] }.sum,
+        apps: apps,
+        # `apps:destroy` removes the cache volume itself (RESEARCH.md), so this list should stay empty
+        # forever; it costs one filter, and an entry in it means that stopped being true.
+        orphan_caches: orphan_caches(inventory, sizes)
+      } }
+  end
+
+  def orphan_caches(inventory, sizes)
+    known = inventory.map { |app| "cache-#{app[:name]}" }
+    sizes.keys.select { |name| name.start_with?('cache-') && !known.include?(name) }
+         .map { |name| { volume: name, cache: sizes[name] } }
+  end
+
+  # Two numbers Docker's own `system df` would print differently. Images are summed by *unique* size —
+  # under-reporting a shared base layer rather than counting it once per image — because its totals are
+  # the daemon's arithmetic and cannot be re-derived from this listing. Dangling is what
+  # `shepherd2 clearcache` really reclaims: the untagged images, not every unused one.
+  def docker_stats(usage, volumes, sizes)
+    images = Array(usage['Images'])
+    { images_count: images.size,
+      images_unique: sum_sizes(images, 'UniqueSize'),
+      images_dangling: sum_sizes(images.select { |image| image['Repository'] == '<none>' }, 'UniqueSize'),
+      volumes_count: volumes.size,
+      volumes: sizes.values.compact.sum }
+  end
+
+  def sum_sizes(entries, key) = entries.filter_map { |entry| parse_docker_size(entry[key]) }.sum
+
+  def print_box(box)
+    memory = box[:memory]
+    @out.puts 'box'
+    @out.puts stat_line('memory', "#{human_bytes(memory[:total])} total · " \
+                                  "#{human_bytes(memory[:available])} available")
+    @out.puts stat_line('committed', committed_sentence(memory))
+    unless memory[:unmeasured].empty?
+      @out.puts stat_line('', "#{memory[:unmeasured].size} app(s) with no readable runtime limit: " \
+                              "#{memory[:unmeasured].join(', ')}")
+    end
+    if memory[:swap_total].to_i.positive?
+      @out.puts stat_line('swap', "#{human_bytes(memory[:swap_total])} total · " \
+                                  "#{human_bytes(memory[:swap_free])} free")
+    end
+    box[:disks].each { |disk| @out.puts stat_line('disk', disk_sentence(disk)) }
+  end
+
+  def committed_sentence(memory)
+    text = "#{human_bytes(memory[:committed])} runtime"
+    # The largest build limit, not their sum: one build runs at a time box-wide (the poll's lock).
+    text += " + #{human_bytes(memory[:build_peak])} build peak" if memory[:build_peak]
+    "#{text}, of #{human_bytes(memory[:total])}"
+  end
+
+  def disk_sentence(disk)
+    used = disk[:total] - disk[:free]
+    percent = disk[:total].positive? ? (used * 100.0 / disk[:total]).round : 0
+    "#{disk[:path]} on #{disk[:device]} — #{human_bytes(disk[:total])} total · " \
+      "#{human_bytes(disk[:free])} free (#{percent}% used)"
+  end
+
+  def print_docker(stats)
+    docker = stats[:docker]
+    @out.puts ''
+    @out.puts 'docker'
+    dangling = if docker[:images_dangling].positive?
+                 "#{human_bytes(docker[:images_dangling])} dangling, which `shepherd2 clearcache` reclaims"
+               else
+                 'nothing dangling'
+               end
+    @out.puts stat_line('images', "#{human_bytes(docker[:images_unique])} in #{docker[:images_count]} · #{dangling}")
+    @out.puts stat_line('volumes', "#{human_bytes(docker[:volumes])} in #{docker[:volumes_count]} · " \
+                                   'never pruned — mostly the build caches below')
+  end
+
+  def print_projects(stats)
+    projects = stats[:projects]
+    rows = projects[:apps].map { |app| [project_name(app), app[:cache]] } +
+           projects[:orphan_caches].map { |orphan| ["#{orphan[:volume]} (orphan, no such app)", orphan[:cache]] }
+
+    @out.puts ''
+    @out.puts "projects    #{project_counts(projects)}"
+    return if rows.empty?
+
+    width = rows.map { |name, _| name.length }.max
+    rows.each { |name, cache| @out.puts "  #{name.ljust(width + 2)}#{cache ? human_bytes(cache) : 'no cache volume'}" }
+    @out.puts "  #{'total'.ljust(width + 2)}#{human_bytes(projects[:cache_total])}"
+  end
+
+  def project_name(app)
+    app[:registered] ? app[:app] : "#{app[:app]} (unregistered)"
+  end
+
+  def project_counts(projects)
+    counts = ["#{projects[:registered]} registered"]
+    if projects[:unregistered].positive?
+      counts << "#{projects[:unregistered]} unregistered (not polled — no #{GIT_URL_VAR})"
+    end
+    counts.join(' · ')
+  end
+
+  def stat_line(label, text) = "  #{label.ljust(STATS_LABEL_WIDTH)}#{text}"
+
+  # Binary units, not Docker's SI even though half these numbers were parsed out of it: the operator
+  # checks this page against `free -h` and `df -h`, and an 8 GiB box printed as "8.6 GB" reads as a
+  # bug. The IEC suffix is what keeps that honest — Docker's 1.2GB volume appears here as 1.1 GiB.
+  def human_bytes(bytes)
+    return '—' if bytes.nil?
+    return "#{bytes} B" if bytes < 1024
+
+    value = bytes.to_f
+    %w[KiB MiB GiB TiB PiB].each do |unit|
+      value /= 1024
+      return format('%.1f %s', value, unit) if value < 1024 || unit == 'PiB'
+    end
+  end
 end
 
 # --- Argument parsing ----------------------------------------------------------------------------
@@ -683,6 +1045,7 @@ class CLI
       last-build [ID] [--log]     the last real build of a project, past the poll's churn
       wait-idle                   block until no build is running
       clearcache                  weekly prune of dangling images and stopped containers
+      stats [--json]              what the box holds: memory, disk, per-project build cache
 
     `shepherd2 VERB --help` describes one verb. Anything Dokku already has a command for — logs,
     ps:restart, config:set, domains:add — is a `dokku` command; see README.md's cheat sheet.
@@ -702,6 +1065,7 @@ class CLI
     when 'last-build'  then last_build(argv)
     when 'wait-idle'   then wait_idle(argv)
     when 'clearcache'  then no_arguments!(argv, 'clearcache') { @shepherd.clearcache }
+    when 'stats'       then stats(argv)
     when '--version'   then puts "shepherd2 #{VERSION}"; EXIT_OK
     when nil, '-h', '--help' then puts USAGE; EXIT_OK
     else raise UsageError, "unknown verb: #{verb}"
@@ -767,6 +1131,18 @@ class CLI
     raise UsageError, '--log needs an app id' if log && rest.empty?
 
     @shepherd.last_build(rest[0], log: log)
+  end
+
+  def stats(argv)
+    json = false
+    parser = OptionParser.new do |o|
+      o.banner = 'usage: shepherd2 stats [--json]'
+      o.on('--json', 'emit the snapshot as JSON, byte counts as integers') { json = true }
+    end
+    rest = parse!(parser, argv)
+    raise UsageError, parser.banner unless rest.empty?
+
+    @shepherd.stats(json: json)
   end
 
   def wait_idle(argv)

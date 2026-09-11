@@ -1475,3 +1475,90 @@ the design had noticed.
 - **`ideas/build-failure-notifications.md` (v2) is partly unblocked.** It deferred its alert design
   because a failed build's log vanished before anyone could be pointed at it; with a day of retention
   and `last-build`, an alert can now name a build that will still be readable when the mail is opened.
+
+## D_stats — `stats` reports the box's capacity; it is a snapshot, never monitoring (2026-09-11)
+
+**Status:** Accepted 2026-09-11, shipped with the verb.
+
+**Context.** Two questions come up on a single-box farm and nothing on the box answers either. *Will
+another project fit?* — free memory does not say, because the apps are idle but capped, and Dokku has
+no command that sums anything across apps (`RESEARCH.md` → *What Dokku does not do*: "nothing sums them
+or refuses an over-committing app"). *What is eating the disk?* — the per-app build cache is a
+`cache-<app>` Docker volume that nothing garbage-collects (`D_builder`), and **nothing in Dokku knows
+that volume belongs to an app**: `repo:purge-cache` deletes it by name and that is the whole of Dokku's
+awareness. Monitoring is explicitly out of scope for Dokku, so there is no command to wrap and no
+plugin to install — the box ships with no way to answer either question short of `df`, `free`,
+`docker system df -v` and arithmetic by hand.
+
+**Decision.** One verb, `shepherd2 stats [--json]`, printing a box section (memory, committed memory,
+swap, the filesystem behind Docker's root dir), a docker section (images, volumes) and one line per
+project (its cache volume). **And a boundary, which is the other half of the decision:** `stats` is a
+*snapshot*, not monitoring. No `--watch`, no history, no thresholds, no alerting, no exit code that
+depends on how full the disk is, no per-container CPU — `docker stats` is that, and the `README.md`
+cheat sheet already points at it. A `stats` that grows a time axis has become the status page in
+`Q_web_admin`, which is a separate decision with a separate hostname waiting for it
+(`D_admin_namespace`).
+
+**Why.**
+
+- **It is on the right side of *Shepherd2 never wraps a command Dokku already has*.** Same test
+  `last-build` passes: the question has no Dokku command, and the part that makes it *ours* is the
+  attribution — `cache-<app>` ↔ app — which only Shepherd2's own naming convention makes possible.
+- **The committed figure is the answer to the question actually being asked.** Runtime limits summed
+  across every app, plus *one* build limit rather than one per app, because the poll's non-blocking
+  lock means one build runs at a time box-wide (`SOLUTION.md` → *Flow — a poll tick*). An app with no
+  readable limit is **named, not counted as zero** — the sum would otherwise be quietly wrong in the
+  one direction that matters.
+- **Every app is counted, registered or not.** A hand-made `dokku apps:create` never enters the poll,
+  but it eats the box's memory and disk all the same. Printing it as `(unregistered)` is also the only
+  place that drift is visible (`D_dokku_is_truth` — we read Dokku's state, we do not maintain a list).
+- **`--json` from the start, because the consumer is already sketched.** Option 1 in `Q_web_admin` is a
+  cron-generated status page fed by `--format json` reports; this is the one report Dokku cannot
+  provide, so emitting bytes-as-integers now costs a few lines and saves that page from parsing a page
+  meant for a human.
+- **Binary units (`GiB`), not Docker's SI.** The operator checks this page against `free -h` and
+  `df -h`, both binary; an 8 GiB box printed as "8.6 GB" reads as a bug. The unit label carries the
+  difference — a volume Docker calls `1.2GB` appears here as `1.1 GiB`.
+
+**Alternatives rejected.**
+
+- *Leave it to `docker system df -v` and `free`.* That is what exists today, and it answers neither
+  question: `system df -v` lists volumes by name with no idea which app owns one, and neither knows
+  what the box has *promised* to apps that are currently idle.
+- *Two verbs — `stats` for the machine, something else for the projects.* The two numbers are only
+  useful next to each other: a cache size means nothing without the free space it is eating.
+- *A cron that mails when the box is over-committed* — option 2 in `Q_quota`. Not rejected so much as
+  **not yet**: this verb is its measurement half, and a notifier needs the transport question in
+  `ideas/build-failure-notifications.md` settled first.
+- *Refuse an over-committing `create-app`.* That is `Q_quota` itself, still open, and still open for
+  the same reason: `create-app` is the only enforcement point available and a later hand
+  `dokku resource:limit` routes around it. Reporting has no such hole — it re-reads Dokku's state every
+  time it runs.
+- *Measure the cache with `du` on the volume's mountpoint* rather than asking the daemon. Kept in
+  reserve: it needs no size-string parsing and gives exact bytes, and `docker system df -v` hands us
+  the mountpoint anyway. Rejected for now because one call answers both the per-project and the
+  box-wide question, and because walking Docker's storage directory ourselves is precisely the
+  reaching-around that `CLAUDE.md` warns about.
+- *Sum image sizes the way `docker system df` does.* Its non-verbose totals are computed by the daemon
+  and cannot be derived from the verbose listing without a second call and a second walk of every
+  volume. `stats` sums *unique* sizes instead, which under-reports a shared base layer rather than
+  double-counting it, and reports as reclaimable only what `shepherd2 clearcache` actually removes —
+  the dangling images, not every unused one.
+
+**Consequences.**
+
+- **`stats` is interactive-only and nothing periodic may call it.** The daemon walks every volume's
+  directory to answer `system df -v`, so on a box with a warm multi-gigabyte Maven cache the verb takes
+  seconds. Cost unmeasured on a real box — `RESEARCH.md`'s punch list, item 21.
+- **A second `docker` call joins `clearcache`'s.** Shepherd2 now reaches the daemon in two verbs rather
+  than one, both for things Dokku has no command for, both named in the script header as
+  `CLAUDE.md` requires.
+- **Orphaned `cache-*` volumes become visible.** `apps:destroy` removes the cache volume with the app
+  (verified, `RESEARCH.md`), so the orphan list should stay empty forever; an entry in it is a
+  regression in that behaviour, which nothing else on the box would surface.
+- **`Q_quota` keeps its slug and its question.** Its *reporting* half has landed here; the enforcement
+  point it was really about is untouched, and `SOLUTION.md` → *What v1 does not do* still says there is
+  no memory quota — because there is not.
+- **Shepherd2 now parses two size conventions.** Docker's SI strings on the way in, binary limit
+  suffixes out of `resource:limit`, one renderer in IEC units. Anything added here has to pick a side
+  deliberately; the units test is what keeps that honest.

@@ -132,7 +132,7 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 |---|---|
 | `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
 | `shepherd2-uninstall` | Bash. The inverse, driven by `SHEPHERD_TLS_MODE`. Destroys every project; `--keep-docker` / `--keep-pools` opt out of the two steps that reach past Shepherd2's own layer |
-| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `last-build`, `wait-idle`, `clearcache`. Its process-running seams (`Dokku`, `Docker`, `BuildLock`) are constructor arguments — that is the test surface |
+| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `last-build`, `wait-idle`, `clearcache`, `stats`. Its process-running seams (`Dokku`, `Docker`, `Machine`, `BuildLock`) are constructor arguments — that is the test surface |
 | `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`) |
 | `.github/workflows/test.yml` | the suite plus shellcheck, in an `ubuntu:24.04` container so it runs on the box's Ruby |
 
@@ -179,6 +179,12 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
   `rebuild` exist because Dokku has no single command for them; `dokku logs`, `ps:restart`,
   `config:set`, `domains:add` are used as they are and documented in the `README.md` cheat sheet. A
   `shepherd2 logs` is `shepherd-cli` reincarnated — don't.
+  - **`stats` is on the right side of that line too, and its boundary is load-bearing.** Dokku does no
+    monitoring, so nothing sums limits across apps and nothing knows the `cache-<app>` volume belongs
+    to an app — that attribution is what makes the verb ours. It is a *snapshot*: no `--watch`, no
+    history, no thresholds, no alerting, no exit code that depends on how full the disk is, and no
+    per-container CPU (`docker stats` is that). A `stats` that grows a time axis has become the status
+    page in `ideas/web-admin-ui.md`. See `D_stats`.
   - **`last-build` is the one verb on that line, and it is on the right side of it** — `builds:report`
     names the newest record, which under the poll is always an abandoned tick, so there *is* no Dokku
     command for "the last real build" (`D_poll_churn`). It is also the only verb with an expiry date:

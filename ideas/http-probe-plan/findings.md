@@ -845,3 +845,162 @@ That is worth keeping for two reasons: it retires a caution this repo has repeat
 
 *(Verified on Docker 29.1.3, Ubuntu's `docker.io`. Older Docker may not have skipped it; this is not a
 claim about the version the plan was written against.)*
+
+---
+
+## Second sitting, 2026-09-11 — the v2 leftovers, on the box as it stands
+
+The first sitting closed everything the http box could reach and paused. This one picks up the four
+things left that need *no* new mode and no new app: items **9**, **14**, **16**'s mechanism half, and
+the unnumbered `[unverified]` at `RESEARCH.md`'s *An app named as an FQDN* bullet. Item **4** was
+offered and declined — it needs the https mode, which `D_cert` will not let this box have.
+
+Everything below ran against the box in its post-uninstall, reinstalled state: http mode, Dokku
+0.38.27, Docker 29.1.3, one app `demo` (`heroku/node-js-getting-started`, `heroku/nodejs`) on
+`app-demo` with a `cache-demo` volume. **The box was returned to exactly that state afterwards** —
+every probe app, network, service, plugin, domain, config var and `/etc/hosts` line was removed, and
+`demo` still answers 200.
+
+### The probe rig — an inline buildpack, which is worth stealing for later runs
+
+Three of the four questions are "what does the build container actually see?", and building a Vaadin
+app to find out costs minutes per attempt. Instead: a four-file app on the **`heroku-community/inline`**
+buildpack, whose entire job is to run `bin/compile` out of the app's own repo. The build takes about
+five seconds and can print anything.
+
+```
+bin/detect    echo probe
+bin/compile   dumps $ENV_DIR, $CACHE_DIR, /proc/self/mountinfo, cgroup limits, env
+bin/release   default_process_types: web: sleep infinity
+Procfile      web: sleep infinity
+```
+
+Registered with `buildpacks:set probe heroku-community/inline` and deployed from a `file://` source.
+Two incidental facts came out of the rig itself:
+
+- **`heroku-community/x` is rewritten to `heroku/heroku-buildpack-x`** — the `community` org is a
+  fiction of the shorthand `[src]`, `plugins/buildpacks/functions.go:98`. And `validBuildpackURL`
+  accepts only `http`, `https` and `git` schemes, so a buildpack cannot be served from `file://` the
+  way an *app* can.
+- **A `file://` app source must be *owned* by the `dokku` user**, not merely readable by it. A
+  root-owned repo fails the clone with git's `fatal: detected dubious ownership`. This sharpens the
+  note earlier in this file, which says only "readable".
+
+### FINDING — punch-list 14, second half: **a `--global` config var does reach the build's ENV_DIR**
+
+The item asks whether the `pre-build` trigger bundles the app's own config or the merged view. It is
+the **merged** view. With `PROBE_GLOBAL` set globally and `PROBE_APP` set on the app, `ls $ENV_DIR`
+inside the build shows both, alongside Dokku's own globals:
+
+```
+/tmp/env:  CURL_CONNECT_TIMEOUT  CURL_TIMEOUT  GIT_REV
+           PROBE_APP=app-value-7  PROBE_GLOBAL=global-value-42  SHEPHERD_TLS_MODE=http
+```
+
+So a build-time setting can be applied box-wide with `config:set --global` and never touch a repo —
+which is the variant the item wanted, and it is the cheaper half of the answer for the nine apps.
+`SHEPHERD_TLS_MODE` turning up in every build is a free consequence worth knowing about; nothing reads
+it there today.
+
+### FINDING — punch-list 14, first half: it is `NPM_CONFIG_CACHE`, uppercase, and a Node app does not need it
+
+Two runs on `demo`, both warm, both ~64s, so the timing says nothing — the volume is the evidence.
+
+1. `npm_config_cache=/cache/npm`, the spelling the punch list names: **ignored.** No `/cache/npm`
+   appeared. That spelling is the one *npm* reads, but the buildpack never consults it.
+2. `NPM_CONFIG_CACHE=/cache/npm`: **honoured.** `/cache/npm` appeared in the volume.
+
+The reason is one line of `heroku-buildpack-nodejs` (v367, `bin/compile:209`) `[src]`:
+
+```bash
+[[ -z "${NPM_CONFIG_CACHE}" ]] && NPM_CONFIG_CACHE=$(mktemp -d -t npmcache.XXXXX)
+```
+
+…and `lib/cache.sh` then **`mv`s** `$CACHE_DIR/node/cache/npm` into that path on restore and back out
+on save. So the variable does not add a cache, it *relocates* the buildpack's own one.
+
+**Which matters less than it looks, because the Node buildpack already caches npm into the app's
+volume with nothing set at all**: `cache-demo` held a 45 MB `node/cache/npm` before any of this began.
+The var is only interesting where a buildpack does *not* manage an npm cache — i.e. the Java/Vaadin
+frontend build the item was really aimed at, where the mechanism is now proven end to end even though
+the Vaadin half still wants an app that customises its frontend (punch-list 13/15).
+
+One trap for whoever writes that up: pointing `NPM_CONFIG_CACHE` *inside* `/cache` makes the buildpack
+move a directory to a sibling of itself and back, and npm then recreates the emptied path afterwards
+during `npm prune`. The leftover `/cache/npm` holding only `_logs` is that, not a failure.
+
+### FINDING — punch-list 16, mechanism half: **a build-phase `docker-options -v` bind mount does reach the herokuish build container**
+
+The item's second idea, and the generic one — it is not really about Vaadin.
+
+```bash
+dokku docker-options:add probe build '-v /opt/probe-bindsrc:/probe-mount'
+```
+
+The build container has it, readable, with the host's file in place:
+
+```
+663 653 253:2 /opt/probe-bindsrc /probe-mount rw,relatime - ext4 /dev/vda2 rw
+-rw-r--r-- 1 root root 31 marker.txt   ->  hello-from-the-host-bind-mount
+```
+
+That confirms the `[src]` reading that the herokuish path passes build `docker-options` to
+`docker container create` unfiltered, and it means **any** build-time directory — not just
+`~/.vaadin` — can be pointed at host storage. The item's *other* idea (whether a Maven CLI `-D`
+overrides the `MAVEN_OPTS` `-Duser.home`) is untouched; it needs a Maven build and is a Maven
+question, not a Dokku one.
+
+Same build also showed `$CACHE_DIR` is `/cache` backed by the `cache-$APP` volume
+(`/var/lib/docker/volumes/cache-probe/_data`), `HOME=/app`, `PWD=/tmp/build`, and — with no
+`resource:limit` set on this app — `memory.max: max`, `cpu.max: max 100000`, `nproc 4`. **Build limits
+are not defaulted by Dokku**, which is the flip side of the item-17 finding: they apply because
+`create-app` emits them, and an app registered by hand builds uncapped.
+
+### FINDING — punch-list 9: `postgres:link` works on a per-app network, and the `--link` is redundant rather than inert
+
+Item 9 is v2 and blocks nothing, but it is twenty minutes and it settles the `[unverified]` under
+*Datastore plugins*. `dokku-postgres` installed, `postgres:create probedb -N app-demo`,
+`postgres:link probedb demo`.
+
+- **`postgres:create -N` puts the service straight on the app's network**, with a network alias:
+  `Aliases: ["dokku-postgres-probedb"]`, `172.16.0.2` on `app-demo`.
+- **`postgres:link` neither errors nor warns.** It sets `DATABASE_URL` and adds
+  `--link dokku.postgres.probedb:dokku-postgres-probedb` to *all three* docker-options phases
+  (build, deploy, run), then redeploys the app.
+- Docker accepts `--link` on a user-defined bridge and records it **network-scoped** —
+  `HostConfig.Links` is `null` while `NetworkSettings.Networks["app-demo"].Links` carries it.
+- **`DATABASE_URL` is connectable.** From inside `demo.web.1`, `dokku-postgres-probedb` resolves to
+  `172.16.0.2` and TCP connects. A real query works too.
+
+The interesting half is *why*, which the item guessed correctly. A throwaway container on `app-demo`
+with **no link at all** runs `select version()` against the same DSN and gets `PostgreSQL 18.4`; the
+same container on a *different* network cannot even resolve the name
+(`could not translate host name … Temporary failure in name resolution`). So:
+
+> The link is **redundant, not inert** — it is accepted and recorded, but the connection works because
+> both containers share the per-app network and Docker's embedded DNS serves the service's alias.
+> `-N app-<id>` is the load-bearing flag; `postgres:link` is doing nothing but writing `DATABASE_URL`.
+
+And the second half of that is the reassuring one for `D_isolation`: **per-app isolation covers
+services too.** A service created on app A's network is not merely unreachable from app B, it is
+unresolvable.
+
+### FINDING — a wildcard app domain is accepted, and it routes
+
+The unnumbered `[unverified]` under *Config, env vars and app metadata* ("Whether a **wildcard** app
+domain is accepted is not documented"). It is:
+
+```
+$ dokku domains:add demo '*.wild.shepherd2.test'
+-----> Configuring *.wild.shepherd2.test...(using built-in template)
+$ grep server_name /home/dokku/demo/nginx.conf
+  server_name demo.shepherd2.test *.wild.shepherd2.test;
+$ curl -o /dev/null -w '%{http_code}' http://anything.wild.shepherd2.test/
+200
+```
+
+Accepted with no complaint, passed through to `server_name` verbatim, and nginx routes an arbitrary
+label under it. Adding it to an app with no web listeners warns `No web listeners specified` and
+configures the vhost anyway. Nothing in v1 wants this — the box is one app per hostname — but it is
+the mechanism a future admin surface or a per-app custom-domain story would use, and it is no longer
+a guess.

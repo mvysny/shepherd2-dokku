@@ -308,11 +308,13 @@ does not exist.
 
 ### ~~Not a box finding — `karibu-helloworld-application-maven` did not produce a runnable distribution~~ — **GRADUATED 2026-09-11**
 
-Landed in `README.md` → *Coming from a Dockerfile*, as two traps that belong to the repo rather than to
-the box — the `provided`-scope `jakarta.servlet-api` and the archive-only assembly — since that is the
-section a migrating project reads and both would have failed identically under the repo's own
-`Dockerfile`. The upstream fix to `karibu-helloworld-application-maven` is the operator's commit
-`1f65117`; `vaadin-boot-example-maven` carries the same shape and needs the same one-line override.
+Half landed, half deliberately dropped. **Landed:** the archive-only assembly, in `README.md` →
+*Coming from a Dockerfile*, because it follows from the `Procfile`-has-no-shell rule that section
+already states — an assembly emitting only `zip`/`tar.gz` leaves a `Procfile` nothing to name, and
+`<format>dir</format>` fixes it. **Dropped, by the operator's call:** the `provided`-scope
+`jakarta.servlet-api` and its `NoClassDefFoundError`. Whether an app runs once started is the app's
+problem, not this box's, and documenting one repo's dependency bug here would invite a catalogue of
+them. It was fixed upstream anyway, in `1f65117`; `vaadin-boot-example-maven` carries the same shape.
 Evidence kept below.
 
 **Fixed upstream on 2026-09-11** by the operator, in `1f65117 fix jakarta.servlet-api missing at

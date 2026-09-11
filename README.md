@@ -286,28 +286,14 @@ appassembler `bin/run` script or an exploded directory. Three things about it th
   `web: env SERVER_PORT=$PORT ./bin/myapp`.
 - **Keep `-Xmx` under the memory limit** (256 MB by default), for the reason at the end of this section.
 
-**Two traps that are your repository's, not the box's.** Both were hit by real Vaadin Boot + Maven
-repos on the probe run, and **both would have failed identically under the repo's own `Dockerfile`** —
-they are simply things a `Dockerfile` build had never been asked to survive.
+**One trap worth naming, because it follows from the `Procfile` rule above: an assembly that emits
+only archives gives the `Procfile` nothing to name.** Both of the Maven repos tried here produced just
+`zip` + `tar.gz`, and a `Procfile` line has no shell, so it cannot untar anything. Add
+`<format>dir</format>` to `src/main/assembly/*.xml`: you get an exploded `target/<finalName>-zip/` to
+point at, and the `dir` format preserves the `0755` on `bin/<app>`.
 
-- **`jakarta.servlet-api` is managed to `provided` scope by `vaadin-bom`, and Vaadin Boot needs it at
-  runtime.** Correct for a WAR dropped into a servlet container that supplies the API; wrong for an app
-  that embeds Jetty. `maven-assembly-plugin`'s `dependencySet` defaults to runtime scope, so the jar
-  lands in neither `lib/` nor the archive, the build passes, and the app crash-loops on startup:
-
-  ```
-  Exception in thread "main" java.lang.NoClassDefFoundError: jakarta/servlet/ServletContext
-  	at com.github.mvysny.vaadinboot.common.JettyWebServer.createWebAppContext
-  ```
-
-  The fix is one dependency in your `pom.xml`, declaring `jakarta.servlet:jakarta.servlet-api` at
-  `compile` scope to override the BOM. Check `target/mvn-dependency-list.log` — which the buildpack's
-  default goals produce for you — if you want to see the scope before you deploy.
-
-- **An assembly that emits only archives gives the `Procfile` nothing to name.** Both of the Maven
-  repos here produced just `zip` + `tar.gz`, and a `Procfile` line has no shell (above), so it cannot
-  untar anything. Add `<format>dir</format>` to `src/main/assembly/*.xml`: you get an exploded
-  `target/<finalName>-zip/` to point at, and the `dir` format preserves the `0755` on `bin/<app>`.
+Whether your app *runs* once started is yours, not the box's — `dokku logs ID` is where you find out,
+and *Rehearse the build locally* is where you find out before anyone registers it.
 
 ### Vaadin under herokuish
 

@@ -77,6 +77,9 @@ real box.
 * **Ruby**, from the distro archive — the `shepherd2` CLI is a Ruby script using nothing but the
   standard library. The installer runs `apt install ruby`; there is no gem to install and no version
   manager. See [`D_ruby`](DECISIONS.md).
+* **`python3`**, which Ubuntu has already. Both installers use it for one job: editing
+  `/etc/docker/daemon.json` around keys they do not own, since Dokku's package writes that file too.
+  `shepherd2-install` stops with the stanza to add by hand if it is missing.
 
 ## Installation
 
@@ -108,8 +111,11 @@ steps in order.
 
 To undo it, `sudo ./shepherd2-uninstall` — which **destroys every hosted project** and asks for the
 box's hostname before it does. It removes what the install added, in reverse, including Docker and the
-address-pool change; `--keep-docker` and `--keep-pools` opt out of those two. It leaves `ruby` and
-reports `/home/dokku` rather than deleting it.
+address-pool change — of `/etc/docker/daemon.json` it deletes the `default-address-pools` key and
+leaves everything else in the file alone, `live-restore` included. `--keep-docker` and `--keep-pools`
+opt out of those two steps. It leaves `ruby`, and reports rather than deletes the two directories
+`apt purge` leaves behind — `/home/dokku` (the app repositories) and `/var/lib/dokku` (plugin data and
+build records).
 
 **Dokku is installed as its authors' deb package, with apt** — no `curl | bash`, and Dokku's own
 `bootstrap.sh` is never run ([`D_install_apt`](DECISIONS.md)). That script is itself only a wrapper
@@ -149,11 +155,13 @@ impossible to retrofit:
   192.168.122.10  app2.mydomain.me
   ```
 
-* **Enlarge Docker's address pools before deploying anything.** Each project gets its own Docker network
-  (`D_isolation` in [DECISIONS.md](DECISIONS.md)), and a stock daemon runs out of them at **~30 apps**.
-  Add a wider `default-address-pools` to `/etc/docker/daemon.json` and restart the daemon — the same
-  edit shepherd-traefik needs. It cannot be applied later without restarting Docker, so it belongs in
-  the install rather than in a fix.
+* **Docker's address pools are enlarged before anything is deployed, and that is why.** Each project
+  gets its own Docker network (`D_isolation` in [DECISIONS.md](DECISIONS.md)), and a stock daemon runs
+  out of them at **29 apps** — measured, and the 30th `network:create` fails outright. The install
+  merges a wider `default-address-pools` into `/etc/docker/daemon.json` and restarts the daemon, the
+  same edit shepherd-traefik needs. Nothing for you to do; it is here because it cannot be applied
+  later without restarting Docker, so a box that skipped it would have to be rebuilt rather than
+  fixed.
 * **Leave the proxy alone.** Dokku's default nginx is the proxy (`D_proxy`); do not install the Traefik
   plugin. Per-app tuning is `dokku nginx:set PROJECTID …`.
 * **In https mode, one wildcard certificate for every app** (`D_cert`). `lego` from the Ubuntu repos

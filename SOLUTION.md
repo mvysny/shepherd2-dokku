@@ -84,10 +84,10 @@ script does on this box's one code path, minus the parts that exist for other di
    sources line; the five `dokku/*` debconf answers preseeded; then `apt-get install dokku=0.38.27`
    — **with recommends**, since that is how `herokuish` arrives — `dokku plugin:install-dependencies
    --core`, and `apt-mark hold dokku`.
-5. **Address pools** — merge enlarged `default-address-pools` into `/etc/docker/daemon.json` and
-   restart the daemon. Before any app exists, because a stock daemon walls at ~30 bridge networks and
-   the change cannot be applied without a restart. Whether Docker's package already wrote that file,
-   and so whether this is a merge or a create, is `[unverified — punch-list 3]`.
+5. **Address pools** — merge enlarged `default-address-pools` into `/etc/docker/daemon.json` with
+   `python3` and restart the daemon. Before any app exists, because a stock daemon walls at 29 bridge
+   networks and the change cannot be applied without a restart. It is always a merge, never a create:
+   step 4 has just installed Dokku, whose postinst wrote that file to set `live-restore`.
 6. **Admin key and domain** — `ssh-keys:add admin`, `domains:set-global mydomain.me`.
 7. **Globals** — `builder:set --global selected herokuish`, `ps:set --global restart-policy always`.
 8. **https mode only** — `apt install lego`; write the DNS credentials to a root-only file;
@@ -109,9 +109,11 @@ other things may share.
 It destroys every project on the way, since the install's inverse cannot leave apps on a box with no
 Dokku, and it asks for the box's hostname before doing so. Three asymmetries are deliberate: the two
 steps that reach past Shepherd2's own layer are opt-out (`--keep-docker`, `--keep-pools`);
-`/etc/docker/daemon.json` is removed only when it is byte-for-byte what the install wrote; and
-`/home/dokku` — which `apt purge` leaves behind, holding the app repositories — is *reported*, not
-deleted. Installing Dokku emptied `/etc/nginx/sites-enabled`, and that is not undoable from here.
+`/etc/docker/daemon.json` has only the `default-address-pools` key deleted, the rest of the file
+written back, and is removed outright only if that key was all it held; and
+Dokku's two state directories — `/home/dokku`, holding the app repositories, and `/var/lib/dokku`,
+holding plugin data and the build records — are *reported*, not deleted; `apt purge` leaves both.
+Installing Dokku emptied `/etc/nginx/sites-enabled`, and that is not undoable from here.
 
 ## The CLI surface
 

@@ -20,6 +20,8 @@
 #   --email ADDRESS    ACME account address. Required in https mode, unused in http mode.
 #   --ssh-key FILE     Public key authorised as the `admin` Dokku user — the key that may `git push`
 #                      and run `dokku` over ssh. An OpenSSH public key file (`id_ed25519.pub`).
+#                      Both of those need a listening sshd, which this script neither installs nor
+#                      requires: preflight warns if nothing is on port 22 and carries on.
 #   --acme-server URL  ACME directory to issue against. Default: lego's, i.e. Let's Encrypt production.
 #                      Set it to https://acme-staging-v02.api.letsencrypt.org/directory while testing:
 #                      production caps duplicate certificates at 5/week and the renewal drills burn
@@ -221,6 +223,16 @@ preflight() {
   [[ -r "$SSH_KEY_FILE" ]] || die "cannot read ssh key file: $SSH_KEY_FILE"
   grep -qE '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-)' "$SSH_KEY_FILE" \
     || die "$SSH_KEY_FILE does not look like an OpenSSH public key (did you point at the private one?)"
+
+  # That key authorises `git push dokku@host` and `ssh dokku@host dokku …`, both of which need a
+  # listening sshd — and a box without one installs the key in complete silence. A warning rather than
+  # a failure: a box whose only operator is at the console is a legitimate shape, and the poll needs no
+  # inbound ssh at all. Found on a VM with no openssh-server, where every remote path was dead and
+  # nothing said so.
+  if ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':22$'; then
+    warn "nothing is listening on port 22. The admin key will be installed, but it authorises nothing
+       until sshd is running: 'apt install openssh-server' unless this box is console-only."
+  fi
 
   log "mode: $MODE"
   log "domain: $DOMAIN — apps will be served at NAME.$DOMAIN"

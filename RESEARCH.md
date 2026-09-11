@@ -1300,6 +1300,21 @@ every app.** There is no user registry, no password, no OAuth, and nothing to lo
   ```
 
   Keys are stored with `no-agent-forwarding,no-user-rc,no-X11-forwarding,no-port-forwarding`. **[docs]**
+
+  **`ssh-keys:add` is fussy in two ways that both bite a script, and neither is documented.** Measured
+  on 0.38.27, with the failures being the point: **[verified on a box 2026-09-11]**
+
+  | Form | Result |
+  |---|---|
+  | `dokku ssh-keys:add admin < key.pub` | **fails** — `! No key specified via file or pipe` |
+  | `cat key.pub \| dokku ssh-keys:add admin` | works |
+  | `dokku ssh-keys:add admin key.pub` | works |
+  | `dokku ssh-keys:add admin key.pub`, file ending in a blank line | **fails** — `Too many keys provided, set one per invocation` |
+
+  So it tests stdin for being a **pipe**, not for being a non-tty — a plain `<` redirect is invisible
+  to it — and the `KEY_FILE` argument form splits on newlines and counts a trailing blank line as a
+  second key. The reliable form is therefore the piped one **with blank lines stripped**, which is what
+  Dokku's own documented `cat … | dokku ssh-keys:add` happens to be, minus the blank-line hazard.
 - **The only privilege distinction in core is the substring `admin` in a key name**, which grants the
   right to add further keys remotely. **[docs]**
 - **There is no app ownership and no per-user authorization.** Any authorised key may run any command

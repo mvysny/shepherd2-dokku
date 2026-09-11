@@ -25,7 +25,11 @@ transcript of *what the box actually did*; findings graduate out of here into `R
 Transcript: `install-http.log` (first attempt, **failed**) and `install-http-2.log` (after the fix,
 clean). Docker is Ubuntu's `docker.io` **29.1.3**; Dokku **0.38.27** from packagecloud.
 
-### FINDING — `shepherd2-install` aborted at the admin-key step. Two Dokku quirks, one fix. *(v1 bug, fixed)*
+### ~~FINDING — `shepherd2-install` aborted at the admin-key step. Two Dokku quirks, one fix.~~ *(v1 bug, fixed)* — **GRADUATED 2026-09-11**
+
+Landed: the two `ssh-keys:add` quirks, as the measured table, in `RESEARCH.md` → *Users and access
+control*, marked verified-on-a-box. The fix itself was already in `configure_admin_and_domain`.
+Evidence kept below.
 
 `dokku ssh-keys:add admin < "$SSH_KEY_FILE"` exits 1 with `! No key specified via file or pipe`.
 Reproduced and narrowed on 0.38.27:
@@ -422,7 +426,12 @@ So on a box with no certificate, port 443 is **open but rejects every TLS handsh
 an unknown `Host:` on port 80 gets `444` (connection closed, no response). An app is reachable by its
 exact vhost name and by nothing else.
 
-### Note — the box has no sshd, so the admin key authorises nothing
+### ~~Note — the box has no sshd, so the admin key authorises nothing~~ — **FIXED + GRADUATED 2026-09-11**
+
+`preflight` in `shepherd2-install` now warns when nothing is listening on port 22 (a warning, not a
+failure — a console-only box is a legitimate shape and the poll needs no inbound ssh); the `--ssh-key`
+entry in the header says so, and `README.md` → *Minimum requirements* names sshd as the thing the key
+depends on. Evidence kept below.
 
 `shepherd2-install --ssh-key` describes the key as "the key that may `git push` and run `dokku` over
 ssh", and it is duly installed (`dokku ssh-keys:list` shows it). But this VM has **no
@@ -651,10 +660,10 @@ does not use". It does not — `traefik-vhosts` is **core**, shipped and enabled
 The punch list asks about Dokku. These are three things wrong with **Shepherd2**, none of which any
 amount of reading would have found. All three are fixed and the fixes are verified on the box.
 
-### BUG 1 — `shepherd2-install` aborted at the admin-key step
+### ~~BUG 1 — `shepherd2-install` aborted at the admin-key step~~ — **GRADUATED 2026-09-11**
 
-Covered above under *Phase 1*. `dokku ssh-keys:add admin < FILE` is invisible to Dokku, and a trailing
-blank line in a `.pub` file defeats the argument form.
+Covered above under *Phase 1*, which carries the landing note. `dokku ssh-keys:add admin < FILE` is
+invisible to Dokku, and a trailing blank line in a `.pub` file defeats the argument form.
 
 ### ~~BUG 2 — `shepherd2 wait-idle` could never return on a live box~~ — **GRADUATED 2026-09-11**
 

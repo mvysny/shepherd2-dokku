@@ -77,6 +77,10 @@ real box.
 * **Ruby**, from the distro archive — the `shepherd2` CLI is a Ruby script using nothing but the
   standard library. The installer runs `apt install ruby`; there is no gem to install and no version
   manager. See [`D_ruby`](DECISIONS.md).
+* **A listening `sshd`**, for everything remote: your own session, `git push dokku@box`, and
+  `ssh dokku@box dokku …`. Any VPS has one; a local VM may not, and the key the install authorises then
+  authorises nothing. `shepherd2-install` warns if port 22 is silent rather than failing — the box
+  still builds and serves apps, it just cannot be administered except from the console.
 * **`python3`**, which Ubuntu has already. Both installers use it for one job: editing
   `/etc/docker/daemon.json` around keys they do not own, since Dokku's package writes that file too.
   `shepherd2-install` stops with the stanza to add by hand if it is missing.

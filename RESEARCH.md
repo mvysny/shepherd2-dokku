@@ -706,17 +706,52 @@ must be named `*-vhosts` for the scheduler integration to work. **[docs]**
 - **The https-only half of that table is conditional on a certificate, which is what makes a plain-http
   box possible.** An app with no cert gets an http-only vhost: the `hsts*` properties have no listener
   to attach to, and the http→https redirect Dokku emits for an SSL-enabled app has nothing to redirect
-  to. Both are `[unverified]` readings of the template rather than documented statements — punch-list
-  item 18 — and they matter twice over: they are why the http-only install mode needs no Dokku flag, and why
+  to. Both matter twice over: they are why the http-only install mode needs no Dokku flag, and why
   `D_cert` treats the mode as one-way. `hsts` is `true` by default with a **182-day** `max-age` and
   `includeSubdomains`, so a domain that has once served https over it cannot be walked back from the
   box.
+
+  **Confirmed on a box, both halves, against a deployed app serving 200:**
+  **[verified on a box 2026-09-11]**
+
+  ```
+  $ curl -D- http://hello.shepherd2.test/
+  HTTP/1.1 200 OK
+  Server: nginx … X-Frame-Options: SAMEORIGIN        # and no Strict-Transport-Security at all
+  $ curl -L -o /dev/null -w '%{num_redirects}' http://hello.shepherd2.test/   → 0
+  ```
+
+  **And `hsts` is inert rather than merely unset**, which is the half `D_cert` leans on:
+  `nginx:report` shows `Nginx computed hsts: true` — the default is *on* — yet
+  `nginx:show-config | grep -c Strict-Transport-Security` is **0**, and stays 0 after
+  `nginx:set <app> hsts true` asks for it explicitly. The header is attached to the ssl listener, and
+  that listener does not exist. So an http box cannot emit HSTS by accident, and the day a certificate
+  appears the same computed `true` starts sending a 182-day `max-age` with no configuration change.
 - Escape hatch: a per-app **`nginx.conf.sigil`** template, with `{{ .APP }}`, `{{ .PROXY_PORT }}`,
   `{{ .APP_SSL_PATH }}` and the listener variables. `nginx:show-config` and `nginx:validate-config`
   inspect and check the generated file. **[docs]**
 - **Since 0.38.0, an undeployed app still gets a minimal nginx config returning 502** — so its domain
   resolves and monitoring sees a non-200 rather than a connection failure. Replaced by the real config
-  on first successful deploy. **[docs]**
+  on first successful deploy. **[docs; confirmed on a box 2026-09-11, including the header check —
+  that 502 carries no HSTS either]**
+- **A box with no certificate still listens on 443, and that is Dokku being careful rather than a
+  half-configured TLS endpoint.** `/etc/nginx/conf.d/00-default-vhost.conf` is the deb's catch-all:
+  **[verified on a box 2026-09-11]**
+
+  ```nginx
+  server {
+      listen 80 default_server;       listen [::]:80 default_server;
+      listen 443 ssl default_server;  listen [::]:443 ssl default_server;
+      server_name _;
+      ssl_reject_handshake on;
+      return 444;
+  }
+  ```
+
+  So port 443 is **open but rejects every TLS handshake** (`tlsv1 unrecognized name`) with no
+  certificate to present or leak, and an unknown `Host:` on port 80 gets `444` — connection closed, no
+  response. An app is reachable by its exact vhost name and by nothing else. Worth knowing before
+  someone reports "443 is open on the http box" as a finding.
 - **`apps:create` reloads nginx; `apps:destroy` does not.** The asymmetry is invisible from the disk
   and bites hard. `apps:destroy` removes `/home/dokku/<app>/nginx.conf` *synchronously* — it is gone
   the instant the command returns, so there is no race — but nothing signals the running nginx, which
@@ -1746,13 +1781,14 @@ https box and a real DNS zone) and the v2 items, 9 having been answered early:
     already emits — reaches the build container as `mem` and `nanocpus`, and a real build peaked at
     202 % CPU on a 4-core host. In *Resource limits*. The gap the feature survey recorded was indeed a
     Dockerfile-builder artefact.
-18. **What exactly does an app look like on a box with no certificate?** The http-only install mode
+18. ~~**What exactly does an app look like on a box with no certificate?** The http-only install mode
     (`D_cert`) is defined by *absence* — no lego, no `global-cert` — so what needs confirming is that
     absence behaves: an app on a `domains:set-global`'d box serves plain http on port 80, emits **no**
-    `Strict-Transport-Security` header, and does **not** redirect to https. Both halves are
-    `[unverified]` inferences from the nginx template (see *nginx*), and the second is the one that
-    would make the mode useless if wrong. While there: check that `nginx:set <app> hsts` is genuinely
-    inert without a certificate, since that is why the mode is one-way.
+    `Strict-Transport-Security` header, and does **not** redirect to https.~~ **Answered 2026-09-11:
+    all three hold, on both an undeployed app's 502 vhost and a deployed app serving 200.** ~~While
+    there: check that `nginx:set <app> hsts` is genuinely inert without a certificate.~~ **It is —
+    computed `true`, emitted nowhere, and still nowhere after asking for it explicitly.** In *nginx
+    (the default)*, along with the catch-all vhost that leaves 443 open and rejecting handshakes.
 19. ~~**The no-op-tick record drill** — three `git:sync --build-if-changes` ticks with no upstream
     commit, then a real deploy, and watch the records.~~ **Answered 2026-09-11, and all three
     `[src]` claims held**: three ticks → three `running`/`abandoned` records with a 244-byte log each,

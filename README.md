@@ -141,7 +141,7 @@ sudo dokku plugin:install-dependencies --core
 sudo apt-mark hold dokku
 ```
 
-Five more things are already settled and are here so they are not forgotten, because each is awkward or
+Six more things are already settled and are here so they are not forgotten, because each is awkward or
 impossible to retrofit:
 
 * **Installing Dokku empties `/etc/nginx/sites-enabled`.** If that box was ever an nginx host, move
@@ -157,6 +157,17 @@ impossible to retrofit:
   squeamishness: nginx sends HSTS by default with a **182-day** max-age and `includeSubdomains`, so once
   a browser has loaded any app on the domain over https it will refuse plain http for half a year, and
   no amount of work *on the box* undoes that. To change modes, reinstall.
+
+  **An http box cannot leak HSTS by accident** — measured, not assumed. Dokku *computes* `hsts` as
+  `true` there and emits the header nowhere, because it hangs off an ssl listener that does not exist;
+  even `dokku nginx:set ID hsts true` changes nothing. The asymmetry is the whole point: the day a
+  certificate appears, that same already-`true` setting starts sending the 182-day header with no
+  configuration change at all.
+
+* **On an http box, port 443 is open, and that is fine.** Dokku's catch-all vhost listens there with
+  `ssl_reject_handshake on`, so every TLS handshake is refused (`tlsv1 unrecognized name`) and there is
+  no certificate to present or leak. The same vhost answers `444` — connection closed, no response —
+  to any unknown `Host:` on port 80, so an app is reachable by its exact hostname and by nothing else.
 
   **Testing an http box without wildcard DNS**: you need no DNS at all. Put the app names in the
   `/etc/hosts` of the machine doing the browsing — one line per app, all pointing at the VM:

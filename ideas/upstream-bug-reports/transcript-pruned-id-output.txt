@@ -1,0 +1,38 @@
+=== step 8, on a genuinely pruned id ===
+subject: mtwy4os7reupqs  — first successful deploy, container ef1d5e418137.
+         its record and log were deleted by PruneAppBuilds at the next deploy's finalize.
+current/newest build: mtwyd2bhcvrunl, container 551cdf90b402.
+
+on disk?
+  mtwy4os7reupqs.json DELETED
+  mtwy4os7reupqs.log  DELETED
+
+$ journalctl -t dokku-mtwy4os7reupqs --no-pager | head
+Sep 11 15:42:21 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Cloning demo from https://github.com/heroku/node-js-getting-started#main
+Sep 11 15:42:23 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]:        Detected branch, setting deploy-branch to main
+Sep 11 15:42:24 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Cleaning up...
+Sep 11 15:42:24 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Building demo from herokuish
+Sep 11 15:42:25 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Setting config vars
+Sep 11 15:42:25 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]:        CURL_CONNECT_TIMEOUT:  90
+Sep 11 15:42:26 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Setting config vars
+Sep 11 15:42:26 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]:        CURL_TIMEOUT:  600
+Sep 11 15:42:26 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]: -----> Adding BUILD_ENV to build environment...
+Sep 11 15:42:26 mavi-fw-vm-sh2 dokku-mtwy4os7reupqs[28053]:        BUILD_ENV added successfully
+  (journald holds 4087 bytes for this id)
+
+$ dokku builds:output demo mtwy4os7reupqs
+exit=0
+bytes printed: 4087
+--- first 6 lines:
+-----> Cloning demo from https://github.com/heroku/node-js-getting-started#main
+       Detected branch, setting deploy-branch to main
+-----> Cleaning up...
+-----> Building demo from herokuish
+-----> Setting config vars
+       CURL_CONNECT_TIMEOUT:  90
+
+=== WHICH OF THE THREE OUTCOMES ===
+>>> JOURNALD ANSWERED (byte-identical to journalctl -o cat)
+this build's own container ef1d5e418137 present? 3
+current build's container 551cdf90b402 present? 0
+diff vs journald copy (lines): 0

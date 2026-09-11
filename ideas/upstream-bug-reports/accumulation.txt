@@ -1,0 +1,17 @@
+Accumulation and the listing cap — demo, 2026-09-11, Dokku 0.38.27
+
+Records on disk are never pruned while an app is only being polled; the number
+builds:list prints is capped at the computed retention, so the growth is invisible.
+
+on-disk .json records: 41
+on-disk .log files:    41
+
+$ dokku builds:set --global retention 20   (the stock default, as used for the drill)
+  builds:list rows: 20   <- capped
+
+$ dokku builds:set --global retention 300  (what shepherd2-install sets)
+  builds:list rows: 41   <- all of them; nothing had been deleted
+
+Deletion happens only in PruneAppBuilds, at builds-record-finalize — i.e. at the end
+of a real deploy. See transcript-prune-on-finalize.txt, where that deploy deleted an
+earlier successful build's .json and .log while keeping the no-op tick records.

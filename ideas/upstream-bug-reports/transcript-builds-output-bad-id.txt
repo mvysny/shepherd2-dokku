@@ -1,0 +1,7 @@
+$ dokku builds:output demo not-a-real-build-id
+exit=0
+
+$ dokku builds:output demo not-a-real-build-id | xxd | head   # prove it is truly empty
+
+$ dokku builds:output demo ../../../etc/passwd   # a traversal-shaped id, for completeness
+exit=0

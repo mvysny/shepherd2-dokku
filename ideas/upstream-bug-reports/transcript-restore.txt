@@ -1,0 +1,8 @@
+=== step 9: restore ===
+=====> Setting retention to 300
+=====> --global builds information
+       Builds global retention:       300
+--- /etc/cron.d/shepherd2:
+6:*/5 * * * * root /usr/local/bin/shepherd2 poll
+--- app still serving:
+http://demo.shepherd2.test -> 200

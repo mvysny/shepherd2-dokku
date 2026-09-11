@@ -10,33 +10,37 @@ closed, PRs included — returns no report of either defect. Latest release is *
 which is what we pin and what the probe ran, and both are still present on `master`. Every source link
 below is pinned to **`aa39920`** (2026-09-10), the master tip when this was drafted.
 
-## Before filing: one box run, and exactly what to capture
+## The box run happened: 2026-09-11, Dokku 0.38.27
 
-Dokku takes bug reports through an **issue form**, not a freeform body
-(`.github/ISSUE_TEMPLATE/bug_report.yaml`), and three of its fields are *required*: **Description of
-problem**, **Steps to reproduce**, and **the output of `dokku report $APP_NAME`**. The drafts below are
-written to those fields — and the third is why this needs a box: the probe box was torn down on
-2026-09-11 and no `dokku report` dump was kept in the sidecars. **Agreed 2026-09-11: stand up a box and
-run both repros.** Transcripts land in `ideas/upstream-bug-reports/`, and the prompt that drives that
-session is `ideas/http-probe-plan/prompt.txt` — paste it verbatim into a fresh Claude Code on the box.
+A fresh Ubuntu 24.04 VM, installed from `shepherd2-install --mode http`, app `demo` =
+`heroku/node-js-getting-started` on `heroku/nodejs`. Everything the drafts need is captured in
+`ideas/upstream-bug-reports/` — transcripts, the record dumps, `dokku-report-demo.txt` (the issue
+form's required field) and `environment.txt`. **Both reports reproduce.** What the run *changed*:
 
-Three things the run gets us beyond the required field: a repro we can quote as *run on this version*,
-the loose end at the bottom of this note settled, and the first-ever execution of
-`builds:set --global retention 300` — the line `D_poll_churn` added to `shepherd2-install`, which no box
-has run yet.
+- **Report #1's third consequence was wrong about the mechanism, and is now right.** Records are not
+  evicted by polling: `builds:list` merely **caps its output at the retention count**, while the files
+  accumulate on disk untouched — the box reached **41 records against a retention of 20**, and setting
+  retention back to 300 made all 41 reappear in the listing (`accumulation.txt`). The history is
+  destroyed later and elsewhere: `PruneAppBuilds` runs from `builds-record-finalize`, so it is **the
+  next real deploy** that deletes the older real build's `.json` *and* `.log` while keeping the no-op
+  ticks (`transcript-prune-on-finalize.txt`). The draft's "keep polling and the deploy is evicted" step
+  did not do what it claimed, and a maintainer would have found that out.
+- **Two details sharpened.** A tick's log is **244 bytes**, not ~265. And reaping does not merely
+  relabel: it stamps `finished_at` with the reap moment, so a one-second no-op is recorded as a
+  **1m29s** failed build.
+- **One consequence added.** The leak is not confined to the no-change path: a `git:sync --build` whose
+  *clone* fails leaks an unfinalized record the same way. The box produced one by accident — the first
+  `create-app` omitted the ref, Dokku defaulted to `master`, and the resulting pathspec error left
+  record `mtwy43mte1do5q` `running`, later reaped to `failed / exit_code -1`.
+- **The loose end is settled: journald answered.** See the bottom of this note.
+- **Ours, not theirs, both first runs on a box:** `shepherd2-install`'s
+  `builds:set --global retention 300` fires (`install.log`), and `shepherd2 last-build` works against
+  real Dokku output — all three of its unverified assumptions hold. See *Our two pieces* below.
 
-**Two traps, both of which the probe already paid for once.** The `*/5` poll cron must be off for the
-duration or a scheduled tick lands mid-drill; and **retention has to be back at Dokku's default of 20
-for the drill itself**, or the eviction step needs 300 ticks instead of 20 and the numbers in the report
-stop being the ones a maintainer would see.
+### The sequence that was run
 
-**The box is a fresh VM**, not the probe box (which was uninstalled on 2026-09-11 and is not being
-reused). So it must satisfy the installer's preflight before any of this runs: **Ubuntu 24.04 exactly**
-(`D_host_os` — 26.04 is refused), root, **`hostname -f` must resolve** (the likeliest failure on a new
-guest; an `/etc/hosts` line `127.0.1.1 <host>.localdomain <host>` fixes it), ports 80 and 443 free,
-outbound network, and a readable OpenSSH *public* key file for `--ssh-key`. Realistically ≥4 GB RAM and
-≥20 GB free disk: the default build memory limit is 2g. `git` is needed to clone this repo; `ruby`,
-`docker.io` and `dokku` are the installer's job.
+Corrected against the box — the original omitted `create-app`'s ref argument, without which Dokku
+defaults to `master` and the first deploy fails.
 
 ```bash
 # 0. Clone and take the branch the retention line and `last-build` live on.
@@ -59,16 +63,13 @@ sudo sed -i 's|^\*/5|#*/5|' /etc/cron.d/shepherd2
 sudo dokku builds:set --global retention                   # unset -> back to 20
 sudo dokku builds:report --global | grep -i retention
 
-# 4. One app. Heroku's own Node sample, because the defect is in cmd-git-sync *before* any builder
-#    is reached, so the cheapest app that deploys is the right one — and a stock Heroku sample is
-#    the most credible thing to name in the report. Fallback if it misbehaves:
-#    https://github.com/mvysny/karibu-helloworld-application with --buildpack heroku/gradle, which
-#    probe item 20 proved deploys unmodified — at the cost of a 3m15s build and a 1.3 GB cache volume.
+# 4. One app. The REF ARGUMENT IS REQUIRED: this sample's default branch is `main`, and without it
+#    `git:sync` defaults to `master` and the first deploy dies on `pathspec 'master' did not match`.
 echo '127.0.0.1 demo.shepherd2.test' | sudo tee -a /etc/hosts
-sudo shepherd2 create-app demo https://github.com/heroku/node-js-getting-started \
+sudo shepherd2 create-app demo https://github.com/heroku/node-js-getting-started main \
      --owner mavi@vaadin.com --buildpack heroku/nodejs
 
-# 5. Report #1's repro, exactly as drafted below.
+# 5. Report #1's repro.
 REPO=https://github.com/heroku/node-js-getting-started
 for i in 1 2 3; do sudo dokku git:sync --build-if-changes demo "$REPO"; done
 sudo dokku builds:list demo --format json > ideas/upstream-bug-reports/records-3-ticks.json
@@ -76,6 +77,10 @@ sudo dokku git:sync --build demo "$REPO"                   # a real deploy, unch
 sudo dokku builds:list demo --format json > ideas/upstream-bug-reports/records-after-deploy.json
 for i in $(seq 16); do sudo dokku git:sync --build-if-changes demo "$REPO"; done
 sudo dokku builds:list demo --format json > ideas/upstream-bug-reports/records-at-cap.json
+# ... and then, because the listing is capped rather than pruned, count the DISK and deploy again:
+sudo ls /var/lib/dokku/data/builds/demo/*.json | wc -l     # 22, against a retention of 20
+sudo dokku git:sync --build demo "$REPO"                   # its finalize is what deletes history
+sudo ls /var/lib/dokku/data/builds/demo/*.json | wc -l     # 20 — and the first deploy's log is gone
 
 # 6. The required field, plus the environment block both reports want.
 sudo dokku report demo > ideas/upstream-bug-reports/dokku-report-demo.txt
@@ -85,12 +90,10 @@ sudo dokku report demo > ideas/upstream-bug-reports/dokku-report-demo.txt
 # 7. Report #2, which needs no state at all.
 sudo dokku builds:output demo not-a-real-build-id; echo "exit=$?"
 
-# 8. The loose end — the only genuinely open question here. Find the evicted-but-not-pruned
-#    successful deploy, prune, then ask for it again and check whether journald is what answers.
-sudo dokku builds:list demo --status succeeded --format json   # note the id
-sudo dokku builds:prune demo
-sudo dokku builds:output demo <that-id>; echo "exit=$?"
-sudo journalctl -t dokku-<that-id> --no-pager | head
+# 8. The loose end. NOTE: `builds:prune` only trims to the retention count, so on an app already at
+#    the cap it is a no-op — the subject has to be a build some earlier deploy's finalize deleted.
+sudo dokku builds:output demo <an-id-whose-.log-is-gone>; echo "exit=$?"
+sudo journalctl -t dokku-<that-id> --no-pager -o cat | diff - <(previous output)
 
 # 9. Put it back.
 sudo dokku builds:set --global retention 300
@@ -126,49 +129,66 @@ the no-change path without ever finalizing it:
 
 The same leak affects a **plain `dokku git:sync <app> <remote>`** with no `--build*` flag: `SHOULD_BUILD`
 stays `false`, the function falls off the end, and the record started at the top is never finalized
-either. So this is not specific to `--build-if-changes`; that flag just makes it happen 288 times a day.
+either. It is not specific to `--build-if-changes`; that flag just makes it happen 288 times a day. A
+`--build` whose *clone* fails leaks identically — a wrong `deploy-branch` produced one here.
 
 **What I expected:** a run that builds nothing leaves no build record, or leaves one marked as
 "nothing to build". **What happens instead**, in the order it arrives:
 
-1. **The records accumulate unboundedly while an app is idle.** `PruneAppBuilds` runs only from
-   `builds-record-finalize`, so nothing prunes them in the meantime. Each carries a log file holding
-   nothing but fetch chatter.
+1. **The records accumulate without bound while an app is idle.** `PruneAppBuilds` runs only from
+   `builds-record-finalize`, so nothing prunes them in the meantime. Each carries a 244-byte log file
+   holding nothing but fetch chatter. This is invisible from the CLI, because `builds:list` caps its
+   output at the retention count: my `demo` app showed 20 rows while holding **41 records on disk**.
 2. **The next real deploy rewrites them all as failures.** `ReapAbandonedBuilds` finalizes every
    dead-PID `running` record as `status: failed, exit_code: -1`, which on disk is indistinguishable
    from a build that really failed. `builds:list <app> --status failed` therefore stops selecting
-   failures, and `exit_code` — the only discriminator left — is not exposed as a filter.
-3. **Retention then evicts the real history.** Survivors are the newest by `started_at`: the build that
-   just finished, plus the most recent no-op ticks. At a five-minute poll and the default retention of
-   20, that window holds about 100 minutes, after which a real build's record *and* its log are gone.
-   "Go and read why last night's deploy failed" does not work.
+   failures, and `exit_code` — the only discriminator left — is not exposed as a filter. Reaping also
+   stamps `finished_at` with the moment of reaping, so a one-second no-op is recorded with a
+   `duration` of `1m29s` and reads, in the table, exactly like a real build that ran and failed.
+3. **The same deploy's finalize then prunes the real history away.** `PruneAppBuilds` keeps the newest
+   records by `started_at` — which after an idle stretch are the no-op ticks plus the build that just
+   finished. The earlier successful deploy's record *and* its log are deleted outright. On my box the
+   deploy that pruned kept 20 records, of which 19 were no-op ticks. At a five-minute poll and the
+   default retention of 20 that window is about 100 minutes, so "go and read why last night's deploy
+   failed" does not work.
 
 A fourth, quieter effect: `builds:report <app>` names the newest record, so on any idle app it reports
-the build status as `abandoned` rather than `succeeded`.
+`Build status: abandoned` rather than `succeeded`.
 
 ### Steps to reproduce
 
 ```bash
 dokku apps:create demo
-dokku git:sync --build demo https://github.com/you/demo    # any buildpack app; deploys normally
+dokku git:sync --build demo https://github.com/heroku/node-js-getting-started main
 
 # three polls with no upstream commit
-for i in 1 2 3; do dokku git:sync --build-if-changes demo https://github.com/you/demo; done
+for i in 1 2 3; do dokku git:sync --build-if-changes demo https://github.com/heroku/node-js-getting-started; done
 dokku builds:list demo --format json
-#  -> three extra records, status=running / display_status=abandoned, no exit_code, no finished_at,
-#     one ~265-byte .log each
+#  -> three extra records, status=running / display_status=abandoned, no exit_code,
+#     no finished_at, one 244-byte .log each
 
-dokku git:sync --build demo https://github.com/you/demo    # now deploy for real
+dokku git:sync --build demo https://github.com/heroku/node-js-getting-started   # deploy for real
 dokku builds:list demo --format json
-#  -> the three ticks are now status=failed, exit_code=-1
+#  -> the three ticks are now status=failed, exit_code=-1, and their duration has grown from
+#     ~1s to the interval between their start and the moment they were reaped
+dokku builds:list demo --status failed
+#  -> lists only the no-op ticks; the filter no longer selects failures
 
-# keep polling to the retention cap
-for i in $(seq 16); do dokku git:sync --build-if-changes demo https://github.com/you/demo; done
-dokku builds:list demo --format json
-#  -> 20 records, and the successful real deploy has been evicted
+# poll past the retention cap
+for i in $(seq 20); do dokku git:sync --build-if-changes demo https://github.com/heroku/node-js-getting-started; done
+ls /var/lib/dokku/data/builds/demo/*.json | wc -l
+#  -> 25: nothing is pruned while the app is only polled
+dokku builds:list demo --format json | jq length
+#  -> 20: the listing is capped at the retention count, so the growth is not visible here
+
+# the NEXT real deploy is what destroys the history
+dokku git:sync --build demo https://github.com/heroku/node-js-getting-started
+ls /var/lib/dokku/data/builds/demo/*.json | wc -l
+#  -> 20, and the earlier successful deploy's .json and .log are both gone;
+#     the survivors are 19 no-op ticks and the build that just finished
 ```
 
-Every step above is what a box did on 2026-09-11, on 0.38.27.
+Run on 0.38.27 on 2026-09-11, Ubuntu 24.04, Docker 29.1.3.
 
 ### `dokku report $APP_NAME`
 
@@ -177,8 +197,8 @@ Every step above is what a box did on 2026-09-11, on 0.38.27.
 ### Additional information
 
 Reproduced with `heroku/node-js-getting-started` on the herokuish builder, `heroku/nodejs` pinned —
-but nothing about the app matters: the leak is in `cmd-git-sync` before any builder is reached, and a
-plain `git:sync` with no build flag leaks identically. *(Adjust if the box run used the fallback app.)*
+but nothing about the app matters: the leak is in `cmd-git-sync` before any builder is reached, a plain
+`git:sync` with no build flag leaks identically, and so does a `--build` that fails to clone.
 
 **Suggested fix.** Finalize (or discard) the record on the no-change path before returning — the ref
 comparison already has what it needs, and `CURRENT_REF` is captured before the capture starts. Moving
@@ -194,7 +214,7 @@ failed build the next morning.)*
 
 ## Report #2 — `builds:output` never validates the build id and can exit 0 having printed nothing
 
-Much smaller and separable. File it second, or leave it for a box.
+Much smaller and separable. File it second.
 
 ### Title
 
@@ -220,6 +240,10 @@ dokku builds:output demo not-a-real-build-id ; echo "exit=$?"
 #  -> no output, exit=0
 ```
 
+Verified on 0.38.27, 2026-09-11. (A traversal-shaped id — `../../../etc/passwd` — behaves the same
+way: nothing printed, exit 0. No file outside the builds directory is read, so this is a usability
+defect and not a disclosure one.)
+
 ### `dokku report $APP_NAME`
 
 *(Same paste as #1. Nothing in it is load-bearing here — any app name reproduces this.)*
@@ -231,18 +255,51 @@ fallback report when it matched nothing.
 
 ---
 
-## Loose end, ours not theirs — do not put this in either report
+## Settled: `builds:output` on a pruned id prints journald's copy
 
-On the box, `builds:output <app> <pruned-id>` appeared to print the *current* build's output rather
-than nothing. `CommandOutput` does not explain that: the deploy-lock branch is reachable only for an
-empty or `current` id. Most likely journald was still answering for the pruned id and it was misread.
-`RESEARCH.md` and the probe findings both carry it as `[unverified]`/unexplained.
+The probe's unexplained observation — that a pruned id seemed to print the *current* build's output —
+was a misread. `journalctl` is what answers, exactly as `CommandOutput` says it should.
 
-**Step 8 of the box run settles it**, and there are only three outcomes:
+Subject: `mtwy4os7reupqs`, the box's first successful deploy, whose `.json` and `.log` were deleted by
+a later deploy's `PruneAppBuilds`. Its own container id is `ef1d5e418137`; the current build's is
+`551cdf90b402`.
 
-- **journald answered** — the hypothesis, and then nothing is wrong beyond report #2's silent-empty
-  case. Correct `RESEARCH.md` and the findings to say so and delete this section.
-- **nothing was printed** — report #2 exactly as drafted, and the original observation was a misread.
-- **the current build's output really was printed** — a sharper bug than #2, with a code path we have
-  not found. That one gets its own issue, with the transcript as evidence, and `RESEARCH.md` gets the
-  fact rather than the `[unverified]` hedge.
+```
+$ dokku builds:output demo mtwy4os7reupqs
+exit=0
+bytes printed: 4087
+```
+
+Byte-identical to `journalctl -t dokku-mtwy4os7reupqs --no-pager -o cat` (4087 bytes, zero diff lines);
+contains its own container id three times and the current build's not at all. Full transcript in
+`ideas/upstream-bug-reports/transcript-pruned-id-output.txt`.
+
+So nothing is wrong beyond report #2's silent-empty case, which is what happens once journald has
+rotated the id away. `RESEARCH.md` has been corrected to state this rather than hedge it.
+
+---
+
+## Our two pieces, both run on a box for the first time
+
+- **`shepherd2-install` sets retention.** `install.log` carries `=====> Setting retention to 300` and
+  `build record retention: 300 per app (~a day of poll ticks)`. The line fires.
+- **`shepherd2 last-build` works, and all three of its unverified assumptions hold.**
+  `builds:list <app> --format json` returns a **JSON array**, not an app-keyed hash; `duration` is a
+  string (`"1m7s"`, `"1s"`); `log_path` is absolute. Every path was exercised — after the deploy, after
+  three no-op ticks, 16 ticks deep, `--log`, the no-argument all-projects form, and the fallback once
+  the real build fell outside the window. Transcript: `transcript-last-build.txt`.
+
+  Two things worth knowing, neither a defect:
+
+  - The verb's reach is the **retention value**, because `builds:list` caps its output there — not the
+    number of records on disk. At the stock 20 the real build fell out after 20 ticks and `last-build`
+    printed `demo: no real build in the retained window`; restoring `retention 300` made the same
+    build visible again immediately. That is exactly the workaround `D_poll_churn` ships, confirmed
+    end to end.
+  - `real_build?`'s documented blind spot is real and was hit on the very first try: the box's failed
+    first deploy (the `master` pathspec error) is reaped to `exit_code -1` and is therefore
+    indistinguishable from churn, so `last-build` skipped it. The rdoc already says so.
+
+  One cosmetic inaccuracy: the rdoc's worked example shows `started 2026-09-11T10:05:30Z`, but Dokku
+  emits nanosecond precision — the real line reads
+  `started 2026-09-11T12:42:21.234433548Z`. Corrected in the source.

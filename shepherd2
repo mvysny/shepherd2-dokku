@@ -425,7 +425,7 @@ class Shepherd2
   #
   #   last_build('demo')   # prints:
   #
-  #     demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30Z · duration 1m43s
+  #     demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30.914882731Z · duration 1m43s
   #       log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
   #       read it: shepherd2 last-build demo --log
   #

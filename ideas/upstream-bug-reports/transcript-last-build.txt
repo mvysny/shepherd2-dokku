@@ -1,0 +1,45 @@
+=== shepherd2 last-build demo --log (exercise the log path) ===
+demo: succeeded · id mtwyd2bhcvrunl · started 2026-09-11T12:48:52.015319793Z · duration 1m2s
+  log: /var/lib/dokku/data/builds/demo/mtwyd2bhcvrunl.log
+
+       Fetching remote code for demo from https://github.com/heroku/node-js-getting-started#
+From https://github.com/heroku/node-js-getting-started
+ * branch            main       -> FETCH_HEAD
+-----> Cleaning up...
+-----> Building demo from herokuish
+-----> Adding BUILD_ENV to build environment...
+       BUILD_ENV added successfully
+[1G       [1G-----> Fetching custom buildpack heroku/heroku-buildpack-nodejs
+Cloning into '/tmp/buildpacks/custom'...
+...
+
+=== 16 no-op ticks on top of the real deploy, to fill the window ===
+records in default listing: 20
+position of the real build in that listing:
+  index 16 of 20: mtwyd2bhcvrunl succeeded
+
+$ shepherd2 last-build demo   (16 ticks deep)
+demo: succeeded · id mtwyd2bhcvrunl · started 2026-09-11T12:48:52.015319793Z · duration 1m2s
+  log: /var/lib/dokku/data/builds/demo/mtwyd2bhcvrunl.log
+  read it: shepherd2 last-build demo --log
+EXIT=0
+=== 5 more ticks: the real build falls out of the 20-record window ===
+default listing rows: 20
+any succeeded record in that listing?
+   NONE — the window is all poll churn
+on-disk records: 41   (retention is 20)
+
+$ shepherd2 last-build demo   (real build now outside the window)
+demo: no real build in the retained window
+  every poll tick writes a record, so real builds age out of it (D_poll_churn).
+  what is left: dokku builds:list demo
+EXIT=0
+
+$ shepherd2 last-build          (all registered projects)
+demo: no real build in the retained window
+EXIT=0
+=== with retention back at 300 (what shepherd2-install sets), last-build finds the real build again ===
+demo: succeeded · id mtwyd2bhcvrunl · started 2026-09-11T12:48:52.015319793Z · duration 1m2s
+  log: /var/lib/dokku/data/builds/demo/mtwyd2bhcvrunl.log
+  read it: shepherd2 last-build demo --log
+EXIT=0

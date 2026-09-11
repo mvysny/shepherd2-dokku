@@ -1,0 +1,56 @@
+
+[1m==> Preflight[0m
+    Ubuntu 24.04
+    hostname: mavi-fw-vm-sh2
+    mode: http
+    domain: shepherd2.test — apps will be served at NAME.shepherd2.test
+    no certificate will be issued; apps are served over plain http on port 80
+    the client resolves NAME.shepherd2.test — an /etc/hosts entry is enough
+[33mwarning: installing Dokku empties /etc/nginx/sites-enabled — any vhost already on this box stops being served[0m
+
+[1m==> Docker, from Ubuntu's archive[0m
+    docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+
+[1m==> Prerequisites[0m
+
+[1m==> Dokku 0.38.27[0m
+    signing key verified and installed: /usr/share/keyrings/dokku-archive-keyring.asc
+    apt source: /etc/apt/sources.list.d/dokku.list
+    dokku: dokku version 0.38.27
+
+[1m==> Docker address pools[0m
+    merged default-address-pools into the existing /etc/docker/daemon.json
+    docker restarted
+
+[1m==> Admin key and global domain[0m
+SHA256:MpOh5a0NVFB9/LjSfrKy61bQGzXGXJjDxCUViqozXtk
+    authorised /home/mavi/.ssh/id_ed25519.pub as admin
+-----> Set shepherd2.test
+    global domain: shepherd2.test
+
+[1m==> Global Dokku properties[0m
+=====> Setting selected to herokuish
+    builder: herokuish, globally
+=====> Setting restart-policy to always
+    restart policy: always
+=====> Setting retention to 300
+    build record retention: 300 per app (~a day of poll ticks)
+
+[1m==> TLS: http mode, nothing to install[0m
+
+[1m==> Ruby and the shepherd2 CLI[0m
+    ruby: ruby 3.2.3 (2024-01-18 revision 52bb2ac0a6) [x86_64-linux-gnu]
+    installed /usr/local/bin/shepherd2
+
+[1m==> Cron[0m
+    /etc/cron.d/shepherd2: poll every 5 minutes, prune weekly
+
+[1m==> Recording the install mode[0m
+-----> Setting config vars
+       SHEPHERD_TLS_MODE:  http
+    SHEPHERD_TLS_MODE=http
+
+[1m==> Done[0m
+    Register a project:  shepherd2 create-app demo https://github.com/you/demo main
+    It will be served at http://demo.shepherd2.test once its first build succeeds —
+    point demo.shepherd2.test at this box in the client's /etc/hosts.

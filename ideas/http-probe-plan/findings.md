@@ -837,7 +837,15 @@ This is **not** a Dokku bug to report upstream so much as a consequence of `apps
 designed for a box where the next deploy reloads nginx soon anyway; on Shepherd2 a destroyed project
 may be the last thing that happens for days.
 
-### FINDING — not on the punch list: the box survives a Docker daemon restart
+### ~~FINDING — not on the punch list: the box survives a Docker daemon restart~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Processes, restarts and reboot*, under the `ps:restore` bullet it confirms:
+containers never stop at all under `live-restore`, `ps:restore` fires anyway and leaves a duplicate
+that exits 143 within ~17 s, and nginx's upstreams still match afterwards. `SOLUTION.md`'s reboot flow
+carries the one-line version, and `README.md`'s cheat sheet gains the duplicate-container warning,
+since that is what an operator would otherwise go hunting for. The caveat — a daemon restart is not a
+power cycle, and the reboot test was never run because the probe agent lived on the VM — is already
+in `SOLUTION.md` → *What is not yet proven on a box*. Evidence kept below.
 
 Nothing numbered covers this, and everything depends on it, so it was run before teardown. `RESEARCH.md`
 carries three `[docs]` claims that together are "the apps come back": Docker's `live-restore`, Dokku's

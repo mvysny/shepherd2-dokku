@@ -1288,12 +1288,26 @@ dokku ps:set [--global] <app> <key> <value>
 - **Reboot:** `ps:restore` runs automatically from the init service after a Docker daemon restart — it
   starts linked services, clears generated proxy config, and restarts each app unless it was manually
   stopped. Per-app opt-out: `dokku ps:set node-js-app restore false`. **[docs]**
+- **A `systemctl restart docker` was run on a live box, and the shape of what happens is worth knowing
+  — the apps do not come *back*, because they never go away.** **[verified on a box 2026-09-11]**
+  - **Containers are not restarted at all.** `hello.web.1` still read `Up About an hour` afterwards;
+    its uptime was never interrupted. That is `live-restore` — which is `true` on a Shepherd2 box
+    because *Dokku's* postinst set it, not because we did (*Versions, platform, install*).
+  - **`ps:restore` fires anyway, and briefly starts a duplicate.** A second container
+    (`gradle-a.web.1.1789125735`) appeared alongside the already-running `gradle-a.web.1` and **exited
+    143 (SIGTERM) about 17 seconds later** on its own. Transient and self-correcting — but an operator
+    watching `docker ps` inside that window sees two containers for one app, and should not go hunting.
+  - **Routing stays consistent**: both apps' nginx upstreams still matched their containers' current
+    IPs afterwards (`172.16.1.2:5000`, `172.16.2.2:5000`) and both served 200.
+  - **This is not a reboot**, and does not stand in for one: it leaves the kernel, the bridges and
+    nginx untouched. What it does prove is that the mechanism `ps:restore` hangs off works, and that
+    `live-restore` makes a daemon restart a non-event for running apps.
 - The docker-local scheduler injects an init process (`--init`) by default, disableable via
   `scheduler-docker-local:set`. `parallel-schedule-count` (default 1) controls how many *process types*
   deploy in parallel, web first — this is about deploys, **not** about concurrent builds. **[docs]**
-- **Container naming is not documented** on the scheduler page. shepherd-traefik's naming contract has
-  no counterpart here; whatever Dokku names containers is Dokku's business, which is the point of
-  retiring the contract. **[unverified]**
+- **Container naming is not documented** on the scheduler page, but it was measured — `<app>.<proc>.<n>`,
+  see *Observability*. shepherd-traefik's naming contract has no counterpart here; whatever Dokku names
+  containers is Dokku's business, which is the point of retiring the contract.
 
 ## Config, env vars and app metadata
 

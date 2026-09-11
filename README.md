@@ -579,6 +579,7 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | **did the last build work?** · and its log | `shepherd2 last-build ID` · `shepherd2 last-build ID --log` |
 | **which projects are red?** | `shepherd2 last-build` |
 | make sure a reboot won't land mid-build | `shepherd2 wait-idle` |
+| restart Docker itself | `systemctl restart docker` — apps keep running (`live-restore`); a second container may appear for ~17 s and exit on its own |
 | prune images now rather than on Sunday | `shepherd2 clearcache` |
 | list projects · read everything about one | `dokku apps:list` · `dokku apps:report ID` |
 | **see the runtime log** | `dokku logs ID -t -p web` |

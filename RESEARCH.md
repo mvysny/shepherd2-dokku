@@ -1002,12 +1002,6 @@ suffixes), `memory-swap` → `--memory-swap`, `nvidia-gpus` → `--gpus`; reserv
 **So with the Dockerfile builder, build *memory* can be capped and build *CPU* cannot.** That is a
 direct, documented regression against shepherd-traefik, which limits both.
 
-**The herokuish row is confirmed, and the documented route is the one that works.** With
-`resource:limit --process-type build --cpu 2 --memory 2g` set on the app, the build container Dokku
-creates carries exactly that, read off the daemon mid-build — `mem=2147483648` (2 GiB) and
-`nanocpus=2000000000` (2 CPUs) — and a real build peaked at 202% CPU on a 4-core host. No
-`docker-options` hack is needed for build CPU on this builder. **[verified on a box, 2026-09-11]**
-
 ## Processes, restarts and reboot
 
 ```bash
@@ -1513,14 +1507,9 @@ first throwaway VPS:
     `docker container create` unfiltered `[src]`~~ — **the bind mount was confirmed on a box
     2026-09-11** (*The herokuish builder*), so the mechanism is settled and only the Maven `-D`
     question is left, which is a Maven question rather than a box one.
-17. ~~**Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
-    `docker-options:add <app> build '--cpus 2'`.~~ **Answered 2026-09-11 — and the question was
-    mis-framed.** The `docker-options` hack is inherited from the Dockerfile builder, where build CPU
-    genuinely cannot be capped; on herokuish the *documented* route is the special `build` process
-    type, which is what `create-app` already emits, and it takes effect — see *Resource limits*. So
-    capping build CPU is not a gap, and the gap the feature survey recorded was a Dockerfile-builder
-    artefact. Load-bearing rather than cosmetic: `--build-cpu` is a **default**, so had this not held,
-    every app on the box would build uncapped.
+17. **Does `--cpus` work at build time under herokuish?** Same unfiltered path as 16 —
+    `docker-options:add <app> build '--cpus 2'`. If it does, capping build CPU is not a gap after
+    all, and the gap the feature survey recorded was a Dockerfile-builder artefact.
 18. **What exactly does an app look like on a box with no certificate?** The http-only install mode
     (`D_cert`) is defined by *absence* — no lego, no `global-cert` — so what needs confirming is that
     absence behaves: an app on a `domains:set-global`'d box serves plain http on port 80, emits **no**

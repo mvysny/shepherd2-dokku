@@ -100,13 +100,23 @@ Everything *before* the clone in `create-app` ran correctly on the first attempt
 leaves a registered project behind. Re-running `create-app` after the fix is the documented repair
 and is what was done.
 
-### ~~FINDING — punch-list 17: build limits *are* honoured, and the item was mis-framed~~ — **GRADUATED 2026-09-11**
+### FINDING — punch-list 17: build limits *are* honoured. The item was mis-framed, and the documented route works
 
-Landed in `RESEARCH.md` → *Resource limits*, as a paragraph confirming the herokuish row of the
-builder table with the numbers read off the daemon mid-build; punch-list 17 is struck and rewritten to
-say the `docker-options` framing was a Dockerfile-builder inheritance. The `[unverified — punch-list 17]`
-marker was already dropped from `shepherd2`, and `ideas/production-cutover.md`'s dependency on this
-item is discharged.
+`create-app` emits `resource:limit --process-type build --cpu 2 --memory 2g`, and the build container
+Dokku creates carries exactly that — read straight off the daemon, mid-build:
+
+```
+$ docker inspect <build container>
+mem=2147483648   nanocpus=2000000000
+$ docker stats   MEM 146.3MiB / 2GiB
+```
+
+`2147483648` is 2 GiB and `2000000000` nanocpus is 2 CPUs. So the **documented** route — the special
+`build` process type — takes effect on the herokuish path; the `docker-options:add <app> build
+'--cpus 2'` hack the punch list asks about is not needed and was a Dockerfile-builder artefact.
+**Drop the `[unverified — punch-list 17]` marker on `shepherd2:25`.** Since `--build-cpu 2` /
+`--build-mem 2g` are *defaults*, this was load-bearing: had it not held, every app on the box would
+build uncapped.
 
 ### FINDING — punch-list 7: container naming, plus something better than names
 

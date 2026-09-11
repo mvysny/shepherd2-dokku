@@ -84,7 +84,10 @@ script and running it again — the workflow the header claims — works.
 
 ## Phase 3 — the build-dependent half
 
-### Note, not a finding — `file://` sources must be readable *as the dokku user*
+### ~~Note, not a finding — `file://` sources must be readable *as the dokku user*~~ — **GRADUATED 2026-09-11**
+
+Landed on the `git:sync` bullet list in `RESEARCH.md` → *`git:sync` — the SCM poll*, phrased as
+ownership rather than readability. The second sitting hit it again from a different direction.
 
 `git:sync` clones as `dokku`, and git refuses a repo owned by someone else:
 `fatal: detected dubious ownership in repository at '/srv/probe-repos/…/.git'`. Fixed by
@@ -883,8 +886,8 @@ Two incidental facts came out of the rig itself:
   accepts only `http`, `https` and `git` schemes, so a buildpack cannot be served from `file://` the
   way an *app* can.
 - **A `file://` app source must be *owned* by the `dokku` user**, not merely readable by it. A
-  root-owned repo fails the clone with git's `fatal: detected dubious ownership`. This sharpens the
-  note earlier in this file, which says only "readable".
+  root-owned repo fails the clone with git's `fatal: detected dubious ownership` — the same wall the
+  first sitting hit from the other direction, and now recorded in `RESEARCH.md`.
 
 ### ~~FINDING — punch-list 14, second half: a `--global` config var reaches the build's ENV_DIR~~ — **GRADUATED 2026-09-11**
 

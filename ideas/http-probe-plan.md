@@ -30,10 +30,10 @@ does, this folder is its only record — and it is complete enough to graduate f
 | 18 http-only mode | **closed** — both the 502 and 200 paths |
 | 19 no-op tick churn | **closed**, and **graduated** → `D_poll_churn` (retention 300 + `shepherd2 last-build`) |
 | 20 Gradle buildpack | **closed** — all three parts |
-| 9 `postgres:link` | **closed** (second sitting) — works, and the `--link` is redundant rather than inert |
-| 14 build env / npm cache | **closed** (second sitting) — a `--global` var *does* reach ENV_DIR; the npm var is `NPM_CONFIG_CACHE`, uppercase |
-| 16 relocating a build dir | **half closed** (second sitting) — a build-phase `-v` bind mount reaches the herokuish container; the Maven `-Duser.home` half is untouched |
-| wildcard app domain | **closed** (second sitting) — not numbered; accepted and routes |
+| 9 `postgres:link` | **closed**, and **graduated** → `RESEARCH.md` *Networking and app isolation* |
+| 14 build env / npm cache | **closed**, and **graduated** → `RESEARCH.md` *The herokuish builder* and *The herokuish cache volume* |
+| 16 relocating a build dir | **half closed**, and that half **graduated** → `RESEARCH.md` *The herokuish builder*; the Maven `-Duser.home` half is untouched |
+| wildcard app domain | **closed**, and **graduated** → `RESEARCH.md` *Config, env vars and app metadata* |
 | 4 | out of scope here — needs the https mode, which `D_cert` will not let this box have |
 
 **Three v1 bugs in our own code came out of it, all fixed and all verified on the box** — none of

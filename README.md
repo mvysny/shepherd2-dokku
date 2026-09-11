@@ -369,8 +369,10 @@ exactly one command — `./gradlew $GRADLE_TASK` — and with `GRADLE_TASK` unse
 task, guesses a task for Spring Boot / Micronaut / Quarkus / Ratpack, and otherwise falls back to
 `stage` anyway. A Vaadin Boot app is none of those, so it fails with *Task 'stage' not found* until
 you say what to run. The four things below were worked out by rehearsing a Vaadin Boot + Karibu-DSL
-app against the same builder image the box uses — do the same with yours (*Rehearse the build
-locally*, below) before you ask for it to be registered.
+app against the same builder image the box uses, and then **confirmed on a box**: a repo carrying
+exactly these four files and nothing else was registered straight from GitHub, built, and came up in
+production mode. Do the same with yours (*Rehearse the build locally*, below) before you ask for it to
+be registered.
 
 - **`gradlew` must be committed** — the buildpack no longer supplies a wrapper and stops if yours is
   missing.
@@ -397,7 +399,13 @@ locally*, below) before you ask for it to be registered.
 
 Gradle's caching here is better than Maven's, and costs you nothing: the buildpack points
 `GRADLE_USER_HOME` at the per-app cache volume, so dependencies, the Gradle build cache, the wrapper's
-Gradle distribution and the JDK are all warm from the second build on.
+Gradle distribution and the JDK are all warm from the second build on — measured at 1.3 GB of cache
+volume for one app, against ~280 MB for a Maven one.
+
+**What a rebuild costs, measured on the box:** a warm `git:sync --build` is about a minute end to end
+for either build tool, of which the build itself is 15 s (Maven) or 33 s (Gradle); the rest is clone,
+slug and deploy, which no cache touches. A cold first build is roughly three minutes. Since the poll
+runs every five minutes, a commit is live within about six.
 
 ### The `.env` recipe
 

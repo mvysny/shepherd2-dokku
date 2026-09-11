@@ -283,7 +283,12 @@ Three things fall out of that, all of which the docs currently get half-right:
 - **The buildpack's default goals already include `-DskipTests`**, so an app that needs nothing else
   needs no `MAVEN_CUSTOM_OPTS` line whatsoever.
 
-### FINDING — punch-list 13, the Maven half: **cold 2m12s → warm 15.0s**
+### ~~FINDING — punch-list 13, the Maven half: **cold 2m12s → warm 15.0s**~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *Build caching*, as one table covering both build tools and both scopes (the
+tool's own time, and the whole `git:sync --build`), with punch-list 13 struck down to its still-open
+frontend half. `README.md` §4 carries the operator-facing version: a warm rebuild is about a minute,
+so a commit is live within about six. Evidence kept below.
 
 Second build of the same app after a one-line commit, same `cache-hello` volume:
 
@@ -543,7 +548,14 @@ flag the CLI can't express, and survive `network:list --dokku-managed` as a legi
 **`D_isolation`'s "rejected alternatives" section is now factually wrong where it implies this cannot
 be done through Dokku**, and should be corrected when the findings graduate.
 
-### FINDING — punch-list 20: the Gradle buildpack works, all three parts
+### ~~FINDING — punch-list 20: the Gradle buildpack works, all three parts~~ — **GRADUATED 2026-09-11**
+
+Landed in `RESEARCH.md` → *The herokuish cache volume*, on the Gradle buildpack bullets whose `[src]`
+readings it confirms — the committed `.env` reaching the build verbatim, `-Pvaadin.productionMode` as
+the production switch, and `GRADLE_USER_HOME` landing in the volume. Punch-list 20 struck, and its
+answer records that the repo was unmodified, which is what makes it a check of `README.md` §4's recipe
+rather than only of the buildpack. §4 now says so. The volume sizes went earlier, with finding G.
+Evidence kept below.
 
 Against `mvysny/karibu-helloworld-application` **unmodified from GitHub** — it already carries the four
 files README §4 prescribes, which is itself the confirmation that the §4 recipe is complete.

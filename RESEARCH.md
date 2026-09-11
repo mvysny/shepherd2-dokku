@@ -423,6 +423,11 @@ names the cache.** That is the fact `D_builder` turns on.
   directory holding only `_logs`.
 - **Nothing garbage-collects this volume.** Unlike a BuildKit mount cache it has no TTL and no GC
   policy; it grows until `repo:purge-cache` or a volume prune removes it.
+- **`apps:destroy` does remove it**, so a destroyed app leaves no cache volume behind and there is no
+  disk leak to clean up after one. Checked twice by building a throwaway app, confirming
+  `cache-<app>` and its contents existed, then destroying the app with plain `dokku apps:destroy`:
+  the volume and its directory under `/var/lib/docker/volumes` were both gone.
+  **[verified on a box, 2026-09-11]** Which hook does the removal was not chased down.
 - **The CNB equivalent, for when `pack` is revisited:** Heroku's CNB Maven buildpack creates a
   `CachedLayerDefinition` named `repository`, points `-Dmaven.repo.local` at it and restores it with
   `KeepLayer` **[src, heroku/buildpacks-jvm]**. Paketo's Java buildpack, by contrast, does **not**

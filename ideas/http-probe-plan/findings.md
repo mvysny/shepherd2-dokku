@@ -931,6 +931,18 @@ forgotten — the research now says why, and the decision links rather than rest
 Landed in `RESEARCH.md` → *Config, env vars and app metadata*, replacing the `[unverified]` bullet that
 said the behaviour was undocumented.
 
+### ~~FINDING — off the punch list: `apps:destroy` removes the `cache-<app>` volume~~ — **GRADUATED 2026-09-11**
+
+Chased because `shepherd2:320` carried an `[unverified]` about it. Built a throwaway app on the probe
+rig, confirmed `cache-cachetest` existed with the build's marker file in it, then destroyed the app
+with plain `dokku apps:destroy` — no `repo:purge-cache` first. The volume and its directory under
+`/var/lib/docker/volumes` were both gone. Repeated once to be sure.
+
+So `destroy_app`'s `repo:purge-cache` call is belt-and-braces rather than load-bearing, and a destroyed
+app leaks no disk. Landed in `RESEARCH.md` → *The herokuish cache volume*, and the `[unverified]` in
+`shepherd2`'s `destroy_app` comment is replaced by the result. Which hook does the removal was not
+chased down and is not recorded as if it were.
+
 ### ~~The probe rig's two incidental facts~~ — **GRADUATED / already known, 2026-09-11**
 
 - The `heroku-community/x` → `heroku/heroku-buildpack-x` rewrite was **already** in `RESEARCH.md`

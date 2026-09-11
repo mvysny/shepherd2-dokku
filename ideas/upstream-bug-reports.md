@@ -15,7 +15,8 @@ below is pinned to **`aa39920`** (2026-09-10), the master tip when this was draf
 A fresh Ubuntu 24.04 VM, installed from `shepherd2-install --mode http`, app `demo` =
 `heroku/node-js-getting-started` on `heroku/nodejs`. Everything the drafts need is captured in
 `ideas/upstream-bug-reports/` — transcripts, the record dumps, `dokku-report-demo.txt` (the issue
-form's required field) and `environment.txt`. **Both reports reproduce.** What the run *changed*:
+form's required field), `environment.txt`, and `prompt.txt`, which is what drove the session that
+produced the rest. **Both reports reproduce.** What the run *changed*:
 
 - **Report #1's third consequence was wrong about the mechanism, and is now right.** Records are not
   evicted by polling: `builds:list` merely **caps its output at the retention count**, while the files

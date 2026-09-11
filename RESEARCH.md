@@ -1156,8 +1156,8 @@ dokku builds:set [--global|<app>] retention <N>  # `retention` is the only prope
   `journalctl SYSLOG_IDENTIFIER=dokku-<id>` — so a pruned build prints whatever journald still holds,
   and once journald has rotated that away the command **exits 0 having printed nothing**. There is no
   "no such build" error anywhere on the path: the record itself is read only *after* the log-file stat,
-  and a missing record is tolerated. A typo'd id prints nothing and exits 0; so does a
-  traversal-shaped one, which reads no file outside the builds directory.
+  and a missing record is tolerated. A typo'd id prints nothing and exits 0. Reported upstream as
+  [dokku/dokku#9031](https://github.com/dokku/dokku/issues/9031).
   **[src; verified on a box, 2026-09-11]** *(The probe's report of seeing the current build's output
   for a pruned id was a misread — `builds:output <app> <pruned-id>` printed exactly what
   `journalctl -t dokku-<id> -o cat` holds, byte-identical, carrying that build's own container id and

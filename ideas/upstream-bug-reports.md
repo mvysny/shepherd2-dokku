@@ -1,10 +1,12 @@
 # Upstream bug reports to file against `dokku/dokku`
 
-**Report #1 is filed: [dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030)** (2026-09-11),
-and `D_poll_churn` carries the number. **Report #2 is still a draft** awaiting review. Graduation: file
-#2, put its number into `RESEARCH.md` → *Build tracking*, and delete this note — the evidence in
-`ideas/upstream-bug-reports/` goes with it, so anything durable must be in `RESEARCH.md` by then.
-Nothing waits on either; `D_poll_churn` ships the workaround regardless.
+**Both filed, 2026-09-11:** [dokku/dokku#9030](https://github.com/dokku/dokku/issues/9030) (the
+`git:sync` record leak, cited in `D_poll_churn`) and
+[dokku/dokku#9031](https://github.com/dokku/dokku/issues/9031) (`builds:output`, cited in
+`RESEARCH.md` → *Build tracking*). What keeps this note alive is the **unsanitised build id** below,
+which is not an issue to file publicly and needs the operator's decision. Once that is settled the
+note goes, and the evidence in `ideas/upstream-bug-reports/` goes with it — so anything durable must
+be in `RESEARCH.md` by then.
 
 **Searched first, nothing on point.** `gh search issues --repo dokku/dokku` for `build-if-changes`,
 `abandoned build record`, `builds:list retention`, `git:sync record` and `builds plugin` — open and
@@ -221,9 +223,7 @@ the listing for about a day of ticks, and read it back with a filtered listing �
 
 ---
 
-## Report #2 — `builds:output` never validates the build id and can exit 0 having printed nothing
-
-Much smaller and separable. File it second.
+## Report #2 — FILED as [dokku/dokku#9031](https://github.com/dokku/dokku/issues/9031)
 
 ### Title
 
@@ -249,9 +249,7 @@ dokku builds:output demo not-a-real-build-id ; echo "exit=$?"
 #  -> no output, exit=0
 ```
 
-Verified on 0.38.27, 2026-09-11. (A traversal-shaped id — `../../../etc/passwd` — behaves the same
-way: nothing printed, exit 0. No file outside the builds directory is read, so this is a usability
-defect and not a disclosure one.)
+Verified on 0.38.27, 2026-09-11.
 
 ### `dokku report $APP_NAME`
 
@@ -287,6 +285,39 @@ So nothing is wrong beyond report #2's silent-empty case, which is what happens 
 rotated the id away. `RESEARCH.md` has been corrected to state this rather than hedge it.
 
 ---
+
+## Not for a public issue: the build id is not sanitised before it becomes a path
+
+**Operator's call, and the reason it was cut out of report #2.** The box tried a traversal-shaped id
+"for completeness" and got nothing printed, exit 0, and this note first concluded "no file outside the
+builds directory is read, so it is a usability defect and not a disclosure one." **That conclusion was
+wrong**, and it is the kind of wrong that should not be published either way:
+
+```go
+func LogPathFor(appName, buildID string) string {
+	return filepath.Join(AppDataDir(appName), buildID+".log")
+}
+```
+
+`buildID` comes straight from argv with no validation anywhere on the path (`CommandOutput` verifies
+the *app* name and nothing else). `filepath.Join` cleans the result, so a `../`-laden id does leave the
+app's builds directory — the probe's empty output was the appended `.log` suffix failing to match a
+real file, not sanitisation doing its job.
+
+What is and is not established:
+
+- **Established from source:** the id is interpolated into a path unvalidated, and reads are therefore
+  constrained only by the `.log` suffix and by the permissions of the `dokku` user.
+- **Not established:** whether this crosses a privilege boundary in practice. It plausibly does where
+  the ACL plugin scopes users to their own apps, since one app's `builds:output` could name another
+  app's log — but we run `D_single_operator`, one keyholder with root, so this box has no boundary to
+  cross and we cannot demonstrate the interesting case.
+
+**Recommended route: the private one, not an issue.** Dokku takes GitHub Security Advisories and has
+published five CVEs through them (`github.com/dokku/dokku/security/advisories/new`), and a path
+built from unvalidated input belongs there rather than in a public thread — describe the class, not a
+working path, and let the maintainers judge the boundary question we cannot test. Nothing here is
+urgent for us: on a `D_single_operator` box the caller is already root.
 
 ## Our two pieces, both run on a box for the first time
 

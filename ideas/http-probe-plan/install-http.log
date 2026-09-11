@@ -1,0 +1,26 @@
+
+==> Preflight
+    Ubuntu 24.04
+    hostname: mavi-fw-vm-sh2
+    mode: http
+    domain: shepherd2.test — apps will be served at NAME.shepherd2.test
+    no certificate will be issued; apps are served over plain http on port 80
+    the client resolves NAME.shepherd2.test — an /etc/hosts entry is enough
+warning: installing Dokku empties /etc/nginx/sites-enabled — any vhost already on this box stops being served
+
+==> Docker, from Ubuntu's archive
+    docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+
+==> Prerequisites
+
+==> Dokku 0.38.27
+    signing key verified and installed: /usr/share/keyrings/dokku-archive-keyring.asc
+    apt source: /etc/apt/sources.list.d/dokku.list
+    dokku: dokku version 0.38.27
+
+==> Docker address pools
+    merged default-address-pools into the existing /etc/docker/daemon.json
+    docker restarted
+
+==> Admin key and global domain
+ !     No key specified via file or pipe

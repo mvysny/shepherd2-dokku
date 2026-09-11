@@ -1,0 +1,35 @@
+-----> Creating gradle-a...
+-----> Creating new app virtual host file...
+ !     No web listeners specified for gradle-a
+-----> Configuring gradle-a.shepherd2.test...(using built-in template)
+-----> Creating http nginx.conf
+       Reloading nginx
+-----> Setting config vars
+       SHEPHERD_GIT_URL:  https://github.com/mvysny/karibu-helloworld-application
+       SHEPHERD_OWNER:    mavi@vaadin.com
+=====> Setting resource limits for gradle-a
+       cpu: 1
+       memory: 256m
+=====> Setting resource limits for gradle-a (build)
+       cpu: 2
+       memory: 2g
+-----> Creating network app-gradle-a
+=====> Setting initial-network to app-gradle-a
+-----> Cloning gradle-a from https://github.com/mvysny/karibu-helloworld-application#master
+       Detected branch, setting deploy-branch to master
+-----> Cleaning up...
+-----> Building gradle-a from herokuish
+-----> Adding BUILD_ENV to build environment...
+       BUILD_ENV added successfully
+       -----> Fetching custom buildpack heroku/heroku-buildpack-gradle
+Cloning into '/tmp/buildpacks/custom'...
+       -----> Gradle app detected
+-----> Installing Azul Zulu OpenJDK 21.0.12.1
+-----> Starting Gradle daemon
+-----> Executing Gradle
+       $ ./gradlew clean installDist -Pvaadin.productionMode
+       > Task :clean UP-TO-DATE
+       > Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+       > Task :processResources
+       > Task :compileKotlin
+       > Task :compileJava NO-SOURCE

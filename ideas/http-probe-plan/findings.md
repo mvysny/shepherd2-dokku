@@ -117,16 +117,27 @@ build uncapped.
 
 ### FINDING — punch-list 7: container naming, plus something better than names
 
-The build container gets a **random Docker name** (`optimistic_rosalind`) — Dokku derives nothing
-from the app. What it *does* attach is labels, and those are the usable handle:
+**Deployed app containers are named `<app>.<process-type>.<index>` — `hello.web.1`.** Dokku creates
+them under a transient name and renames on success: `Renaming container hello.web.1.upcoming-8948
+(37d0f33c73cb) to hello.web.1`. So `lazydocker` / `ctop` show something useful without help, and the
+naming contract the predecessors maintained by hand (`D_dokku_is_truth`) is simply Dokku's own.
+
+**Build containers, by contrast, get a random Docker name** (`optimistic_rosalind`, `dreamy_curran`).
+What both carry is labels, and those are the reliable handle:
 
 ```
 com.dokku.app-name:hello   com.dokku.builder-type:herokuish   com.dokku.image-stage:build
 com.gliderlabs.herokuish/stack:heroku-24   org.label-schema.vendor:dokku
 ```
 
-So `docker ps --filter label=com.dokku.app-name=hello` is the reliable selector, not the name.
-Image is `dokku/hello:latest`.
+```
+# the deployed container adds:
+com.dokku.container-type:deploy   com.dokku.dyno:web.1   com.dokku.process-type:web
+com.dokku.image-stage:release
+```
+
+So `docker ps --filter label=com.dokku.app-name=hello` selects everything of an app's, and
+`--filter label=com.dokku.image-stage=build` isolates a running build. Image is `dokku/hello:latest`.
 
 **And a bonus that matters to `D_isolation`: the build container is on the app's own network** —
 `app-hello (172.16.1.2)`. `initial-network` covers the build, not just the runtime container.
@@ -141,7 +152,8 @@ Ports map detected json:            [{"container_port":5000,"host_port":80,"sche
 Ports map json:                     null
 ```
 
-Nothing in `ports:set`; `http:80:5000` is detected. (Survival across a rebuild still to check.)
+Nothing in `ports:set`; `http:80:5000` is detected. **It survived** three further builds and two
+successful deploys — `Ports map` is still empty and `Ports map json` still `null`. Item 8 closed.
 
 ### FINDING — punch-list 18: the http-only mode behaves, and `hsts` is genuinely inert
 
@@ -165,7 +177,22 @@ So HSTS is computed `true` and emitted **nowhere** without a certificate — it 
 listener, which does not exist. That is why an http-mode box is safe to run, and why the mode is
 one-way: the moment a certificate exists the same setting starts sending a 182-day `max-age`.
 
-*(Still open until the app deploys: the same checks against a 200 rather than a 502.)*
+**Closed against the deployed app**, once `hello` served a 200:
+
+```
+$ curl -D- http://hello.shepherd2.test/
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: text/html;charset=utf-8
+Set-Cookie: JSESSIONID=…
+X-Frame-Options: SAMEORIGIN          # …and nothing else
+$ curl -sI … | grep -ic strict-transport-security   → 0
+$ curl -L -o /dev/null -w '%{url_effective} %{num_redirects}'
+  http://hello.shepherd2.test/ 0     # no redirect; still http
+```
+
+Plain http on 80, **no `Strict-Transport-Security`**, **no redirect to https**. Both `[unverified]`
+inferences from the nginx template are confirmed, and item 18 is closed.
 
 ### FINDING — the unnumbered one: **a Vaadin app builds under herokuish, first time, with no coaxing**
 
@@ -190,13 +217,28 @@ Three things fall out of that, all of which the docs currently get half-right:
   the app says so at runtime:
   `Vaadin production mode is on: … flow-build-info.json contains '"productionMode": true'`.
   **Punch-list 15 is confirmed on a box**, not just off it.
-- **`-Pproduction` is Vaadin-24-era advice and is wrong for these repos.** Neither
-  `karibu-helloworld-application-maven` (25.2.6) nor `vaadin-boot-example-maven` (25.2.7) has a
-  `production` profile at all; both run `vaadin-maven-plugin:build-frontend` in the default lifecycle,
-  so `mvn install` *is* the production build. Passing `-Pproduction` would only raise
-  "The requested profile could not be activated". **README's *Vaadin under herokuish* §1 needs this
-  qualification** — it currently says every Vaadin Maven project needs
-  `MAVEN_CUSTOM_OPTS=-DskipTests -Pproduction`.
+- **`-Pproduction` is Vaadin-24-and-lower advice, and the cut is exactly Vaadin 25.0.** Checked
+  against Vaadin's own docs on 2026-09-11:
+
+  | Vaadin | What produces a production build |
+  |---|---|
+  | **≤ 24** | `mvn clean package -Pproduction`. The `production` profile carries the `vaadin-maven-plugin` `build-frontend` execution; `start.vaadin.com` starters ship the profile, hand-made projects must add it **[docs]** |
+  | **≥ 25.0** | `mvn package`. No `production` profile exists; `build-frontend` runs in the default lifecycle and dev-mode tooling is excluded by default **[docs]** |
+
+  > "Vaadin 25.0 updates the production build flow so it no longer depends on a dedicated
+  > `production` Maven profile." — [Vaadin 25.0 release](https://vaadin.com/blog/vaadin-25-0-release)
+
+  > "Previously, the production build had to be manually activated using the `production` profile in
+  > `pom.xml`. … In Vaadin 25, there's no longer a separate production profile in `pom.xml`. … The
+  > build — e.g. invoked with `mvn package` — now creates production-ready artifacts."
+  > — [Simpler and more compatible builds](https://vaadin.com/blog/vaadin-25-simpler-and-more-compatible-builds),
+  > which names buildpacks as a beneficiary: the change makes "CI pipelines and buildpacks behave more
+  > like a standard Java build".
+
+  Both probe repos are 25.2.x, so neither has the profile and passing `-Pproduction` would only raise
+  "The requested profile could not be activated". **README's *Vaadin under herokuish* §1 is not wrong,
+  it is unversioned** — it states the ≤ 24 rule as if it were universal. It needs the split above,
+  because the farm will carry apps on both sides of the line for as long as any app is still on 24.
 - **The buildpack's default goals already include `-DskipTests`**, so an app that needs nothing else
   needs no `MAVEN_CUSTOM_OPTS` line whatsoever.
 
@@ -215,10 +257,13 @@ question **did not arise at all** — there is no frontend build to be cold, bec
 pre-compiled bundle. For this farm, item 13 is answered: builds come back warm and the expensive half
 does not exist.
 
-### Not a box finding — `karibu-helloworld-application-maven` does not produce a runnable distribution
+### Not a box finding — `karibu-helloworld-application-maven` did not produce a runnable distribution
 
-Recorded because it cost an hour and it is the operator's own repo. The app builds and deploys, then
-crash-loops:
+**Fixed upstream on 2026-09-11** by the operator, in `1f65117 fix jakarta.servlet-api missing at
+runtime`: the pom now declares `jakarta.servlet:jakarta.servlet-api` at `compile` scope explicitly,
+overriding the `provided` that `vaadin-bom` manages it to. Recorded anyway, because the same shape
+will greet every Vaadin Boot app coming off a `Dockerfile`. The app built and deployed, then
+crash-looped:
 
 ```
 Exception in thread "main" java.lang.NoClassDefFoundError: jakarta/servlet/ServletContext
@@ -231,10 +276,15 @@ Cause, from the build's own `target/mvn-dependency-list.log`:
 jakarta.servlet:jakarta.servlet-api:jar:6.1.0:provided
 ```
 
-`jakarta.servlet-api` is **`provided`** scope, and `maven-assembly-plugin`'s `dependencySet` defaults
-to runtime scope — so it is in neither `lib/` nor the `tar.gz`. **The repo's own `Dockerfile` image
-would fail identically**; nothing about herokuish or this box is involved. `vaadin-boot-example-maven`
-carries the same `src/main/assembly/zip.xml` and will do the same.
+`vaadin-bom` manages `jakarta.servlet-api` to **`provided`** — correct for a WAR dropped into a servlet
+container that supplies the API, wrong for an app embedding Jetty via Vaadin Boot — and
+`maven-assembly-plugin`'s `dependencySet` defaults to runtime scope, so the jar was in neither `lib/`
+nor the `tar.gz`. **The repo's own `Dockerfile` image would have failed identically**; nothing about
+herokuish or this box was involved. `vaadin-boot-example-maven` carries the same
+`src/main/assembly/zip.xml` and the same `provided` scope, so it needs the same one-line override.
+
+*(A first guess that `useTransitiveFiltering` was dropping the jar along with `com.vaadin:vaadin-dev`
+was wrong — removing it changed nothing. The scope is the whole story.)*
 
 Also worth knowing for the migration: **both Maven repos' assemblies emit only archives**
 (`includeBaseDirectory=false`, formats `zip` + `tar.gz`), and a `Procfile` cannot untar anything —
@@ -247,3 +297,124 @@ there is no shell. Adding `<format>dir</format>` gives an exploded
 Items 2, 6, 10, 11, 12, 19, 20, the deployed-app half of 18, and the `ports:report` survival half of 8.
 All of them need one app that actually *runs*; the next move is `karibu-helloworld-application` (the
 Gradle sibling, already onboarded upstream) rather than more surgery on the Maven pair.
+
+### FINDING — punch-list 19 / `Q_poll_churn`: every `[src]` claim holds, and the churn is real
+
+All three claims confirmed on `hello`, with the poll cron disabled so every tick was deliberate.
+
+**Three no-op `shepherd2 poll` ticks** (`git:sync --build-if-changes`, ref unmoved) — each logs
+`Skipping build as no changes were detected`, and each still writes a record and a log:
+
+```
+mtwslbpulbzlek  status=running  display=abandoned  exit=(absent)
+mtwslbhdo9wyod  status=running  display=abandoned  exit=(absent)
+mtwslb92r3et4i  status=running  display=abandoned  exit=(absent)
+```
+
+…one `.log` apiece, 265 bytes, containing the fetch chatter and nothing else. The on-disk record has
+no `finished_at` and no `exit_code`.
+
+**Then a real deploy**, and all three flipped as predicted:
+
+```
+mtwslbpulbzlek  status=failed  display=failed  exit=-1   dur=1m43s
+mtwslbhdo9wyod  status=failed  display=failed  exit=-1   dur=1m43s
+mtwslb92r3et4i  status=failed  display=failed  exit=-1   dur=1m43s
+```
+
+**And the eviction, which is the half that decides the question.** `builds:report` names the window:
+
+```
+Builds computed retention:     20
+```
+
+16 further no-op ticks took the list to exactly 20 records — and the four oldest, *including the
+successful real deploy at 10:05:30*, dropped off. So:
+
+> **At the installed cadence of 288 ticks a day, a 20-record window is consumed in about 100 minutes.**
+> A build log is gone long before anyone reads it, and `builds:report <app>` — the at-a-glance — reports
+> the app's build status as **`abandoned`** after any idle period, rather than `succeeded`.
+
+Two things soften it, and one hardens it again:
+
+- `builds:list <app> --status succeeded` (and `--kind build|deploy`) **still reached the evicted
+  record** — the cap is on the default listing, not on what is stored. So does `builds:output <app>
+  <id>` by id.
+- **…until `builds:prune` runs.** `dokku builds:prune hello` deleted four `.log` files (24 → 20 on
+  disk) and the evicted successful build vanished from `--status succeeded` too (2 records → 1).
+  `builds:output` for that id then silently returns the *current* build's output rather than erroring,
+  which is worse than a failure.
+
+**The knob `Q_poll_churn` did not know about:** retention is settable, globally and per app, and
+reverts cleanly.
+
+```bash
+dokku builds:set --global retention 200     # Builds computed retention: 200
+dokku builds:set hello retention 50         # per-app override wins
+dokku builds:set --global retention         # unset → back to 20
+```
+
+So the question is no longer "is churn real" (it is) but which of three to take: raise `retention`
+globally in the install; have `poll` pre-check the remote ref so a no-op never enters `git:sync`; or
+accept it and document `--status succeeded` as the way to read build history. The first is one line in
+`shepherd2-install` and needs no code.
+
+### FINDING — punch-list 11: what an app reaches on the host, measured
+
+From inside `hello.web.1` (on `app-hello`, `172.16.1.3`, gateway `172.16.1.1`). The container image
+ships `curl`, so no tooling had to be added.
+
+| Target | Result |
+|---|---|
+| host service bound **`0.0.0.0:9099`**, via the bridge gateway | **200 — reachable** |
+| host service bound **`127.0.0.1:9098`**, via the bridge gateway | 000 — not reachable |
+| host **nginx** by gateway IP, `Host: hello.shepherd2.test` | **200** |
+| host nginx by the box's LAN IP `192.168.122.124`, same header | **200** |
+| `169.254.169.254/` (cloud metadata) | 000 — nothing listening *on this box* |
+| KVM host `192.168.122.1:22` | 000 |
+| outbound `https://repo.maven.apache.org/` | 200 |
+
+Read carefully, because two of those zeroes prove nothing: the box runs **no sshd** and KVM offers no
+metadata service, so `000` there is "nobody home", not "blocked". The deliberate pair of listeners is
+what actually sizes the exposure:
+
+> **Any host service bound to `0.0.0.0` is reachable from inside every app container; anything bound
+> to loopback is not.** Nothing is firewalled — the bridge gateway is simply the host.
+
+The concrete consequence for `ideas/harden-container-egress.md`: **an app can fetch any other app on
+the box** by sending the host nginx a spoofed `Host:` header, bypassing nothing (that is just nginx
+doing its job) but making `D_isolation`'s per-app networks a *container-to-container* boundary only,
+never a container-to-anything boundary. And on a real VPS, `169.254.169.254` would answer — that is
+the one with a genuinely bad worst case, and it is the strongest argument for the v2 `DOCKER-USER`
+rule. Measured, as the item asked, to decide whether v2 bothers: **it should.**
+
+### FINDING — an http-mode box still listens on 443, and that is Dokku being careful
+
+Worth recording under item 18 because it looks alarming and is not. `/etc/nginx/conf.d/00-default-vhost.conf`
+is Dokku's catch-all, installed by the deb:
+
+```nginx
+server {
+    listen 80 default_server;  listen [::]:80 default_server;
+    listen 443 ssl default_server;  listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+    return 444;
+}
+```
+
+So on a box with no certificate, port 443 is **open but rejects every TLS handshake**
+(`tlsv1 unrecognized name`) — there is no half-configured TLS endpoint and no certificate to leak — and
+an unknown `Host:` on port 80 gets `444` (connection closed, no response). An app is reachable by its
+exact vhost name and by nothing else.
+
+### Note — the box has no sshd, so the admin key authorises nothing
+
+`shepherd2-install --ssh-key` describes the key as "the key that may `git push` and run `dokku` over
+ssh", and it is duly installed (`dokku ssh-keys:list` shows it). But this VM has **no
+`openssh-server`**: nothing listens on 22. The install succeeds and says nothing about it.
+
+Not a bug in what the installer *does* — but its preflight checks `hostname -f`, RAM and outbound
+network, and does not check the one service the key it asks for depends on. A one-line preflight
+warning would have saved the next person the confusion. (On a real VPS sshd is always there, which is
+why it took a local VM to notice.)

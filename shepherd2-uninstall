@@ -52,6 +52,7 @@ readonly DOCKER_DAEMON_JSON='/etc/docker/daemon.json'
 readonly LEGO_PATH='/root/.lego'
 readonly DNS_CREDENTIALS_FILE='/root/.shepherd2-dns-credentials'
 readonly CRON_FILE='/etc/cron.d/shepherd2'
+readonly LIB_DIR='/usr/local/lib/shepherd2'
 readonly CLI_PATH='/usr/local/bin/shepherd2'
 readonly POLL_LOCK='/run/lock/shepherd2-poll.lock'
 
@@ -148,11 +149,18 @@ remove_crons() {
 
 remove_cli() {
   step 'The shepherd2 CLI'
-  if [[ -f "$CLI_PATH" ]]; then
+  if [[ -e "$CLI_PATH" || -L "$CLI_PATH" ]]; then
     rm -f "$CLI_PATH"
     log "removed $CLI_PATH"
   else
     skip "$CLI_PATH"
+  fi
+  # The whole directory rather than the two files by name, so nothing added to it later can leak.
+  if [[ -d "$LIB_DIR" ]]; then
+    rm -rf "$LIB_DIR"
+    log "removed $LIB_DIR"
+  else
+    skip "$LIB_DIR"
   fi
   log 'ruby is left installed: it is an archive package other things may share'
 }

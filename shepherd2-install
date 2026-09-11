@@ -102,6 +102,9 @@ readonly GLOBAL_CERT_PLUGIN_URL='https://github.com/dokku-community/dokku-global
 readonly LEGO_PATH='/root/.lego'
 readonly DNS_CREDENTIALS_FILE='/root/.shepherd2-dns-credentials'
 readonly CRON_FILE='/etc/cron.d/shepherd2'
+# The executable and the library live together and `require_relative` each other; the name on PATH is
+# a symlink, so `shepherd2 poll` is unchanged by the split (D_api_surface).
+readonly LIB_DIR='/usr/local/lib/shepherd2'
 readonly CLI_PATH='/usr/local/bin/shepherd2'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -514,10 +517,17 @@ install_cli() {
   apt_install ruby
   log "ruby: $(ruby --version)"
 
-  [[ -f "$SCRIPT_DIR/shepherd2" ]] \
-    || die "cannot find $SCRIPT_DIR/shepherd2 — run this script from a checkout of the repository"
-  install -m 0755 "$SCRIPT_DIR/shepherd2" "$CLI_PATH"
-  log "installed $CLI_PATH"
+  local file
+  for file in shepherd2-cli shepherd2.rb; do
+    [[ -f "$SCRIPT_DIR/$file" ]] \
+      || die "cannot find $SCRIPT_DIR/$file — run this script from a checkout of the repository"
+  done
+
+  install -d -m 0755 "$LIB_DIR"
+  install -m 0755 "$SCRIPT_DIR/shepherd2-cli" "$LIB_DIR/shepherd2-cli"
+  install -m 0644 "$SCRIPT_DIR/shepherd2.rb" "$LIB_DIR/shepherd2.rb"
+  ln -sfn "$LIB_DIR/shepherd2-cli" "$CLI_PATH"
+  log "installed $LIB_DIR and $CLI_PATH"
 }
 
 # --- Step 10: cron --------------------------------------------------------------------------------

@@ -132,8 +132,9 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 |---|---|
 | `shepherd2-install` | Bash. Vanilla Ubuntu 24.04 → a working box: Docker, Dokku, address pools, TLS mode, the CLI, cron. Re-runnable; every step guarded |
 | `shepherd2-uninstall` | Bash. The inverse, driven by `SHEPHERD_TLS_MODE`. Destroys every project; `--keep-docker` / `--keep-pools` opt out of the two steps that reach past Shepherd2's own layer |
-| `shepherd2` | Ruby, one dispatcher: `create-app`, `destroy-app`, `poll`, `rebuild`, `last-build`, `wait-idle`, `clearcache`, `stats`. Its process-running seams (`Dokku`, `Docker`, `Machine`, `BuildLock`) are constructor arguments — that is the test surface |
-| `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`) |
+| `shepherd2.rb` | Ruby, the API: one method per verb, returning data and rendering nothing. Holds `Shepherd2::Dokku`, `::Docker`, `::Machine`, `::BuildLock` — its process-running seams, constructor arguments, and the test surface (`D_api_surface`) |
+| `shepherd2-cli` | Ruby, the executable, installed as `/usr/local/bin/shepherd2` (a symlink). Argument parsing, every sentence the box prints, and the mapping from a verb's return value onto an exit code |
+| `test/` | minitest, run as `ruby test/run`. `ruby-minitest` from apt, dev-only — **no `Gemfile`** (`D_testing`). `helper.rb` loads the *library* alone, which is the path a front-end that is not the CLI takes; `cli_test.rb` loads the executable on top |
 | `.github/workflows/test.yml` | the suite plus shellcheck, in an `ubuntu:24.04` container so it runs on the box's Ruby |
 
 ## Conventions when editing
@@ -192,11 +193,18 @@ comment header the authority** on its arguments, env knobs and prerequisites. Pu
 - **Prefer a Dokku command to a `docker` command.** `dokku ps:restart` over `docker restart`; the
   reports (`--format json`) over `docker inspect`. Reaching around Dokku to the daemon is how state
   drifts out from under it. Where a `docker` call is genuinely required, say why in the script header.
-- **The CLI is Ruby; the installers are Bash.** `shepherd2` is one Ruby dispatcher holding every verb,
-  standard library only — no `Gemfile`, no gems — and written against Ruby 3.2, which is what the box
-  ships (Ubuntu 24.04, `D_host_os`). `shepherd2-install` and `shepherd2-uninstall` stay Bash with
-  `set -euo pipefail`, as does any future box script: they run before Ruby is guaranteed to exist and
-  after it may be gone. A new file picks by which of the two it is. See `D_ruby`.
+- **The CLI is Ruby; the installers are Bash.** `shepherd2.rb` and `shepherd2-cli` hold every verb
+  between them, standard library only — no `Gemfile`, no gems — and written against Ruby 3.2, which is
+  what the box ships (Ubuntu 24.04, `D_host_os`). `shepherd2-install` and `shepherd2-uninstall` stay
+  Bash with `set -euo pipefail`, as does any future box script: they run before Ruby is guaranteed to
+  exist and after it may be gone. A new file picks by which of the two it is. See `D_ruby`.
+- **The API renders nothing and the front-end decides nothing about the box.** A verb in `shepherd2.rb`
+  returns data — never a sentence, never an exit code — and never touches stdout, stderr or stdin: it
+  reports progress through the `on_event` listener and asks through the `confirm` callback. Every word
+  the box prints is written in `shepherd2-cli`, and so is every `EXIT_*`. If you find yourself adding
+  an `out:` to the library, or a `dokku` call to the executable, the boundary has moved. See
+  `D_api_surface` — and note the one thing that legitimately crosses it: a verb may hand the terminal
+  to Dokku through the `Dokku` seam, which is how `create-app` shows a build scrolling past.
 - **Project ids beginning with `admin` are reserved** — `create-app` refuses them, so a future admin
   surface has a hostname waiting under the wildcard certificate. See `D_admin_namespace`.
 - **Anything the box must survive a reinstall of belongs in this repo**, not in a command someone once

@@ -29,31 +29,66 @@ class DestroyAppTest < Minitest::Test
 
   def test_a_failed_nginx_reload_does_not_fail_the_destroy
     dokku = DokkuDouble.new(exists: ['apps:exists', 'network:exists'], fail_on: ['nginx:reload'])
+    events = EventLog.new
+    result = shepherd(dokku, events: events).destroy_app('demo', yes: true)
 
-    assert_equal EXIT_OK, shepherd(dokku).destroy_app('demo', yes: true)
+    assert_equal 'demo', result[:app]
     assert_includes dokku.mutations, 'apps:destroy --force demo'
+    assert_equal 'demo', events[:nginx_reload_failed].first[:app]
   end
 
   def test_a_failed_cache_purge_does_not_stop_the_destroy
     dokku = DokkuDouble.new(exists: ['apps:exists', 'network:exists'], fail_on: ['repo:purge-cache'])
-    shepherd(dokku).destroy_app('demo', yes: true)
+    events = EventLog.new
+    shepherd(dokku, events: events).destroy_app('demo', yes: true)
 
     assert_includes dokku.mutations, 'apps:destroy --force demo'
     assert_includes dokku.mutations, 'network:destroy --force app-demo'
+    assert_equal 1, events[:cache_purge_failed].size
   end
 
   def test_a_missing_network_is_not_an_error
     dokku = DokkuDouble.new(exists: ['apps:exists'])
-    shepherd(dokku).destroy_app('demo', yes: true)
+    result = shepherd(dokku).destroy_app('demo', yes: true)
 
     assert_empty dokku.mutations.grep(/network:destroy/)
+    refute result[:network_destroyed]
   end
 
   def test_an_unknown_app_is_refused_before_anything_is_destroyed
     dokku = DokkuDouble.new
-    assert_raises(Shepherd2Error) { shepherd(dokku).destroy_app('demo', yes: true) }
+    assert_raises(Shepherd2::Error) { shepherd(dokku).destroy_app('demo', yes: true) }
 
     assert_empty dokku.mutations
+  end
+
+  # Consent is asked for through the callback, and a refusal stops the teardown — the API never reads
+  # a terminal itself, so there is nothing else for it to go on.
+  def test_a_refused_confirmation_destroys_nothing
+    dokku = DokkuDouble.new(exists: ['apps:exists'])
+
+    assert_raises(Shepherd2::Error) { shepherd(dokku, confirm: ->(_id) { false }).destroy_app('demo') }
+    assert_empty dokku.mutations
+  end
+
+  # With no way to ask and no :yes, the answer is no: consent is never assumed from silence.
+  def test_no_confirm_callback_and_no_yes_refuses
+    dokku = DokkuDouble.new(exists: ['apps:exists'])
+    shepherd = Shepherd2.new(dokku: dokku, lock: LockDouble.new)
+
+    assert_raises(Shepherd2::Error) { shepherd.destroy_app('demo') }
+    assert_empty dokku.mutations
+  end
+
+  def test_the_id_is_what_the_confirmation_is_asked_about
+    dokku = DokkuDouble.new(exists: ['apps:exists'])
+    asked = []
+    shepherd(dokku, confirm: lambda { |id|
+      asked << id
+      true
+    }).destroy_app('demo')
+
+    assert_equal ['demo'], asked
   end
 end
 
@@ -70,7 +105,8 @@ class PollTest < Minitest::Test
                             },
                             fail_on: ['config:get handmade'])
 
-    assert_equal EXIT_OK, shepherd(dokku).poll
+    assert_equal [{ app: 'demo', ok: true, error: nil }, { app: 'other', ok: true, error: nil }],
+                 shepherd(dokku).poll
     assert_equal [
       'git:sync --build-if-changes demo https://github.com/me/demo',
       'git:sync --build-if-changes other https://github.com/me/other'
@@ -86,19 +122,35 @@ class PollTest < Minitest::Test
                               'config:get handmade' => "https://github.com/me/handmade\n"
                             },
                             fail_on: ['git:sync --build-if-changes demo'])
+    result = shepherd(dokku).poll
 
-    assert_equal EXIT_FAILURE, shepherd(dokku).poll
+    refute result.find { |app| app[:app] == 'demo' }[:ok]
+    assert result.find { |app| app[:app] == 'other' }[:ok]
     assert_includes dokku.mutations, 'git:sync --build-if-changes other https://github.com/me/other'
     assert_includes dokku.mutations, 'git:sync --build-if-changes handmade https://github.com/me/handmade'
   end
 
-  # A tick that lands on a running build skips rather than queues, and says so with a zero exit code:
-  # at 288 ticks a day, a noisy cron is a cron nobody reads.
-  def test_a_busy_box_skips_the_tick_without_failing
-    dokku = DokkuDouble.new
-    result = shepherd(dokku, lock: LockDouble.new(busy: true)).poll
+  # A front-end must not have to wait for the whole tick — which is minutes — to learn how the first
+  # project went, so each project is reported as it starts and again as it ends.
+  def test_progress_is_emitted_per_project_rather_than_only_at_the_end
+    dokku = DokkuDouble.new(output: { 'apps:list' => "demo\nother\n",
+                                      'config:get demo' => "https://github.com/me/demo\n",
+                                      'config:get other' => "https://github.com/me/other\n" },
+                            fail_on: ['git:sync --build-if-changes other'])
+    events = EventLog.new
+    shepherd(dokku, events: events).poll
 
-    assert_equal EXIT_OK, result
+    assert_equal [{ app: 'demo' }, { app: 'other' }], events[:polling]
+    assert_equal [true, false], events[:polled].map { |fields| fields[:ok] }
+    assert_equal %i[polling polled polling polled], events.kinds
+  end
+
+  # A tick that lands on a running build skips rather than queues: at 288 ticks a day, ticks that
+  # queued would accumulate faster than they drain.
+  def test_a_busy_box_skips_the_tick
+    dokku = DokkuDouble.new
+
+    assert_equal :busy, shepherd(dokku, lock: LockDouble.new(busy: true)).poll
     assert_empty dokku.calls
   end
 end
@@ -108,25 +160,24 @@ class RebuildTest < Minitest::Test
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: { 'config:get demo' => "https://github.com/me/demo\n" })
 
-    assert_equal EXIT_OK, shepherd(dokku).rebuild('demo')
+    assert_equal :built, shepherd(dokku).rebuild('demo')
     assert_includes dokku.mutations, 'git:sync --build demo https://github.com/me/demo'
   end
 
   def test_an_app_shepherd2_did_not_register_is_refused
     dokku = DokkuDouble.new(exists: ['apps:exists'], fail_on: ['config:get demo'])
-    error = assert_raises(Shepherd2Error) { shepherd(dokku).rebuild('demo') }
+    error = assert_raises(Shepherd2::Error) { shepherd(dokku).rebuild('demo') }
 
     assert_match(/SHEPHERD_GIT_URL/, error.message)
     assert_empty dokku.mutations.grep(/git:sync/)
   end
 
-  # Fails fast rather than queueing behind a five-minute cron; EXIT_BUSY distinguishes it from a
-  # build that actually failed.
-  def test_a_busy_box_refuses_with_its_own_exit_code
+  # Fails fast rather than queueing behind a five-minute cron.
+  def test_a_busy_box_refuses
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: { 'config:get demo' => "https://github.com/me/demo\n" })
 
-    assert_equal EXIT_BUSY, shepherd(dokku, lock: LockDouble.new(busy: true)).rebuild('demo')
+    assert_equal :busy, shepherd(dokku, lock: LockDouble.new(busy: true)).rebuild('demo')
     assert_empty dokku.mutations.grep(/git:sync/)
   end
 end
@@ -135,7 +186,7 @@ class WaitIdleTest < Minitest::Test
   def test_returns_immediately_when_nothing_is_building
     dokku = DokkuDouble.new(output: { 'builds:list' => '[]' })
 
-    assert_equal EXIT_OK, shepherd(dokku).wait_idle(timeout: 0)
+    assert_equal :idle, shepherd(dokku).wait_idle(timeout: 0)
   end
 
   # A `git push` deploy never touches our lock, so Dokku's own view of running builds is the second
@@ -145,7 +196,7 @@ class WaitIdleTest < Minitest::Test
                                'status' => 'running', 'display_status' => 'running' }])
     dokku = DokkuDouble.new(output: { 'builds:list' => running })
 
-    assert_equal EXIT_FAILURE, shepherd(dokku).wait_idle(timeout: 0)
+    assert_equal :timeout, shepherd(dokku).wait_idle(timeout: 0)
   end
 
   # Every no-op poll tick leaves a record at `status: "running"` for good, and the cron writes one
@@ -156,7 +207,7 @@ class WaitIdleTest < Minitest::Test
                                  'status' => 'running', 'display_status' => 'abandoned' }])
     dokku = DokkuDouble.new(output: { 'builds:list' => abandoned })
 
-    assert_equal EXIT_OK, shepherd(dokku).wait_idle(timeout: 0)
+    assert_equal :idle, shepherd(dokku).wait_idle(timeout: 0)
   end
 
   # Older records, and anything that predates the computed field, still have to be read.
@@ -164,20 +215,20 @@ class WaitIdleTest < Minitest::Test
     running = JSON.generate([{ 'id' => 'x', 'app' => 'demo', 'status' => 'running' }])
     dokku = DokkuDouble.new(output: { 'builds:list' => running })
 
-    assert_equal EXIT_FAILURE, shepherd(dokku).wait_idle(timeout: 0)
+    assert_equal :timeout, shepherd(dokku).wait_idle(timeout: 0)
   end
 
   def test_the_poll_lock_alone_counts_as_busy
     dokku = DokkuDouble.new(output: { 'builds:list' => '[]' })
 
-    assert_equal EXIT_FAILURE, shepherd(dokku, lock: LockDouble.new(busy: true)).wait_idle(timeout: 0)
+    assert_equal :timeout, shepherd(dokku, lock: LockDouble.new(busy: true)).wait_idle(timeout: 0)
   end
 
   # A box whose builds plugin has nothing to say must not block a deliberate reboot for an hour.
   def test_unreadable_build_records_do_not_block_a_reboot
     dokku = DokkuDouble.new(fail_on: ['builds:list'])
 
-    assert_equal EXIT_OK, shepherd(dokku).wait_idle(timeout: 0)
+    assert_equal :idle, shepherd(dokku).wait_idle(timeout: 0)
   end
 end
 
@@ -186,7 +237,7 @@ class ClearcacheTest < Minitest::Test
     dokku = DokkuDouble.new
     docker = DockerDouble.new
 
-    assert_equal EXIT_OK, shepherd(dokku, docker: docker).clearcache
+    assert shepherd(dokku, docker: docker).clearcache
     assert_equal 1, docker.pruned
     assert_empty dokku.calls
   end
@@ -212,11 +263,7 @@ class LastBuildTest < Minitest::Test
 
   def records(*builds) = { 'builds:list demo' => JSON.generate(builds) }
 
-  def report(dokku, id = 'demo', **options)
-    out = StringIO.new
-    exit_code = shepherd(dokku, out: out).last_build(id, **options)
-    [out.string, exit_code]
-  end
+  def last_build(dokku, id = 'demo', **options) = shepherd(dokku).last_build(id, **options)
 
   # The cap on `builds:list` is skipped for any *filtered* listing, so `--kind build` is what keeps an
   # idle app's real build visible once poll ticks outnumber the retention count — invisible in the
@@ -224,7 +271,7 @@ class LastBuildTest < Minitest::Test
   # whose record and log were still on disk.
   def test_the_listing_is_filtered_so_the_retention_cap_never_applies
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
-    report(dokku)
+    last_build(dokku)
 
     assert_includes dokku.commands, 'builds:list demo --kind build --format json'
   end
@@ -232,31 +279,28 @@ class LastBuildTest < Minitest::Test
   def test_reports_the_newest_real_build_past_the_churn
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: records(abandoned('t3'), reaped('t2'), reaped('t1'), real('b1')))
-    output, exit_code = report(dokku)
+    result = last_build(dokku)
 
-    assert_equal EXIT_OK, exit_code
-    assert_includes output, 'demo: succeeded · id b1'
-    assert_includes output, 'duration 1m43s'
+    assert_equal 'b1', result[:build]['id']
+    assert_equal '1m43s', result[:build]['duration']
+    refute result[:live]
   end
 
   # The whole point: a reaped tick must never be reported as the last build, which is exactly what
   # `dokku builds:report demo` and `builds:list demo --status failed` both do.
   def test_a_reaped_tick_is_never_reported_as_a_failure
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(reaped('t1'), real('b1')))
-    output, = report(dokku)
 
-    assert_includes output, 'id b1'
-    refute_includes output, 't1'
-    refute_includes output, 'exit -1'
+    assert_equal 'b1', last_build(dokku)[:build]['id']
   end
 
-  def test_a_real_failure_is_reported_with_its_exit_code_and_still_exits_zero
+  def test_a_real_failure_keeps_its_exit_code
     dokku = DokkuDouble.new(exists: ['apps:exists'],
                             output: records(reaped('t1'), real('b1', status: 'failed', exit_code: 1)))
-    output, exit_code = report(dokku)
+    build = last_build(dokku)[:build]
 
-    assert_equal EXIT_OK, exit_code
-    assert_includes output, 'demo: failed (exit 1) · id b1'
+    assert_equal 'failed', build['status']
+    assert_equal 1, build['exit_code']
   end
 
   # A build running right now outranks the last finished one — otherwise the verb reports history
@@ -264,67 +308,103 @@ class LastBuildTest < Minitest::Test
   def test_a_live_build_outranks_the_last_finished_one
     live = { 'id' => 'now', 'status' => 'running', 'display_status' => 'running' }
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(live, real('b1')))
-    output, = report(dokku)
+    result = last_build(dokku)
 
-    assert_includes output, 'demo: building now · id now'
-    refute_includes output, 'b1'
+    assert_equal 'now', result[:build]['id']
+    assert result[:live]
   end
 
-  def test_an_app_with_nothing_but_churn_says_so_rather_than_lying
+  def test_an_app_with_nothing_but_churn_is_nil_rather_than_a_lie
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(abandoned('t2'), reaped('t1')))
-    output, exit_code = report(dokku)
 
-    assert_equal EXIT_OK, exit_code
-    assert_includes output, 'no real build on record'
+    assert_nil last_build(dokku)
   end
 
-  def test_the_log_is_printed_only_when_asked_for
+  def test_the_log_is_read_only_when_asked_for
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
-    report(dokku)
+    result = last_build(dokku)
 
-    assert_empty dokku.mutations.grep(/builds:output/)
+    assert_empty dokku.commands.grep(/builds:output/)
+    assert_equal :not_requested, result[:log_status]
+    assert_nil result[:log]
 
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
-    report(dokku, log: true)
+    last_build(dokku, log: true)
 
-    assert_includes dokku.mutations, 'builds:output demo b1'
+    assert_includes dokku.commands, 'builds:output demo b1'
   end
 
-  # The record can outlive its log file: retention evicts by count, and `builds:prune` deletes the
-  # `.log` first. Saying so beats printing a path that isn't there.
-  def test_a_log_no_longer_on_disk_is_flagged_rather_than_offered
-    dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
-    output, = report(dokku)
+  def test_a_log_still_on_disk_is_read_from_the_file
+    Tempfile.create('build.log') do |file|
+      build = real('b1').merge('log_path' => file.path)
+      dokku = DokkuDouble.new(exists: ['apps:exists'],
+                              output: { 'builds:list demo' => JSON.generate([build]),
+                                        'builds:output' => "compiling…\n" })
+      result = last_build(dokku, log: true)
 
-    assert_includes output, 'gone — builds:output falls back to the syslog copy'
+      assert result[:log_path_exists]
+      assert_equal :file, result[:log_status]
+      assert_equal "compiling…\n", result[:log]
+    end
   end
 
-  def test_a_log_still_on_disk_is_offered_by_path
+  # The record outlives its log file — retention evicts by count and `builds:prune` deletes the `.log`
+  # first — and `builds:output` then falls back to the copy journald holds.
+  def test_a_log_no_longer_on_disk_is_flagged_as_the_syslog_copy
+    dokku = DokkuDouble.new(exists: ['apps:exists'],
+                            output: records(real('b1')).merge('builds:output' => "from journald\n"))
+    result = last_build(dokku, log: true)
+
+    refute result[:log_path_exists]
+    assert_equal :syslog, result[:log_status]
+    assert_equal "from journald\n", result[:log]
+  end
+
+  # dokku#9031: `builds:output` exits 0 having printed nothing for a pruned or mistyped id, so an
+  # empty answer with no file behind it means the log is gone — not that the build printed nothing.
+  # Nothing else on the box tells those two apart.
+  def test_a_rotated_log_is_distinguishable_from_one_that_was_empty
+    dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(real('b1')))
+    gone = last_build(dokku, log: true)
+
+    assert_equal :rotated, gone[:log_status]
+    assert_nil gone[:log]
+
     Tempfile.create('build.log') do |file|
       build = real('b1').merge('log_path' => file.path)
       dokku = DokkuDouble.new(exists: ['apps:exists'],
                               output: { 'builds:list demo' => JSON.generate([build]) })
-      output, = report(dokku)
+      empty = last_build(dokku, log: true)
 
-      assert_includes output, "log: #{file.path}\n"
-      refute_includes output, 'syslog'
+      assert_equal :file, empty[:log_status]
+      assert_equal '', empty[:log]
     end
+  end
+
+  # `builds:output` tails a live build, so asking for one would block for the length of the build.
+  def test_a_build_still_running_is_never_tailed
+    live = { 'id' => 'now', 'status' => 'running', 'display_status' => 'running' }
+    dokku = DokkuDouble.new(exists: ['apps:exists'], output: records(live))
+    result = last_build(dokku, log: true)
+
+    assert_equal :running, result[:log_status]
+    assert_empty dokku.commands.grep(/builds:output/)
   end
 
   def test_an_unknown_app_is_refused_before_any_records_are_read
     dokku = DokkuDouble.new
-    assert_raises(Shepherd2Error) { shepherd(dokku).last_build('demo') }
+    assert_raises(Shepherd2::Error) { shepherd(dokku).last_build('demo') }
 
-    assert_empty dokku.calls.map { |args| args.join(' ') }.grep(/builds:list/)
+    assert_empty dokku.commands.grep(/builds:list/)
   end
 
   def test_a_reserved_id_is_refused
-    assert_raises(UsageError) { shepherd(DokkuDouble.new).last_build('adminfoo') }
+    assert_raises(Shepherd2::UsageError) { shepherd(DokkuDouble.new).last_build('adminfoo') }
   end
 
   APPS = "=====> My Apps\ndemo\nother\nhandmade\n"
 
-  # One line per project create-app registered: a hand-made app has no SHEPHERD_GIT_URL and nothing
+  # One entry per project create-app registered: a hand-made app has no SHEPHERD_GIT_URL and nothing
   # of ours polls it, so it has no churn to see past either.
   def test_with_no_app_it_reports_every_registered_project
     dokku = DokkuDouble.new(output: {
@@ -335,13 +415,11 @@ class LastBuildTest < Minitest::Test
                               'builds:list other' => JSON.generate([reaped('t1')])
                             },
                             fail_on: ['config:get handmade'])
-    out = StringIO.new
-    exit_code = shepherd(dokku, out: out).last_build
+    results = shepherd(dokku).last_build
 
-    assert_equal EXIT_OK, exit_code
-    assert_includes out.string, 'demo: succeeded · id b1'
-    assert_includes out.string, 'other: no real build on record'
-    refute_includes out.string, 'handmade'
+    assert_equal %w[demo other], results.map { |result| result[:app] }
+    assert_equal 'b1', results.first[:build]['id']
+    assert_nil results.last[:build]
   end
 
   def test_one_unreadable_project_does_not_hide_the_others
@@ -354,28 +432,16 @@ class LastBuildTest < Minitest::Test
                               'builds:list handmade' => JSON.generate([real('b2')])
                             },
                             fail_on: ['builds:list demo'])
-    out = StringIO.new
-    exit_code = shepherd(dokku, out: out).last_build
+    results = shepherd(dokku).last_build
 
-    assert_equal EXIT_FAILURE, exit_code
-    assert_includes out.string, 'other: succeeded · id b1'
-    assert_includes out.string, 'handmade: succeeded · id b2'
+    assert_match(/failed/, results.find { |result| result[:app] == 'demo' }[:error])
+    assert_equal 'b1', results.find { |result| result[:app] == 'other' }[:build]['id']
+    assert_equal 'b2', results.find { |result| result[:app] == 'handmade' }[:build]['id']
   end
 
   def test_records_that_are_not_json_are_a_failure_not_a_crash
     dokku = DokkuDouble.new(exists: ['apps:exists'], output: { 'builds:list demo' => 'not json' })
 
-    assert_raises(Shepherd2Error) { shepherd(dokku).last_build('demo') }
-  end
-end
-
-# The only rule that lives in the parser rather than in the verb: --log has nothing to print without
-# an app id, and silently reporting every project instead would be the wrong kind of helpful.
-class LastBuildParsingTest < Minitest::Test
-  def test_log_without_an_app_id_is_a_usage_error
-    cli = CLI.new(shepherd: shepherd(DokkuDouble.new))
-
-    _out, err = capture_io { assert_equal EXIT_USAGE, cli.run(['last-build', '--log']) }
-    assert_includes err, '--log needs an app id'
+    assert_raises(Shepherd2::Error) { shepherd(dokku).last_build('demo') }
   end
 end

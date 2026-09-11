@@ -33,7 +33,7 @@ deliberately does not do is *What v1 does not do*, at the end.
 | **`dokku-global-cert`** | *https mode only.* The one third-party plugin this box depends on | `D_cert` |
 | **lego** (`apt`, universe) | *https mode only.* Issues and renews `*.mydomain.me` over DNS-01; its GoDaddy credentials live in a root-only file | `D_cert` |
 | **ruby** (`apt`) | the CLI's runtime. Stdlib only — no gems, no bundler | `D_ruby` |
-| **`shepherd2`** | one Ruby dispatcher on `PATH`: `create-app`, `destroy-app`, `poll`, `rebuild`, `wait-idle`, `clearcache` | `D_ruby`, `D_dokku_is_truth` |
+| **`shepherd2`** | one command on `PATH` — `create-app`, `destroy-app`, `poll`, `rebuild`, `last-build`, `wait-idle`, `clearcache`, `stats` — and two files under `/usr/local/lib/shepherd2/`: `shepherd2.rb`, the verbs, and `shepherd2-cli`, the executable it is a symlink to | `D_ruby`, `D_api_surface`, `D_dokku_is_truth` |
 | **`shepherd2-install` / `-uninstall`** | Bash, `set -euo pipefail`. The only parts that run before, or after, everything else exists | `D_ruby` |
 | **`/etc/cron.d/shepherd2`** | the `*/5` poll and the weekly prune, plus the daily `lego renew` in https mode. One file, written whole, so `uninstall` deletes rather than unpicks | `D_dokku`, `D_cert`, `D_builder` |
 
@@ -98,7 +98,8 @@ script does on this box's one code path, minus the parts that exist for other di
    `lego --accept-tos --email … --dns godaddy -d '*.mydomain.me' --path /root/.lego run`;
    `global-cert:set` with the result. **lego's own flags are global and precede the subcommand** —
    only `--days` and `--renew-hook` belong to `renew`.
-9. **Ruby and the CLI** — `apt install ruby`, then `shepherd2` onto `PATH`.
+9. **Ruby and the CLI** — `apt install ruby`, then both files into `/usr/local/lib/shepherd2/` and a
+   `/usr/local/bin/shepherd2` symlink onto `PATH`.
 10. **Crons** — one `/etc/cron.d/shepherd2` holding the `*/5` poll, the weekly prune, and in https
     mode the daily renewal.
 11. **Record the mode** — `config:set --global SHEPHERD_TLS_MODE=…`, written *last*, so it means "this

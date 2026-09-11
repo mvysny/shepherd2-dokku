@@ -22,7 +22,10 @@ researched:
   *Dokku stays upstream and unforked* rule allows only with a `D_` entry behind it.
 - **Give up on refusing, and report instead**: a cron that sums the limits and complains when the box is
   over-committed. Not enforcement, but it survives every edit path — and it is roughly the same cron
-  that option 1 in `ideas/web-admin-ui.md` would need anyway.
+  that option 1 in `ideas/web-admin-ui.md` would need anyway. **Half of this has landed**: the sum
+  itself is `shepherd2 stats`' `committed` line (`D_stats`), re-read from Dokku's state on every run,
+  so what is left of this option is only the *complaining* — a cron and a transport, which is the
+  question `ideas/build-failure-notifications.md` is already holding.
 - **Reservations rather than limits.** `dokku resource:reserve` maps to Docker's
   `--memory-reservation`; whether letting the kernel arbitrate is a better answer than arithmetic on our
   side is unexplored. `RESEARCH.md` → *Resource limits* has the flag mapping.

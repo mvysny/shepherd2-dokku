@@ -84,10 +84,41 @@ end
 class DockerDouble
   attr_reader :pruned
 
-  def initialize = @pruned = 0
+  # @param usage [Hash] the `docker system df -v` answer, with Docker's human size strings — the point
+  #   of the double is that `stats` has to parse those back, so the canned data keeps them.
+  # @param root_dir [String] what `docker info` would say.
+  def initialize(usage: { 'Images' => [], 'Volumes' => [] }, root_dir: '/var/lib/docker')
+    @pruned = 0
+    @usage = usage
+    @root_dir = root_dir
+  end
 
   def prune
     @pruned += 1
     true
+  end
+
+  def disk_usage = @usage
+
+  def root_dir = @root_dir
+end
+
+# The host's memory and disk, canned. Sizes are bytes, as Machine returns them.
+class MachineDouble
+  # @param memory [Hash{Symbol => Integer}] overrides on top of a stock 8 GiB box with no swap.
+  # @param filesystems [Hash{String => Hash}] keyed by the path asked about; the default answers any
+  #   path with one filesystem, which is the stock box where / and Docker's root are the same device.
+  def initialize(memory: {}, filesystems: nil)
+    @memory = { total: 8 * (1024**3), available: 4 * (1024**3),
+                swap_total: 0, swap_free: 0 }.merge(memory)
+    @filesystems = filesystems
+  end
+
+  def memory = @memory
+
+  def filesystem(path)
+    return @filesystems.fetch(path) if @filesystems
+
+    { path: path, device: '/dev/sda1', mount: '/', total: 80 * (1024**3), free: 30 * (1024**3) }
   end
 end

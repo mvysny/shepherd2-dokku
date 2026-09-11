@@ -581,6 +581,8 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | make sure a reboot won't land mid-build | `shepherd2 wait-idle` |
 | restart Docker itself | `systemctl restart docker` — apps keep running (`live-restore`); a second container may appear for ~17 s and exit on its own |
 | prune images now rather than on Sunday | `shepherd2 clearcache` |
+| **will another project fit?** · **what is eating the disk?** | `shepherd2 stats` — free *and* committed memory, disk, and the build cache per project |
+| the same, for a script to read | `shepherd2 stats --json` (byte counts as integers) |
 | list projects · read everything about one | `dokku apps:list` · `dokku apps:report ID` |
 | **see the runtime log** | `dokku logs ID -t -p web` |
 | see why the last deploy failed | `dokku logs:failed ID` |
@@ -602,7 +604,7 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | pick out one app's containers · the build in flight | `docker ps --filter label=com.dokku.app-name=ID` · `docker ps --filter label=com.dokku.image-stage=build` |
 | see what the box has been doing | `dokku events -t` |
 
-Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Eleven things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
 
 - **Anything you bind on the box to `0.0.0.0` is reachable from inside every app container.** Measured:
   a listener on all interfaces answered an app through the bridge gateway; the same service on
@@ -611,6 +613,30 @@ Ten things that bite, all of them documented at length in [RESEARCH.md](RESEARCH
   port, a scratch service, **bind it to loopback** unless you mean every hosted app to see it. The
   firewall rule that would cover the rest of this axis is a v2 topic
   (`ideas/harden-container-egress.md`); loopback costs nothing today.
+
+- **Free memory does not tell you whether another project fits, and `shepherd2 stats` is the line that
+  does.** The apps are idle but capped, so what matters is what the box has *promised* — `committed`
+  sums every app's runtime limit plus one build's, because one build runs at a time box-wide:
+
+  ```
+  $ shepherd2 stats
+  box
+    memory      7.8 GiB total · 4.1 GiB available
+    committed   768.0 MiB runtime + 2.0 GiB build peak, of 7.8 GiB
+    disk        /var/lib/docker on /dev/sda1 — 78.2 GiB total · 29.1 GiB free (63% used)
+  …
+  projects    3 registered
+    hello        1.1 GiB
+    vaadin-demo  3.2 GiB
+    karibu-demo  1.4 GiB
+    total        5.7 GiB
+  ```
+
+  Two things to know before the numbers confuse you. It **takes a few seconds** — the daemon walks
+  every volume to size it, which is also why nothing periodic runs it. And it prints binary units to
+  match `free -h` and `df -h`, so a cache that `docker system df` calls `1.2GB` reads here as
+  `1.1 GiB`. An app listed as `(unregistered)` was created by hand and is not polled; a project's
+  cache is thrown away with `dokku repo:purge-cache ID`, never with a volume prune.
 
 - **Most build records are poll ticks, so don't ask Dokku which build was the last one — ask
   `shepherd2 last-build`.** Every five-minute poll writes a record even when there is nothing to build,

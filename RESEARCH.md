@@ -419,6 +419,13 @@ it needs an app that customises its frontend (punch-list 13, 14 and 16 all wait 
   924 downloads each, right down to the artifact. There is no arrangement of app ids, coordinates or
   timing that lets one project see another's `.m2`: the volume name is Dokku's and the app never
   learns it. The duplication is the price, and it is exact — two ids on one repo cost two full copies.
+- **Sizing one is Docker's job, not Dokku's: `docker system df -v --format '{{json .}}'` returns
+  `Images` / `Containers` / `Volumes` arrays, each volume carrying `Name`, `Mountpoint` and a `Size`
+  that is a *human string in SI units* (`"1.2GB"`, `"67B"`).** **[observed, Docker 29.1.3]** Two
+  consequences for any reader: the size has to be parsed back to bytes to be added up (3–4 significant
+  figures survive), and the daemon **walks each volume's directory** to produce it — so the call costs
+  what `du` would cost over the whole cache. There is no Dokku command for this at any granularity,
+  which is why `shepherd2 stats` attributes `cache-<app>` to its app itself (`D_stats`).
 - **Volume sizes, measured, for capacity planning: Gradle costs about 4.5× Maven.**
   **[verified on a box 2026-09-11]**
 
@@ -1263,6 +1270,21 @@ a 4-core host** — capped, and demonstrably using the cap. Nothing needed
 (punch-list 17). It mattered more than it looks: Shepherd2 passes these limits by *default*, so had
 the documented route been inert, every app on the box would have built uncapped.
 
+**`resource:report <app> --format json` is a flat map of `<process-type>.<limit|reserve>.<key>` → the
+value exactly as it was set** — `{"_default_.limit.memory":"256m","build.limit.memory":"2g"}`. **[src]**
+(`plugins/resource/resource.go`, `plugins/common/common.go` at `v0.38.2` and at `master`.) Three
+things about it:
+
+- The keys are the plugin's property names, so a limit that was never set is **absent**, not zero or
+  empty — the difference between "capped at 0" and "uncapped" is only visible as a missing key.
+- The value is a string passed to Docker verbatim: `256m` is binary (`m` = MiB), and a bare number is
+  **bytes**, not megabytes, despite the documentation example `--memory 100`.
+- 0.38.2 emits the key with the `--resource-` prefix trimmed; `master` emits **both** the trimmed and a
+  legacy `resource-`-prefixed copy of every key, controlled by a new `EmitLegacyPrefix` flag. A reader
+  that hardcodes one spelling breaks on the other, so accept both.
+
+Nothing sums these across apps — see *What Dokku does not do*. `shepherd2 stats` does (`D_stats`).
+
 ## Processes, restarts and reboot
 
 ```bash
@@ -1875,6 +1897,13 @@ https box and a real DNS zone) and the v2 items, 9 having been answered early:
     `-Pvaadin.productionMode` is the way to a production build; and `GRADLE_USER_HOME` lands in the
     cache volume — 1.3 GB of it, the Gradle distribution and the JDK included. In *The herokuish cache
     volume*; the cost per app is in *Build caching* and `D_builder`.
+21. **How long does `docker system df -v` take once the caches are warm?** `shepherd2 stats` is built
+    on it (`D_stats`), and the daemon walks every volume's directory to answer — so the cost scales with
+    the file *count* inside `cache-$APP`, which item 20 has now sized: a 1.3 GB Gradle volume and
+    205 MB Maven ones, nine of them on the production box. `[unverified]`: 0.4s measured on a dev
+    machine whose volumes were empty, which establishes nothing. If it turns out to be tens of seconds,
+    the fallback is `du -sb` on the `Mountpoint` the same listing hands us, per app, skipping the
+    images and containers entirely.
 
 ## Sources
 

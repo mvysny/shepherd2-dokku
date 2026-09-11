@@ -133,6 +133,7 @@ already has** (`D_dokku_is_truth`).
 | `last-build [ID] [--log]` | the last *real* build's status, and its log — the one read the poll's churn breaks (`D_poll_churn`), and the one verb here with an expiry date |
 | `wait-idle` | blocks until no build is running, so a reboot never lands mid-build |
 | `clearcache` | the weekly prune |
+| `stats [--json]` | what the box holds: memory (free *and* committed), disk, and the build cache per project — a snapshot, never monitoring (`D_stats`) |
 
 `create-app`'s flags: `--owner EMAIL`, `--mem`, `--cpu`, `--build-mem`, `--build-cpu`, `--buildpack`,
 `--build-dir`. There is no `--domain` (custom domains are v2, and `domains:add` is a `dokku` command),
@@ -320,7 +321,8 @@ Each of these is deferred with a decision behind it, not forgotten:
   v1 must not do to keep that fix cheap.
 - **No memory quota.** Nothing refuses a project whose runtime + build memory overflows the box
   (`Q_quota` in `ideas/box-memory-quota.md`): the only enforcement point available is `create-app`, and
-  a later hand `resource:limit` bypasses it.
+  a later hand `resource:limit` bypasses it. `shepherd2 stats` *reports* the over-commit — the sum of
+  the limits against what the box has — and refuses nothing (`D_stats`).
 - **No frontend build cache.** Every app here uses Vaadin's pre-compiled production bundle, so there is
   no npm or Vite run to cache; the candidates for the day one is needed are in
   `ideas/vaadin-build-under-herokuish.md`.

@@ -8,12 +8,11 @@
 # `config:set`, `domains:add` are Dokku's, not ours, and a `shepherd2 logs` would be the shepherd-cli
 # this design deliberately retired (D_dokku_is_truth).
 #
-# `last-build` is the one verb here with an expiry date, and it is not a log surface: it answers a
-# question Dokku genuinely cannot, because the poll's churn breaks both of Dokku's answers to it.
-# `builds:report` names the *newest* record, which at a five-minute poll is always an abandoned tick,
-# and `--status failed` selects reaped ticks alongside real failures. Delete this verb the day the
-# upstream capture-before-check ordering is fixed, or the day `poll` pre-checks the remote ref — both
-# roads are in D_poll_churn, and nothing else here depends on it.
+# `last-build` is the one verb here with an expiry date, and it is not a log surface — it answers a
+# question Dokku has no command for. `builds:report` names the *newest* record, which under a
+# five-minute poll is always an abandoned tick, and `--status failed` selects reaped ticks alongside
+# real failures. Delete the verb when the upstream capture-before-check ordering is fixed, or when
+# `poll` pre-checks the remote ref; both roads are in D_poll_churn.
 #
 # USAGE
 #   shepherd2 create-app ID URL [REF] [options]   register a project and build it for the first time
@@ -424,14 +423,16 @@ class Shepherd2
   # Reports a project's last *real* build — the newest record that is not poll churn — and, with
   # +log:+, prints that build's output.
   #
-  #   last_build('demo')   # demo: failed (exit 1) · id mtwslbpulbzlek · started … · duration 1m43s
-  #                        #   log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
-  #                        #   read it: shepherd2 last-build demo --log
+  #   last_build('demo')   # prints:
   #
-  #   last_build           # one line per registered project — which of them is red
+  #     demo: failed (exit 1) · id mtwslbpulbzlek · started 2026-09-11T10:05:30Z · duration 1m43s
+  #       log: /var/lib/dokku/data/builds/demo/mtwslbpulbzlek.log
+  #       read it: shepherd2 last-build demo --log
   #
-  # Reports one build, never a history: +dokku builds:list ID+ is the listing, and
-  # +dokku builds:output ID current+ tails a live one. Temporary; see the expiry note in the header.
+  #   last_build           # that line for every registered project — which of them is red
+  #
+  # One build, never a history: +dokku builds:list ID+ lists them and +builds:output ID current+ tails
+  # a live one. Temporary — the header says when to delete it.
   #
   # @param id [String, nil] the app id, or +nil+ for every registered project.
   # @param log [Boolean] also print that build's output. Needs an id.
@@ -582,8 +583,9 @@ class Shepherd2
     [] # A box with no builds yet, or a Dokku that has nothing to say. Not a reason to block a reboot.
   end
 
-  # One line per registered project. An app without SHEPHERD_GIT_URL was made by hand and is nobody's
-  # to poll, so it has no churn to see past either.
+  # One line per registered project, and tolerant like #poll: one project whose records will not read
+  # must not hide the rest. An app without SHEPHERD_GIT_URL was made by hand and is nobody's to poll,
+  # so it has no churn to see past either.
   def last_build_everywhere
     apps = registered_apps.keys
     if apps.empty?
@@ -596,7 +598,6 @@ class Shepherd2
       build = notable_build(build_records(app))
       @out.puts(build ? describe_build(app, build) : "#{app}: no real build in the retained window")
     rescue Shepherd2Error => e
-      # One unreadable app must not hide the other eight, exactly as in #poll.
       oops "#{app}: #{e.message}"
       failures += 1
     end
@@ -619,11 +620,9 @@ class Shepherd2
     builds.find { |build| live_build?(build) } || builds.find { |build| real_build?(build) }
   end
 
-  # Whether a build is running *now*. `display_status`, not `status`: a no-op tick's record says
-  # `status: "running"` forever, since nothing ever writes a `finished_at` for a build that never
-  # started. Dokku computes `display_status` from whether the recorded pid is alive, which is the
-  # question actually being asked — a live build reads `running`/`running`, an abandoned tick
-  # `running`/`abandoned`.
+  # Whether a build is running *now* — `display_status`, which Dokku computes from whether the recorded
+  # pid is alive, never the stored `status`, which a no-op tick holds at `running` forever. A live build
+  # reads `running`/`running`; an abandoned tick reads `running`/`abandoned`.
   def live_build?(build) = (build['display_status'] || build['status']) == 'running'
 
   # A record some build actually produced. Two filters, because the churn hides behind both: a tick's

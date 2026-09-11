@@ -86,8 +86,10 @@ class ReportTest < Minitest::Test
   end
 
   def last_build_result(**overrides)
-    { app: 'demo', build: build, live: false, log_path: '/var/lib/dokku/data/builds/demo/b1.log',
-      log_path_exists: true, log_status: :not_requested, log: nil }.merge(overrides)
+    Shepherd2::BuildReport.new(app: 'demo', build: build, live: false, error: nil,
+                               log_path: '/var/lib/dokku/data/builds/demo/b1.log',
+                               log_path_exists: true, log_status: :not_requested, log: nil)
+                          .with(**overrides)
   end
 
   def test_without_the_log_it_offers_the_path_and_the_command

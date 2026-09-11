@@ -364,6 +364,20 @@ read only after the `os.Stat`, and a missing record is explicitly tolerated
 (`if err != nil && !os.IsNotExist(err)`). The read is bounded only by the appended `.log` suffix and by
 the permissions of the `dokku` user.
 
+**Demonstrated on 0.38.27, 2026-09-11.** A file `canary.log` placed one level above `demo`'s build
+directory was read straight back through the app:
+
+```
+$ dokku builds:output demo ../canary
+CANARY
+$ echo $?
+0
+```
+
+So the id escapes the app's directory in practice, not only on paper. What this run did *not*
+demonstrate is the cross-app case (`builds:output <app-a> ../<app-b>/<id>`), which needs a second app;
+on this single-operator box there was no second principal for whom it would be a boundary.
+
 **Impact.** On a stock installation we think this is a hygiene defect rather than a vulnerability:
 Dokku ships no authorization layer, so any principal who can invoke `builds:output` can already read
 every app's build logs and run `config:show` against every app. The case we could not test is a

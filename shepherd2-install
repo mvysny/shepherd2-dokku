@@ -350,8 +350,9 @@ configure_address_pools() {
     "$DOCKER_POOL_BASE" "$DOCKER_POOL_SIZE"
 
   if [[ ! -e "$DOCKER_DAEMON_JSON" ]]; then
-    # The expected case: neither Ubuntu's docker.io package nor Dokku writes this file.
-    # [unverified — punch-list 3] is exactly whether that holds on a real box.
+    # Not the case we actually hit: Dokku's own postinst creates this file to set `live-restore`
+    # (verified on 0.38.27 — punch-list 3), so on our install order the merge branch below is the
+    # live one and this branch only fires if Dokku's postinst ever stops doing that.
     mkdir -p "$(dirname "$DOCKER_DAEMON_JSON")"
     printf '%s\n' "$desired_json" > "$DOCKER_DAEMON_JSON"
     log "wrote $DOCKER_DAEMON_JSON: $DOCKER_POOL_BASE at size $DOCKER_POOL_SIZE"
@@ -391,7 +392,11 @@ configure_admin_and_domain() {
   if dokku ssh-keys:list 2>/dev/null | grep -qw 'admin'; then
     skip 'admin ssh key'
   else
-    dokku ssh-keys:add admin < "$SSH_KEY_FILE"
+    # Piped, and blank lines stripped, because ssh-keys:add is fussy in two ways that both bite on a
+    # stock ~/.ssh/*.pub (verified on 0.38.27): it detects stdin by testing for a *pipe*, so a plain
+    # `< file` redirect is reported as "No key specified via file or pipe"; and the KEY_FILE argument
+    # form counts a trailing blank line as a second key and refuses with "Too many keys provided".
+    grep -v '^[[:space:]]*$' "$SSH_KEY_FILE" | dokku ssh-keys:add admin
     log "authorised $SSH_KEY_FILE as admin"
   fi
 

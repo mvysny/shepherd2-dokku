@@ -35,7 +35,9 @@ form's required field) and `environment.txt`. **Both reports reproduce.** What t
 - **The loose end is settled: journald answered.** See the bottom of this note.
 - **Ours, not theirs, both first runs on a box:** `shepherd2-install`'s
   `builds:set --global retention 300` fires (`install.log`), and `shepherd2 last-build` works against
-  real Dokku output — all three of its unverified assumptions hold. See *Our two pieces* below.
+  real Dokku output — all three of its unverified assumptions hold. It also found a hole in the verb,
+  logged here at first as "not a defect" and since fixed: it read the unfiltered listing and so
+  inherited the retention cap. See *Our two pieces* below.
 
 ### The sequence that was run
 
@@ -152,8 +154,10 @@ either. It is not specific to `--build-if-changes`; that flag just makes it happ
    default retention of 20 that window is about 100 minutes, so "go and read why last night's deploy
    failed" does not work.
 
-A fourth, quieter effect: `builds:report <app>` names the newest record, so on any idle app it reports
-`Build status: abandoned` rather than `succeeded`.
+A fourth, quieter effect: the app report is computed from the newest record alone —
+[`reportBuildStatus`](https://github.com/dokku/dokku/blob/aa39920cc78726ef51252d5ac6c543c40a27983d/plugins/builds/report.go#L82-L88)
+takes `builds[0]` and returns its `DisplayStatus()` — so on an idle app `dokku builds:report <app>`
+shows `Build status: abandoned` however long ago the app last built successfully.
 
 ### Steps to reproduce
 
@@ -207,8 +211,9 @@ from the log, which is presumably why it sits where it does. The no-flag fall-th
 treatment. A distinct status for "nothing to build" would be better still: it would keep `--status
 failed` meaning failed, which no filter can currently recover.
 
-*(Not blocking us — `builds:set --global retention 300` buys about a day, which is enough to read a
-failed build the next morning.)*
+*(Not blocking us. We raise `builds:set --global retention 300` so the last real build stays visible in
+the listing for about a day of ticks, and read it back with a filtered listing — `builds:list <app>
+--kind build`, which skips the cap — rather than the default one. Neither addresses the leak itself.)*
 
 ---
 
@@ -289,13 +294,19 @@ rotated the id away. `RESEARCH.md` has been corrected to state this rather than 
   three no-op ticks, 16 ticks deep, `--log`, the no-argument all-projects form, and the fallback once
   the real build fell outside the window. Transcript: `transcript-last-build.txt`.
 
-  Two things worth knowing, neither a defect:
+  Two things worth knowing. **The first was recorded here as "not a defect" and that judgement was
+  wrong** — it is fixed in the source now:
 
-  - The verb's reach is the **retention value**, because `builds:list` caps its output there — not the
-    number of records on disk. At the stock 20 the real build fell out after 20 ticks and `last-build`
-    printed `demo: no real build in the retained window`; restoring `retention 300` made the same
-    build visible again immediately. That is exactly the workaround `D_poll_churn` ships, confirmed
-    end to end.
+  - The verb's reach was the **retention value**, because it read the unfiltered `builds:list`, which
+    caps its output there — not the number of records on disk. At the stock 20 the real build fell out
+    after 20 ticks and `last-build` printed `no real build in the retained window` with 41 records
+    present; `retention 300` made it visible again. Read as "the workaround, confirmed end to end", it
+    is really a hole: at 300 the same thing happens to **any project idle more than ~25 hours**, which
+    is the normal state of most of the farm, and the build it cannot see is sitting on disk. Dokku
+    skips the cap for any *filtered* listing (`plugins/builds/subcommands.go`:
+    `if statusFilter == "" && kindFilter == ""`), so `last-build` now asks for `--kind build` — which
+    `git:sync` records always are — and reads past arbitrarily deep churn. The message it prints when
+    there genuinely is no real build has changed to `no real build on record` to match.
   - `real_build?`'s documented blind spot is real and was hit on the very first try: the box's failed
     first deploy (the `master` pathspec error) is reaped to `exit_code -1` and is therefore
     indistinguishable from churn, so `last-build` skipped it. The rdoc already says so.

@@ -108,30 +108,31 @@ nothing from it.*
 
 - **Apps are built by buildpacks; the Dockerfile builder is prohibited box-wide.** Re-enabling it
   to "fix" a build makes per-project cache isolation unenforceable, which is the entire reason for
-  the prohibition. See `R_buildpack_only`, `D_builder`.
+  the prohibition. See `R_cache_isolation`, `D_builder`.
 - **Each project gets its own Docker network, and nothing has to re-attach anything.** If you find
   yourself writing a successor to `shepherd-traefik-connect-networks`, something else is wrong.
-  See `R_network_per_project`, `D_isolation`.
+  See `R_no_second_component`, `D_isolation`.
 - **Dokku's state is the only source of truth; there is no project descriptor.** A per-project file
-  or a converger reintroduces the drift that killed both predecessors. See `R_dokku_is_truth`,
+  or a converger reintroduces the drift that killed both predecessors. See `R_no_second_component`,
   `D_dokku_is_truth`.
 - **The API renders nothing and the front-end decides nothing about the box.** An `out:` in
   `shepherd2.rb`, or a `dokku` call in `shepherd2-cli`, has moved the boundary and costs the next
-  front-end its verbs. See `R_api_renders_nothing`, `D_api_surface`.
+  front-end its verbs. See `D_api_surface`.
 - **TLS is one wildcard certificate and nothing per app — and https is a *mode*.** Nothing outside
   `install` / `uninstall` may assume a certificate exists, and nothing anywhere may offer to convert
   a running box: HSTS makes the downgrade unrepairable. See `R_tls_mode_is_one_way`, `D_cert`.
 - **Project ids beginning with `admin` are reserved.** A future admin surface needs that hostname
-  under the wildcard, and a box that gave it away cannot take it back. See `R_admin_reserved`.
+  under the wildcard, and a box that gave it away cannot take it back. See `D_admin_namespace`.
 - **The proxy is Dokku's default host nginx, and it is not a container.** Don't set `proxy:type` or
   run `traefik:start`; measured, Traefik cannot reach a per-app network and the failure is a silent
   hang with empty logs, so switching proxies would take `D_isolation` with it. See `D_proxy`.
 - **Dokku stays upstream and unforked.** A missing capability is answered by a wrapper script, a
   crontab line or a documented manual step — not a patch, a fork, or a plugin we maintain without a
-  `D_` entry saying so. `dokku-global-cert` is the one third-party plugin we depend on (`D_cert`).
+  `D_` entry saying so. `dokku-global-cert` is the one third-party plugin we depend on
+  (`R_no_second_component`, `D_cert`).
 - **Shepherd2 never wraps a command Dokku already has.** `shepherd2 logs` is `shepherd-cli`
   reincarnated; `dokku logs` / `ps:restart` / `config:set` are used as they are, from the README
-  cheat sheet.
+  cheat sheet. See `R_no_second_component`.
 - **`stats` and `last-build` are the two exceptions, and their boundaries are load-bearing.**
   `stats` is a snapshot: a time axis makes it the status page in `design/ideas/web-admin-ui.md`
   (`D_stats`). `last-build` is deleted the day upstream fixes the build-record ordering

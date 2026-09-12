@@ -7,7 +7,8 @@ entry is a line or two — the rule, what goes wrong — plus a pointer (`See D_
 the explanation lives at the pointer and is never summarised here, because a summary is a third
 copy that drifts. **Budget: 34 KB.** Over it, *move* content to its home (`design/`, a script's
 comment header) rather than compress it. A directory earns its own `AGENTS.md` the moment you want
-to list its files here; `ls */AGENTS.md` finds them — there are none today. `CLAUDE.md` is byte-exactly
+to list its files here; `ls */AGENTS.md` finds them — there are none today, and a nested one is
+capped at 10 KB, loaded only when work touches its directory. `CLAUDE.md` is byte-exactly
 the line `@AGENTS.md` and nothing else, here and beside any future nested file, so `/init` and the
 `#` memory shortcut must never be allowed to write into it.
 
@@ -34,7 +35,7 @@ to follow it.
 |---|---|---|
 | `README.md` | the operator at the front door: positioning, requirements, install, onboarding a project, troubleshooting, and the day-N cheat sheet — every common task as the exact command | — |
 | `AGENTS.md` (this) | what you must not break from a distance; the script index; this table — its rules are in its header | **every turn** |
-| `design/requirements.md` | what must hold of the box — `R_` entries, stated not argued | lazy |
+| `design/requirements.md` | what must hold of the box — `R_` entries, stated not argued, **owner-written**: an agent proposes, never edits | lazy |
 | `design/solution.md` | **the spec** — the inventory, the install order, the CLI surface, the flows; **when it and the code disagree, the code is wrong** | lazy |
 | `design/decisions.md` | why this and not that — `D_` entries, roads not taken | lazy |
 | `design/research.md` | verified facts about **Dokku**, each claim `[docs]` / `[src]` / `[verified]` / `[unverified]` | lazy |
@@ -49,15 +50,29 @@ Rules that keep the split from drifting:
 - **`decisions.md` argues, `requirements.md` states, `research.md` is about *Dokku* not us,
   `solution.md` composes and never argues.** A paragraph explaining *why* in any file but
   `decisions.md` has drifted; move it and cite the `D_`.
-- **No `D_` entry without a real fork; only decisions already taken.** Ideas, TODOs and open
-  questions go to `design/ideas/`. A shipped decision that is reversed keeps its entry as a
-  tombstone.
-- **Slugs:** `D_` decisions, `R_` requirements, `T_` tripwires (cited from the requirement's
-  *Enforced by*, defined by the check), `Q_` open questions inside `design/ideas/` only — a durable
-  doc never cites a `Q_`. Underscores throughout, backticked in prose, cited by slug never by
-  position; `grep '^## D_' design/decisions.md` is the index. There is no `F_` namespace and no
-  feature-list file — don't reintroduce either (`D_no_feature_list`). No CHANGELOG either: the
-  deploy is a `git pull`, so git is the changelog.
+- **A `D_` is earned by what happened, not by having had an alternative:** it shaped what the box
+  is (reverse it and the README's first paragraph changes — the PaaS, the builder, the proxy, "no
+  JVM anywhere"), or it cost research the next person would otherwise redo, and *Rejected:* then
+  says what was **done** to rule the road out. A tool, a library among equals, the CI host, a
+  version bump — a comment at the site of the choice, never an entry. Only decisions already taken;
+  ideas, TODOs and open questions go to `design/ideas/`. A shipped decision that is reversed keeps
+  its entry as a tombstone. Nothing about `design/` itself or its tooling is an entry: the layer's
+  rules are its skill's, and this repo's local amendments are commented where they are wired
+  (`design/verify_design_tripwires.sh`, `test/run`).
+- **An `R_` is a promise the README's pitch makes, made an official rule — and the owner writes
+  it.** An agent never adds, edits or retires one; it proposes, in conversation or as a drafted
+  entry in `design/ideas/`. The owner's ruler: allow the opposite everywhere — is it still the
+  pitched box? A rule about the box's *internals* that keeps a promise is an **invariant** — one
+  line in this file, named in the promise's *Enforced by* — not an `R_`.
+- **An invariant is one line here, and nothing more:** the rule, at most one clause of consequence,
+  `T_<slug>` if tripwired, `See D_<slug>` only when a `D_` exists — no fork, no cite; the agent has
+  the script. A line that will not fit belongs in that script's comment header.
+- **Slugs:** `D_` decisions, `R_` requirements, `T_` tripwires (cited from a requirement's
+  *Enforced by* or an invariant line here, defined by the check), `Q_` open questions inside
+  `design/ideas/` only — a durable doc never cites a `Q_`. Underscores throughout, backticked in
+  prose, cited by slug never by position; `grep '^## D_' design/decisions.md` is the index. There
+  is no `F_` namespace and no feature-list file — don't reintroduce either. No CHANGELOG either:
+  the deploy is a `git pull`, so git is the changelog.
 - **`design/verify_design_tripwires.sh`** fails on any cited `D_` / `R_` without a heading, a `T_`
   without a check, an oversized `AGENTS.md`, or a `CLAUDE.md` that isn't the shim. Run it before
   committing a doc change.
@@ -68,15 +83,19 @@ An idea graduates the moment it is acted on, and graduation is not done until it
 sidecar folder `design/ideas/<name>/`) is gone. Where the lasting nuggets land:
 
 - verified behaviour of **Dokku** or one of its plugins → `design/research.md`, with a provenance marker
-- the choice made + the alternatives rejected → a `D_` entry in `design/decisions.md`
-- something that must hold from now on → an `R_` entry in `design/requirements.md`
+- the choice made + the alternatives rejected → a `D_` entry in `design/decisions.md` if it passes
+  the gate above; otherwise a comment at the site of the choice
+- a promise the README's pitch makes that must hold from now on → a proposal for the owner, who
+  writes the `R_` entry; the internal rule that *keeps* one → a one-line invariant in this file
 - work deferred *as a consequence of a logged decision* → that entry's *Consequences*
 - where a piece sits in the assembled box — an install step in sequence, a flow crossing several
   decisions, a fact about what the box holds → `design/solution.md`
+- a new script, or one whose responsibility changed → one line in the *Script index* below
 - an operator-facing setup step, requirement or troubleshooting recipe → `README.md`; a day-N task
   and the exact command for it → its *Day-to-day operations* cheat sheet
 - the precise truth of one script — arguments, env knobs, prerequisites → that script's comment header
-- a cross-cutting invariant ("never reintroduce a naming contract") → this file
+- a cross-cutting invariant ("never reintroduce a naming contract") → one line in this file: the
+  rule, `T_<slug>` if tripwired, `See D_<slug>` if a `D_` exists
 
 **The sidecar trap, sharpened for this repo:** most Dokku facts outlive the idea that prompted
 looking them up, so a sidecar finding's default destination is `design/research.md`, not the bin.
@@ -89,30 +108,31 @@ nothing from it.*
 
 - **Apps are built by buildpacks; the Dockerfile builder is prohibited box-wide.** Re-enabling it
   to "fix" a build makes per-project cache isolation unenforceable, which is the entire reason for
-  the prohibition. See `R_buildpack_only`, `D_builder`.
+  the prohibition. See `R_cache_isolation`, `D_builder`.
 - **Each project gets its own Docker network, and nothing has to re-attach anything.** If you find
   yourself writing a successor to `shepherd-traefik-connect-networks`, something else is wrong.
-  See `R_network_per_project`, `D_isolation`.
+  See `R_no_second_component`, `D_isolation`.
 - **Dokku's state is the only source of truth; there is no project descriptor.** A per-project file
-  or a converger reintroduces the drift that killed both predecessors. See `R_dokku_is_truth`,
+  or a converger reintroduces the drift that killed both predecessors. See `R_no_second_component`,
   `D_dokku_is_truth`.
 - **The API renders nothing and the front-end decides nothing about the box.** An `out:` in
   `shepherd2.rb`, or a `dokku` call in `shepherd2-cli`, has moved the boundary and costs the next
-  front-end its verbs. See `R_api_renders_nothing`, `D_api_surface`.
+  front-end its verbs. See `D_api_surface`.
 - **TLS is one wildcard certificate and nothing per app — and https is a *mode*.** Nothing outside
   `install` / `uninstall` may assume a certificate exists, and nothing anywhere may offer to convert
   a running box: HSTS makes the downgrade unrepairable. See `R_tls_mode_is_one_way`, `D_cert`.
 - **Project ids beginning with `admin` are reserved.** A future admin surface needs that hostname
-  under the wildcard, and a box that gave it away cannot take it back. See `R_admin_reserved`.
+  under the wildcard, and a box that gave it away cannot take it back. See `D_admin_namespace`.
 - **The proxy is Dokku's default host nginx, and it is not a container.** Don't set `proxy:type` or
   run `traefik:start`; measured, Traefik cannot reach a per-app network and the failure is a silent
   hang with empty logs, so switching proxies would take `D_isolation` with it. See `D_proxy`.
 - **Dokku stays upstream and unforked.** A missing capability is answered by a wrapper script, a
   crontab line or a documented manual step — not a patch, a fork, or a plugin we maintain without a
-  `D_` entry saying so. `dokku-global-cert` is the one third-party plugin we depend on (`D_cert`).
+  `D_` entry saying so. `dokku-global-cert` is the one third-party plugin we depend on
+  (`R_no_second_component`, `D_cert`).
 - **Shepherd2 never wraps a command Dokku already has.** `shepherd2 logs` is `shepherd-cli`
   reincarnated; `dokku logs` / `ps:restart` / `config:set` are used as they are, from the README
-  cheat sheet.
+  cheat sheet. See `R_no_second_component`.
 - **`stats` and `last-build` are the two exceptions, and their boundaries are load-bearing.**
   `stats` is a snapshot: a time axis makes it the status page in `design/ideas/web-admin-ui.md`
   (`D_stats`). `last-build` is deleted the day upstream fixes the build-record ordering

@@ -6,12 +6,23 @@ taken. Not what the code does (the code and its script headers), not what must h
 
 - Cite an entry by slug — `D_<slug>` — never by position. `grep '^## D_' design/decisions.md`
   is the index; there is no table of contents.
-- **No entry without a real fork.** Nothing seriously considered and rejected → not a decision.
+- **An entry is earned by what happened, not by having had an alternative:** the decision shaped
+  what the project is (reverse it and the README's first paragraph changes — the PaaS, the
+  builder, the proxy, "no JVM anywhere"), or it cost research the next person would otherwise
+  redo, and *Rejected:* then says what was **done** to rule the road out — measured, tried, read.
+  A tool, a library among equals, the CI host, a version bump: a comment at the site of the
+  choice, never an entry. Nothing about `design/` itself or its tooling is an entry either — the
+  layer's own rules are its skill's, and this repo's local amendments are commented where they
+  are wired (`design/verify_design_tripwires.sh`, `test/run`).
 - Entries are mutable: refine in place. A *shipped* decision that is reversed keeps its entry as
   a tombstone (`Status: Superseded by D_<slug>`); the replacement is written fresh. Order here is
-  the order taken, oldest first — later entries build on earlier ones.
+  the order taken, **oldest first**, against the layout's newest-first default: these entries
+  build on each other — `D_isolation` on `D_proxy`, `D_stats` on `D_dokku_is_truth` — and reading
+  them in the order taken is what makes that legible. Don't "fix" it.
 - Shape: `## D_<slug> — <title> (<decided date>)`, then **Status**, **Context**, **Decision**,
   one **Rejected: …** paragraph per alternative, **Consequences**.
+- **The first entry — `D_dokku`, at the top, since the order here is inverted — is the ruler**:
+  later entries are trimmed to its length, never the other way round.
 - **Inherited decisions live upstream.** Shepherd2 is the third implementation of this product;
   the decisions of the first two — `D_kubernetes`, then `D_docker_traefik`,
   `D_network_per_project`, `D_poll_scm`, `D_no_shared_cache` — stay in
@@ -154,43 +165,6 @@ box.
   broadened as `D_admin_namespace`, and the safe-reboot wait is `shepherd2 wait-idle`.
 - **The Maven Central artifact `com.github.mvysny.shepherd:shepherd-java-api` stops gaining versions.**
   Already-published versions stay published; nothing here replaces the library.
-
-## D_research_md — Dokku's behaviour gets a durable file, not an ideas sidecar (2026-09-09)
-
-**Status:** Accepted 2026-09-09; implemented as `research.md`.
-
-**Context.** This project is mostly glue around a product we don't own, so a large share of its
-knowledge is *findings about Dokku* — what a command does, which flag exists on which version, which
-documented feature turns out not to work. The `ideas-folder` convention says an idea's research goes in
-a same-stem sidecar folder and **dies with the idea**, while "verified behaviour goes to the project's
-durable place". For a glue project there was no such durable place: upstream behaviour is not our
-decision (`decisions.md`), not an operator instruction (`README.md`), and not a per-script truth.
-
-**Decision.** One durable, top-level **`research.md`** owns everything established about Dokku, with
-each claim marked `[docs]`, `[src]`, `[verified]` or `[unverified]`. Idea sidecars stay for reasoning that dies with
-the idea — why an alternative was rejected, whether a blog post was accurate. A *fact about Dokku* is
-backported to `research.md` before the idea is deleted.
-
-**Alternatives rejected.**
-
-- *Research in `ideas/<name>/` sidecars only.* The skill's default, and correct when research serves one
-  idea. Rejected here because the same Dokku facts serve every idea, and a sidecar is deleted at
-  graduation — the box-verified answer to "does `initial-network` isolate apps?" would be lost with the
-  idea that prompted asking.
-- *Fold it into `README.md`.* Puts an operator reading an install step next to a paragraph on which
-  version of a plugin gained DNS-01 support. Different audience, different lifetime.
-- *Fold it into `decisions.md`.* Upstream behaviour is not a decision of ours, and it changes when Dokku
-  releases — whereas an entry here is stable once made.
-
-**Consequences.**
-
-- **`research.md` is one of the doc targets**, and the graduation map in `AGENTS.md` names it as the
-  destination for verified Dokku behaviour. `D_design_docs` later moved it under `design/`; the
-  argument for its existence is unchanged.
-- **It has a shelf life.** Claims are dated and version-stamped against a Dokku release; a claim about a
-  version we no longer run is stale, not history. Re-check before relying on anything version-sensitive.
-- **`[unverified]` is load-bearing.** It is the marker that separates "Dokku's docs say" from "we saw it
-  work", and *Questions only a box can answer* at the end of the file is the punch list built from it.
 
 ## D_proxy — Dokku's default host nginx, not the Traefik plugin (2026-09-10)
 
@@ -1302,72 +1276,6 @@ path, and version branches back to 0.3.13.
 - **If packagecloud is ever unavailable**, the fallbacks are upstream's `bootstrap.sh` or the source
   install, in that order. Recorded, not planned for.
 
-## D_no_feature_list — The feature set gets no durable file; the `F_` slugs are retired (2026-09-10)
-
-**Status:** Accepted 2026-09-10 and applied the same day: `ideas/features-to-preserve.md` is deleted and
-every `F_` citation swept out of the durable files and the two surviving idea notes.
-
-**Context.** Shepherd2 is the third implementation of the same product, so the rebuild opened with a
-migration inventory — every feature the old box had, what Dokku answers it with, and a verdict of
-*Dokku does it* / *glue we write* / *dropped* / *deferred*. That inventory lived in
-`ideas/features-to-preserve.md` and gave each row a slug, `F_poll_rebuild`, `F_wildcard_https`,
-`F_safe_reboot` and 36 more. The slugs were useful while the design was open: a `D_` entry could say
-"costing `F_ingress_tuning`" and the reader could look the row up. By 2026-09-10 every row had a verdict
-and the note was a ledger awaiting graduation — but it was also the only place any of the 39 slugs was
-*defined*, and they were cited 69 times across `decisions.md`, `solution.md`, `research.md`,
-`AGENTS.md` and two other idea notes.
-
-**Decision.** **There is no feature list, and no `F_` namespace.** The graduation dropped the slug at
-every citation and kept the prose. What each surviving feature *is* is described where it lives: the
-preserved half in `README.md` → *Day-to-day operations* (task → command) and in `solution.md`'s
-inventory, CLI surface and flows; the deferred half in `solution.md` → *What v1 does not do*; the
-dropped half in `AGENTS.md` → *What is deliberately gone* and in the `D_` entry that dropped it. The
-enumerated-slug rule now admits no feature namespace: what the box does is `solution.md` plus the
-cheat sheet, and `D_` / `R_` / `T_` / `Q_` are the whole list.
-
-**Alternatives rejected.**
-
-- *A seventh documentation target, `FEATURES.md`, owning the slugs and the migration table.* The
-  `D_research_md` move, and the reason it doesn't apply: `research.md` holds facts about a product we
-  don't own, which have no other home. A feature row holds facts about *this* box, and every one of
-  them already has a home — so the file would be a fourth copy that drifts, which is the failure mode
-  the *Documentation targets* table exists to prevent.
-- *A compact `F_` → one-line → decided-by table in `solution.md`.* The cheap option: it keeps all 69
-  citations valid for the price of one table. Rejected because a table of names and one-line glosses,
-  with the substance elsewhere, is a **glossary** — which this repo deliberately does not have — and
-  because it would define `F_web_admin`, `F_postgres` and `F_user_login` inside the file that describes
-  what the box *holds*.
-- *Keep the note alive as the definition file.* What the note itself proposed, on the grounds that the
-  migration view has no other home. Rejected on the `ideas/` contract: a note that never graduates is
-  the stale `ideas/` folder the convention exists to prevent, and "is worth keeping until someone
-  confirms it has no readers" is not a lifetime.
-- *Half-retire — keep the slugs that read well, drop the rest.* Worse than either end. A namespace whose
-  definitions are gone but whose citations survive sends the reader looking for a file that was deleted.
-
-**Consequences.**
-
-- **Don't reintroduce an `F_` namespace, or any feature-list file.** If a feature needs naming from a
-  distance, name it in prose and link the file that owns it. This is the invariant `AGENTS.md` carries.
-- **The migration view is gone on purpose, and it is recoverable.** Feature-by-feature "what did
-  shepherd-traefik do and what replaced it" is answered by git history here plus both predecessors,
-  which stay readable on GitHub — the same reason `AGENTS.md` forbids copying their decisions in.
-- **`COMPARISON.md` in shepherd-traefik is not a feature list, and a reader sent there will assume it
-  is.** Its `R_` boxes are *requirements for choosing a product*, written to discriminate between
-  Coolify, Dokploy, Dokku and CapRover, so they compress or omit anything all four did equally.
-  Building the inventory from Shepherd's own scripts and shepherd-java-client turned up **11 features
-  with no `R_` box at all**, most of them in the component being deleted. So `COMPARISON.md` answers
-  "should some other PaaS have been picked", nothing more — which is how `README.md` cites it.
-- **The `README.md` cheat sheet is load-bearing now, not a convenience.** It is where the *Dokku does
-  it* rows landed, and `D_dokku_is_truth` and `solution.md` both promise it exists. A day-N capability
-  that is in neither the cheat sheet nor a `dokku` command is a capability this box has quietly lost.
-- **Four open questions kept notes of their own** — `ideas/multi-user-ownership.md`,
-  `ideas/web-admin-ui.md`, `ideas/box-memory-quota.md`, `ideas/private-repo-credentials.md`. The
-  questions the `D_` entries *answered* are cited nowhere any more: an entry that used to point at one
-  now points at the decision that answered it, or at `research.md`. A durable file never cites a `Q_`;
-  the slugs live in `ideas/` and in conversation only.
-
----
-
 ## D_poll_churn — Raise Dokku's build retention and read past the churn with `last-build`; the poll keeps calling `git:sync` (2026-09-11)
 
 **Status:** Accepted 2026-09-11 and implemented the same day — `builds:set --global retention 300` in
@@ -1719,69 +1627,3 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
   duplicates if that line is not held.
 - **`uninstall` removes a directory rather than a file**, so a third file added later cannot leak.
   `AGENTS.md`'s *Script index* grows a row and `solution.md`'s inventory grows the lib directory.
-
-## D_design_docs — Adopt the `design/` doc layer, with `solution.md` as the spec (2026-09-12)
-
-**Status:** Accepted; installed 2026-09-12.
-
-**Context.** The prose was four shouting files at the repo root — `DECISIONS.md`, `RESEARCH.md`,
-`SOLUTION.md` and a root `ideas/` — plus a `CLAUDE.md` that carried the doc map, the graduation
-map, the script index, the invariants *and* a status paragraph. Three things were going wrong.
-The root was mostly documentation, so the four scripts that are the deliverable were hard to see.
-`CLAUDE.md` is loaded on every turn of every session, and it was paying for a "v1 is written and
-has been run" paragraph that rots and for a *Documentation targets* table that restated what each
-file's own preamble already said. And there was no home for *what must hold*: obligations like
-"never build from a `Dockerfile`" lived only as a bold line in `CLAUDE.md`, with the full
-statement nowhere, so the line had to carry its own justification and grew.
-
-**Decision.** Rationale and reference move to `design/` — `decisions.md` (`D_`),
-`requirements.md` (`R_`), `solution.md`, `research.md`, `ideas/` — under lowercase names, and
-`AGENTS.md` keeps only invariants, the script index, the doc map and the graduation map, with
-`CLAUDE.md` reduced to the single line `@AGENTS.md`. Each file's preamble shrinks to ~8 lines
-stating that file's entry shape; the long-form doc rules it used to carry are this entry.
-`design/verify_design_tripwires.sh` fails on a cited `D_` / `R_` with no heading, a `T_` with no
-check, an oversized `AGENTS.md` or a `CLAUDE.md` that is not the shim.
-
-The assembled picture stays **`solution.md`, a spec**: the deliverable is two Bash installers and
-two Ruby files written *against* it, and the sequences that matter — the install order, the
-registration flow, a poll tick — are decided in that file and then implemented. When it and the
-code disagree, the code is wrong.
-
-**Rejected: `architecture.md` — describing the code instead.** That is the right authority for a
-library whose per-symbol truth lives in doc comments and is complete there. Here the script
-headers own each script's arguments and env knobs, but no header can own "step 4 merges the
-address pools *after* step 3's postinst wrote `daemon.json`" — and getting that order wrong is
-how the box breaks. The order is a spec, so the file that holds it is the authority.
-
-**Rejected: keeping the rationale in `CLAUDE.md`.** Paid for on every turn. A paragraph of
-why-not-the-alternative there compresses into a bullet that reads like a summary and is really a
-second copy of the entry it points at — which is exactly what the *Documentation targets* table
-had become.
-
-**Rejected: uppercase names inside `design/`.** The root shouts because attention there is
-contested; inside a folder whose only job is documentation, nothing needs to.
-
-**Consequences.**
-
-- **Every `D_` / `R_` cited anywhere must resolve to a heading**, and the tripwire script checks
-  it — run it before committing a doc change. It also checks the `AGENTS.md` caps (34 KB root,
-  10 KB nested), the `CLAUDE.md` shim both ways, and that no legacy root doc file has come back.
-- **A durable file never cites a `Q_`.** Open questions are temporary, so every `Q_`
-  citation in `decisions.md` and `solution.md` became a pointer to the idea file itself. `Q_`
-  survives in `ideas/` and in conversation only.
-- **`requirements.md` starts with six entries** lifted from the invariants `CLAUDE.md` was
-  carrying — `R_buildpack_only`, `R_network_per_project`, `R_dokku_is_truth`,
-  `R_api_renders_nothing`, `R_admin_reserved`, `R_tls_mode_is_one_way` — each of which keeps a
-  one-line invariant in `AGENTS.md` ending in `See R_<slug>`.
-- **The status paragraph left the loaded file entirely.** Where the box actually is — v1 written,
-  run once in `http` mode, the `https` half unproven — is `README.md`'s opening and
-  `solution.md`'s *What is not yet proven on a box*. Git is the changelog.
-- **`T_` is a live namespace with no members yet.** Each `R_` names what enforces it — a test, an
-  install step, or review — and none of them needed a mechanical check the suite does not already
-  make. The first one that does gets a `T_` on its *Enforced by* line and a check in the script.
-- **Two local amendments to the tripwire script**, both commented in it: an `INHERITED` allowlist
-  for the five shepherd-traefik slugs this repo cites by design, and `test/run` invoking the
-  script before the suite so a dangling slug trips in the session that caused it.
-- **Entries here stay oldest-first**, against the layout's newest-first default: nineteen of them
-  build on each other — `D_isolation` on `D_proxy`, `D_stats` on `D_dokku_is_truth` — and reading
-  them in the order taken is what makes that legible. The preamble says so; don't "fix" it.

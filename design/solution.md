@@ -11,8 +11,7 @@ box (`README.md`), or a script's own arguments and env knobs (that script's comm
 Where a one-line fact saves a jump it is repeated here; the argument behind it never is.
 
 What the box *does* is this file plus `README.md`'s cheat sheet, and what it deliberately does
-not do is *What v1 does not do*, at the end. There is no feature list and no `F_` namespace
-(`D_no_feature_list`).
+not do is *What v1 does not do*, at the end. There is no feature list and no `F_` namespace.
 
 ---
 

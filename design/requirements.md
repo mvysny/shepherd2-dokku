@@ -1,17 +1,25 @@
 # Requirements
 
-What must hold of the box's behaviour, not of the environment it runs in. One entry per
-requirement. A requirement *states*; it never argues: the fork behind it is the `D_` entry it
+What must hold of the box — the promises `README.md`'s pitch makes, as official rules. One entry
+per promise. A requirement *states*; it never argues: the fork behind it is the `D_` entry it
 cites. Environment prerequisites — the Ubuntu version, the RAM, the DNS zone — are
 `solution.md` steps and `README.md` requirements, not entries here.
 
+- **Owner-written.** An agent never adds, edits or retires an entry here; it proposes one — in
+  conversation, or as a drafted entry in `design/ideas/<slug>.md` — and the owner moves it in.
+- The owner's ruler for a proposal: **allow the opposite everywhere — is it still the box the
+  README pitches?** "Every app is reachable at `https://PROJECTID.<domain>` and nowhere else",
+  "a project is registered with one command and never with a file" → not the same box → an entry.
+  A rule about the box's *internals* that keeps a promise — "the API renders nothing", "the poll
+  holds one lock box-wide" → an **invariant**: an `AGENTS.md` one-liner named below under
+  *Enforced by*, not an entry here. One `requirements.md`, at the root beside the README that
+  makes the promises.
 - Cite by slug — `R_<slug>`. `grep '^## R_' design/requirements.md` is the index.
-- Slug only what is referenced from elsewhere; `AGENTS.md` carries the one-liner, this file the
-  full statement.
-- Shape: `## R_<slug> — <the requirement, one sentence>`, then **Status** (Active, or Retired
-  <date> — see `D_<slug>`), **Why** (one paragraph), **Enforced by** (a test, a script step, a
-  tripwire cited as `T_<slug>` — this line is that slug's home — or "review only"), **See** (the
-  `D_` entries behind it).
+- Shape: `## R_<slug> — <the promise in its operational form, one sentence>`, then **Status**
+  (Active, or Retired <date> — see `D_<slug>`), **If violated** (the observable failure, one or
+  two sentences — not the argument, which is the `D_`'s), **Enforced by** (a test, a script step,
+  a tripwire cited as `T_<slug>` — this line is that slug's home — or "review only"), **See** (the
+  pitch passage and the `D_` entries behind it).
 - A retired requirement stays as a tombstone. One that wants a *Rejected:* section is a decision
   — move it to `decisions.md`.
 - **The first entry is the ruler**: later entries are trimmed to its length, never the other way

@@ -4,7 +4,8 @@ Verified facts about **Dokku**, the upstream product this project is glue for â€
 builders, its proxy, its plugins. About *them*, never about *us*: our choices are `decisions.md`,
 and a sentence starting "we chose" is a `D_` entry. When a design argument needs "does Dokku
 actually do X?", the answer belongs here and is cited from wherever it is used, rather than
-re-derived (`D_research_md`).
+re-derived. A finding in an idea's sidecar dies with the idea; a fact about Dokku is backported
+here before the idea is deleted.
 
 Every claim carries provenance: **[docs]** (stated in Dokku's documentation), **[src]** (read out
 of a repository), **[verified]** (run and observed â€” say when), or **[unverified]** (inferred or

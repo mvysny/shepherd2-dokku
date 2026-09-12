@@ -4,11 +4,11 @@
 >
 > On 2026-09-11 a dev VM was installed from this repo, ran four real Vaadin apps end to end, and was
 > uninstalled again. That run fixed three bugs in this code and answered most of the punch list in
-> [RESEARCH.md](RESEARCH.md).
+> [design/research.md](design/research.md).
 >
 > **What has never run anywhere is the `https` half** — lego, the wildcard certificate and its renewal
 > (`D_cert`, punch-list item 4). It needs a real DNS zone, and the plan for it is
-> `ideas/production-cutover.md`. Nothing here has hosted a project anyone depends on yet.
+> `design/ideas/production-cutover.md`. Nothing here has hosted a project anyone depends on yet.
 
 Builds given git repos periodically and automatically deploys them to a Linux box running
 [Dokku](https://dokku.com). Serves as a homebrew "replacement" for Heroku, to publish your own pet
@@ -32,7 +32,7 @@ The two predecessors of this project stay online and readable:
 [Vaadin Shepherd](https://github.com/mvysny/shepherd) (Kubernetes) and
 [shepherd-traefik](https://github.com/mvysny/shepherd-traefik) + [shepherd-java-client](https://github.com/mvysny/shepherd-java-client)
 (Docker + Traefik + Jenkins + a Vaadin web admin). Why they were retired in favour of Dokku, and what
-that cost: `D_dokku` and `D_retire_shepherd_java` in [DECISIONS.md](DECISIONS.md).
+that cost: `D_dokku` and `D_retire_shepherd_java` in [design/decisions.md](design/decisions.md).
 
 There is a sibling repo, [shepherd2-dokploy](https://github.com/mvysny/shepherd2-dokploy), which asks
 the same question of [Dokploy](https://dokploy.com). The two are alternatives, not stages: Dokku
@@ -45,12 +45,13 @@ fork out.
 | If you want to… | Read |
 |---|---|
 | run, install or troubleshoot this box | this file |
-| see the whole box at once — what is installed, and how a build flows through it | [SOLUTION.md](SOLUTION.md) |
-| know what **Dokku** does — a command, a flag, a plugin, a gap | [RESEARCH.md](RESEARCH.md) |
-| know *why* it's built this way, and what was rejected | [DECISIONS.md](DECISIONS.md) (`D_` entries) |
-| see what's still being figured out | [`ideas/`](ideas/) — `ls` is the index |
+| see the whole box at once — what is installed, and how a build flows through it | [design/solution.md](design/solution.md) |
+| know what **Dokku** does — a command, a flag, a plugin, a gap | [design/research.md](design/research.md) |
+| know *why* it's built this way, and what was rejected | [design/decisions.md](design/decisions.md) (`D_` entries) |
+| know what must hold, and what enforces it | [design/requirements.md](design/requirements.md) (`R_` entries) |
+| see what's still being figured out | [`design/ideas/`](design/ideas/) — `ls` is the index |
 | do something to a running project — logs, a restart, a config change, a forced rebuild | *Day-to-day operations*, below |
-| change things without breaking something remote | [CLAUDE.md](CLAUDE.md) |
+| change things without breaking something remote | [AGENTS.md](AGENTS.md) — and the doc map is its *Design docs* section |
 | know whether some *other* PaaS should have been picked | [`COMPARISON.md` in shepherd-traefik](https://github.com/mvysny/shepherd-traefik/blob/main/COMPARISON.md) |
 
 ## Minimum requirements
@@ -62,10 +63,10 @@ apps comfortably, one at a time.
 * A VM with 8–16 GB of RAM; x86-64 or arm64. Ideally with a public IPv4 address.
   * Dokku's own documented minimum is 1 GB, but that is for Dokku, not for building JVM apps on the box.
 * **Ubuntu 24.04 LTS.** That is what the box and the development VM both run, and the only thing this
-  is tested on ([`D_host_os`](DECISIONS.md)). Dokku also supports 22.04 and Debian 11+, which would
+  is tested on ([`D_host_os`](design/decisions.md)). Dokku also supports 22.04 and Debian 11+, which would
   probably work and are not tested here.
   * **Not 26.04, yet.** Dokku's installer refuses to run on it, and no `dokku` package is built for
-    it — see [`D_host_os`](DECISIONS.md) for what has to change upstream first. Do not work around it.
+    it — see [`D_host_os`](design/decisions.md) for what has to change upstream first. Do not work around it.
 * A DNS domain with the IPv4 "A" record pointing at the VM. **Two records** are needed, `@` and `*`, so
   that wildcard subdomains work.
 * **API access to that domain's DNS**, at a provider [lego](https://go-acme.github.io/lego/dns/) supports.
@@ -76,12 +77,12 @@ apps comfortably, one at a time.
     `*` record and no API token — see *Installation*. That mode exists for a test VM, where resolution
     comes from `/etc/hosts` on whatever machine browses it.
 * **Docker comes from Ubuntu** — `docker.io`, `docker-buildx`, `docker-compose-v2`, installed by
-  `shepherd2-install` ([`D_install_apt`](DECISIONS.md)). 24.04 carries 29.1.3, well above the 19.03
+  `shepherd2-install` ([`D_install_apt`](design/decisions.md)). 24.04 carries 29.1.3, well above the 19.03
   Dokku asks for. No BuildKit requirement applies here: nothing on this box runs `docker build` at all
-  (see [`D_builder`](DECISIONS.md) — the build cache is a per-app Docker volume, not a BuildKit cache).
+  (see [`D_builder`](design/decisions.md) — the build cache is a per-app Docker volume, not a BuildKit cache).
 * **Ruby**, from the distro archive — the `shepherd2` CLI is Ruby, using nothing but the
   standard library. The installer runs `apt install ruby`; there is no gem to install and no version
-  manager. See [`D_ruby`](DECISIONS.md).
+  manager. See [`D_ruby`](design/decisions.md).
 * **A listening `sshd`**, for everything remote: your own session, `git push dokku@box`, and
   `ssh dokku@box dokku …`. Any VPS has one; a local VM may not, and the key the install authorises then
   authorises nothing. `shepherd2-install` warns if port 22 is silent rather than failing — the box
@@ -94,7 +95,7 @@ apps comfortably, one at a time.
 
 One script, run as root from a checkout of this repository on a vanilla Ubuntu 24.04 box.
 **The `http` mode has been installed from it, on a dev VM, and uninstalled again; the `https` mode has
-not been run anywhere** — that is punch-list item 4 in [RESEARCH.md](RESEARCH.md), and it needs a real
+not been run anywhere** — that is punch-list item 4 in [design/research.md](design/research.md), and it needs a real
 DNS zone rather than a `/etc/hosts` file. Expect the certificate steps to want a first outing before
 you trust them with a domain you care about.
 
@@ -113,13 +114,13 @@ install: Let's Encrypt caps duplicate certificates at five a week. The value is 
 renewal cron line too, so issuance and renewal always talk to the same ACME server.
 
 **The mode is chosen once and is not switchable on a running box** — HSTS makes the downgrade
-unrepairable from here ([`D_cert`](DECISIONS.md)). To change it, reinstall.
+unrepairable from here ([`D_cert`](design/decisions.md)). To change it, reinstall.
 
 Every step is guarded, so the script is safe to re-run: that is how a failed install is fixed —
 correct the script and run it again, rather than repairing the box by hand. That workflow has been
 used in anger: a first run failed at the admin-key step, and the second reported `(already done)` for
 the packagecloud key, the apt source, the `dokku` package and the address pools before carrying on.
-`shepherd2-install --help` is the authority on its arguments; [SOLUTION.md](SOLUTION.md) lists the
+`shepherd2-install --help` is the authority on its arguments; [design/solution.md](design/solution.md) lists the
 steps in order.
 
 To undo it, `sudo ./shepherd2-uninstall` — which **destroys every hosted project** and asks for the
@@ -133,7 +134,7 @@ config it was emptied of. It leaves `ruby`, and reports rather than deletes the 
 build records).
 
 **Dokku is installed as its authors' deb package, with apt** — no `curl | bash`, and Dokku's own
-`bootstrap.sh` is never run ([`D_install_apt`](DECISIONS.md)). That script is itself only a wrapper
+`bootstrap.sh` is never run ([`D_install_apt`](design/decisions.md)). That script is itself only a wrapper
 that adds packagecloud's apt repository and installs the same package, so this costs nothing and gains
 a readable install: the version is pinned once, as the apt version, and held with `apt-mark hold`.
 **Upgrading Dokku is therefore deliberate**, and is four commands rather than an `apt upgrade`:
@@ -182,7 +183,7 @@ impossible to retrofit:
   ```
 
 * **Docker's address pools are enlarged before anything is deployed, and that is why.** Each project
-  gets its own Docker network (`D_isolation` in [DECISIONS.md](DECISIONS.md)), and a stock daemon runs
+  gets its own Docker network (`D_isolation` in [design/decisions.md](design/decisions.md)), and a stock daemon runs
   out of them at **29 apps** — measured, and the 30th `network:create` fails outright. The install
   merges a wider `default-address-pools` into `/etc/docker/daemon.json` and restarts the daemon, the
   same edit shepherd-traefik needs. Nothing for you to do; it is here because it cannot be applied
@@ -205,7 +206,7 @@ The contract is settled, and **four projects have been through it on a box** —
 and one deliberate duplicate — so the recipe below is what those builds actually needed rather than
 what was expected of them. No project anyone depends on has been migrated yet.
 **It has changed from both predecessors** — see
-[`D_builder`](DECISIONS.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
+[`D_builder`](design/decisions.md). A project is no longer expected to carry a `Dockerfile`; if it has one it
 is ignored, because the box builds every app with Heroku buildpacks so that each project's dependency
 cache is isolated from every other's.
 
@@ -264,7 +265,7 @@ shorthand cannot carry a ref — Dokku rejects `heroku/gradle#v49` as invalid.
 ### Coming from a Dockerfile: the swap, line by line
 
 If your project was hosted on either predecessor it carries a `Dockerfile`, and that file is the thing
-this box no longer reads ([`D_builder`](DECISIONS.md)). Leave it in the repo if you build locally with
+this box no longer reads ([`D_builder`](design/decisions.md)). Leave it in the repo if you build locally with
 it — the box simply ignores it — and add the herokuish equivalents beside it:
 
 | What the `Dockerfile` did | What replaces it here |
@@ -375,7 +376,7 @@ dokku config:set --no-restart myproject VAADIN_OFFLINE_KEY='the-key'
 - It reaches the build because the herokuish builder bundles every app config var into an `ENV_DIR`
   before the buildpack runs — confirmed on a box, and the `ENV_DIR` carries the *merged* view, so a
   var the operator sets globally reaches your build too. See
-  [RESEARCH.md](RESEARCH.md#config-env-vars-and-app-metadata).
+  [design/research.md](design/research.md#config-env-vars-and-app-metadata).
 
 **4. Gradle projects need four things, and none of the defaults will do.** The Gradle buildpack runs
 exactly one command — `./gradlew $GRADLE_TASK` — and with `GRADLE_TASK` unset it looks for a `stage`
@@ -437,7 +438,7 @@ above.)
 `vaadin-maven-plugin` downloads its own Node into `~/.vaadin` and installs `node_modules` into the
 source checkout, and both are discarded after every build, because during the Maven build `$HOME` *is*
 that checkout. The two lines below are the candidate fix. They are **unverified — never run on a real
-box** — and are tracked in `ideas/vaadin-build-under-herokuish.md`:
+box** — and are tracked in `design/ideas/vaadin-build-under-herokuish.md`:
 
 ```dotenv
 # .env — build-time only; not your runtime config. UNVERIFIED; see above.
@@ -475,7 +476,7 @@ with an `OutOfMemoryError` that shows up in the logs instead.
 
 **Listen on `$PORT`, not on a port of your choosing.** The buildpack sets it (5000), and Dokku wires
 the proxy to it automatically — so the `EXPOSE`/`ports:set` dance the predecessors needed does not
-arise. Details in [RESEARCH.md](RESEARCH.md#ports--the-expose-trap).
+arise. Details in [design/research.md](design/research.md#ports--the-expose-trap).
 
 ### Rehearse the build locally
 
@@ -575,11 +576,11 @@ build's CPU cap. Those are the operator's side, and none of them depend on your 
 
 ## Day-to-day operations
 
-**Shepherd2 wraps nothing Dokku already has** ([`D_dokku_is_truth`](DECISIONS.md)), so almost everything
+**Shepherd2 wraps nothing Dokku already has** ([`D_dokku_is_truth`](design/decisions.md)), so almost everything
 below is plain `dokku`; the six `shepherd2` verbs exist only where Dokku has no single command. Run them
 logged in on the box as an admin user — `dokku …` and `shepherd2 …` then come from one shell. Dokku's
 sanctioned remote form, `ssh dokku@host <command>`, reaches only `dokku`, never `shepherd2`; in v1
-there is one keyholder, who can do everything to every app ([`D_single_operator`](DECISIONS.md)).
+there is one keyholder, who can do everything to every app ([`D_single_operator`](design/decisions.md)).
 
 Nothing here needs a project file, because there isn't one: every fact about an app is Dokku's, and
 `dokku <plugin>:report <app> --format json` is how you read it.
@@ -617,15 +618,15 @@ Nothing here needs a project file, because there isn't one: every fact about an 
 | pick out one app's containers · the build in flight | `docker ps --filter label=com.dokku.app-name=ID` · `docker ps --filter label=com.dokku.image-stage=build` |
 | see what the box has been doing | `dokku events -t` |
 
-Eleven things that bite, all of them documented at length in [RESEARCH.md](RESEARCH.md):
+Eleven things that bite, all of them documented at length in [design/research.md](design/research.md):
 
 - **Anything you bind on the box to `0.0.0.0` is reachable from inside every app container.** Measured:
   a listener on all interfaces answered an app through the bridge gateway; the same service on
-  `127.0.0.1` did not. Per-app networks wall apps off from *each other* ([`D_isolation`](DECISIONS.md)),
+  `127.0.0.1` did not. Per-app networks wall apps off from *each other* ([`D_isolation`](design/decisions.md)),
   not from the host — so when you run something on the box for yourself, a database console, an admin
   port, a scratch service, **bind it to loopback** unless you mean every hosted app to see it. The
   firewall rule that would cover the rest of this axis is a v2 topic
-  (`ideas/harden-container-egress.md`); loopback costs nothing today.
+  (`design/ideas/harden-container-egress.md`); loopback costs nothing today.
 
 - **Free memory does not tell you whether another project fits, and `shepherd2 stats` is the line that
   does.** The apps are idle but capped, so what matters is what the box has *promised* — `committed`
@@ -696,7 +697,7 @@ Eleven things that bite, all of them documented at length in [RESEARCH.md](RESEA
 - **The poll won't pick up a config change on its own.** `git:sync --build-if-changes` builds only when
   the ref moved, so after changing anything that affects the build you must `shepherd2 rebuild ID`.
 - **A second hostname gets no https in v1.** The one wildcard certificate covers `*.<domain>` and
-  nothing else; custom and apex domains are a v2 feature ([`D_cert`](DECISIONS.md)). Don't reach for
+  nothing else; custom and apex domains are a v2 feature ([`D_cert`](design/decisions.md)). Don't reach for
   `dokku-letsencrypt` to patch one app.
 - **Destroy a project with `shepherd2 destroy-app`, not `dokku apps:destroy`.** Dokku deletes the
   app's vhost file but never tells the running nginx, which keeps serving that hostname from memory and
@@ -709,7 +710,7 @@ Eleven things that bite, all of them documented at length in [RESEARCH.md](RESEA
 
 - **Never prune volumes.** Not `docker volume prune`, not `docker system prune --volumes`: the build
   cache *is* the per-app `cache-ID` volume, nothing garbage-collects it, and at a five-minute poll a
-  build is always about to want it ([`D_builder`](DECISIONS.md)). `repo:purge-cache` is the per-app
+  build is always about to want it ([`D_builder`](design/decisions.md)). `repo:purge-cache` is the per-app
   lever, and `shepherd2 clearcache` is the safe blanket one.
 
   **Budget for them**, since nothing reclaims them on its own: a Maven app's volume measures

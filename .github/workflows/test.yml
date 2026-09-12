@@ -20,7 +20,7 @@ jobs:
       - name: Install the box's Ruby and the dev-only test dependency
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ruby ruby-minitest shellcheck
+          apt-get install -y --no-install-recommends ruby ruby-minitest shellcheck git
 
       - name: Ruby version (the box's, pinned by D_host_os)
         run: ruby --version
@@ -28,4 +28,4 @@ jobs:
       - run: ruby test/run
 
       - name: Shellcheck the box scripts
-        run: shellcheck shepherd2-install shepherd2-uninstall
+        run: shellcheck shepherd2-install shepherd2-uninstall design/verify_design_tripwires.sh

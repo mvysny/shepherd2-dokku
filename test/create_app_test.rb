@@ -2,7 +2,7 @@
 
 require_relative 'helper'
 
-# What create-app must emit, in what order. The sequence is the design (SOLUTION.md, *Flow —
+# What create-app must emit, in what order. The sequence is the design (design/solution.md, *Flow —
 # registering a project*): a reordering that put the first build before `network:set` would still
 # deploy, and would quietly build on the wrong network.
 class CreateAppTest < Minitest::Test

@@ -1,9 +1,9 @@
 # `Q_credentials` — are per-project git credentials a real requirement, or a Jenkins artifact?
 
 **Deferred for v1 (2026-09-10): the box holds no git credential at all**, and every hosted repo must be
-publicly cloneable. This note is the v2 question and keeps the slug `Q_credentials`, which `SOLUTION.md`
-→ *What v1 does not do* cites; `README.md` → *What the repo needs* states the v1 requirement to the
-operator.
+publicly cloneable. This note is the v2 question, `Q_credentials`; `solution.md`
+→ *What v1 does not do* points here, and `README.md` → *What the repo needs* states the v1
+requirement to the operator.
 
 What Shepherd used to do: one credential per project, out of Jenkins' credentials store
 (`gitRepo.credentialsID`), so each project's clone authenticated as itself.

@@ -3,8 +3,8 @@
 **Answered for v1: no UI.** The admin interface is an SSH login to the box and `dokku` / `shepherd2`
 commands issued by hand, with `README.md` → *Day-to-day operations* documenting every common scenario as
 the exact command. That is the whole of v1, and it is what `D_retire_shepherd_java` and
-`D_dokku_is_truth` decided. This note keeps the slug `Q_web_admin` because both of those entries,
-`D_ruby`, `D_admin_namespace` and `SOLUTION.md` cite it.
+`D_dokku_is_truth` decided. This note is the standing question, `Q_web_admin`; both of those
+entries, `D_ruby`, `D_stats` and `D_admin_namespace` point here.
 
 **The property any answer must have** is the one `D_dokku_is_truth` requires: it is a *client* of
 Dokku's state, storing nothing authoritative of its own. A UI that keeps its own project records is the
@@ -22,7 +22,7 @@ wildcard certificate covers it.
    provisioning (nothing for resource limits, `docker-options` or networks). It talks to Dokku over SSH
    with a key of its own and authenticates its own users with a single `ADMIN_PASSWORD`, so it is
    single-operator only — and nothing server-side lives in it, so there is nothing to lose if it dies
-   (`D_dokku_is_truth` → *Consequences*). `RESEARCH.md` → *Admin interface* has the survey it sits in.
+   (`D_dokku_is_truth` → *Consequences*). `research.md` → *Admin interface* has the survey it sits in.
 3. **Re-programme shepherd-java-client as a Dokku client**, once `create-app`'s command set has
    solidified: stop storing `/etc/shepherd/java/projects/*.json`, read `*:report --format json` for the
    project list, and edit by emitting `dokku` / `shepherd2` commands. The existing Vaadin Web Admin then

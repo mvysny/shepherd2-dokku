@@ -1,8 +1,8 @@
 # Going to production — the https box, and the nine apps that move onto it
 
 Written 2026-09-11. **The gate is open**: the http probe run answered items 2, 8, 13, 17 and 19 on a
-box the same day, and its findings have graduated into `RESEARCH.md`, `DECISIONS.md`, `README.md` and
-`SOLUTION.md` — that note is gone. What is left for *this* run is the half no http box can reach,
+box the same day, and its findings have graduated into `research.md`, `decisions.md`, `README.md` and
+`solution.md` — that note is gone. What is left for *this* run is the half no http box can reach,
 item 4, plus the migration itself.
 
 This note holds the cutover: the one place the https half of the punch list gets run, the nine projects
@@ -103,7 +103,7 @@ entirely. So before any of these can be registered, each repo needs commits of i
 - optionally a `.env` for build-time settings the project carries itself.
 
 That is per-repo work in nine *other* repositories, and it is the real gate on the cutover — not the
-box. `SOLUTION.md` warns that the `Procfile` / buildpack / `system.properties` trio "usually needs a
+box. `solution.md` warns that the `Procfile` / buildpack / `system.properties` trio "usually needs a
 couple of tries", which is why `create-app`'s steps are ordered to be resumable. Budget for it, and do
 one app end to end before touching the other eight.
 
@@ -149,7 +149,7 @@ sudo shepherd2 create-app <id> https://github.com/mvysny/<repo> \
 ```
 
 The arithmetic: 9 × 256 MB = **2304 MB** committed at runtime, plus **2 GB** for the single build. One
-build runs at a time box-wide (`SOLUTION.md`'s poll lock), so the build figure is a box-wide peak and
+build runs at a time box-wide (`solution.md`'s poll lock), so the build figure is a box-wide peak and
 not a per-app multiplier — the same point `ideas/box-memory-quota.md` makes. About 4.3 GB of 8 GB, which
 matches the old farm's 49% quota reading. Nothing here needs `Q_quota`, which stays deferred.
 
@@ -160,7 +160,7 @@ reusing the figure, because it is now a default rather than something typed per 
 And one dependency that is now discharged: `--build-cpu` rested on punch-list item 17, and the VM run
 settled it. The documented herokuish route — `resource:limit --process-type build --cpu N`, which is
 what `create-app` already emits — reaches the build container as real `nanocpus`, with a build peaking
-at 202 % of a 4-core host (`RESEARCH.md` → *Resource limits*). The profile below is no longer resting
+at 202 % of a 4-core host (`research.md` → *Resource limits*). The profile below is no longer resting
 on an unverified flag.
 
 ## Cutover order
@@ -177,7 +177,7 @@ The DNS-01 property above is what makes this safe, so keep the flip last:
    the cert is already valid for them, so this is a genuine end-to-end check *before* any user sees it.
 6. Flip the zone's `@` and `*` A records. Watch the renewal cron survive its first real run.
 7. Only then retire the old farm. It stays readable on GitHub either way, and nothing is copied out
-   of it (`CLAUDE.md`).
+   of it (`AGENTS.md`).
 
 One thing to check at step 5 rather than discover at step 6: **whether the old farm already serves
 HSTS** for these hostnames. If it does, browsers will refuse plain http on the new box — which is fine,
@@ -199,7 +199,7 @@ Procfile      web: sleep infinity
 ```
 
 `buildpacks:set probe heroku-community/inline`, deployed from a `file://` source. Two things the rig
-itself taught, both now in `RESEARCH.md`: the `heroku-community/x` shorthand is rewritten to
+itself taught, both now in `research.md`: the `heroku-community/x` shorthand is rewritten to
 `heroku/heroku-buildpack-x` (the org is a fiction of the shorthand) and a buildpack URL cannot be
 `file://` the way an app source can; and a `file://` app source must be **owned** by the `dokku` user,
 not merely readable by it.

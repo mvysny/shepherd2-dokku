@@ -1,23 +1,18 @@
-# SOLUTION.md — the v1 box, assembled
+# Solution — the v1 box, assembled
 
-> **This box has been assembled once, in `http` mode, on a throwaway VM (2026-09-11).** Every piece
-> below is written — both installers and the CLI — and the install, four real apps, a poll tick, a
-> teardown and an uninstall all ran. Everything here is decided (each claim names the `D_` entry that
-> decided it); what remains `[unverified]` is Dokku behaviour that run did not reach, and each such
-> claim points at `RESEARCH.md` → *Questions only a box can answer*.
->
-> **The `https` steps are the notable gap** — step 8 below has never executed. See *What is not yet
-> proven on a box*, at the end.
+The spec: what the box is, end to end — the inventory, the install steps in order, the CLI
+surface, and the flows that cross four or five decisions each and so belong to none of them.
+**This file is the authority: when it and the code disagree, the code is wrong.** Change this
+file (and the `D_` entry under it) first, then the code.
 
-**What this file owns:** the *assembly* — what ends up on the box, and how the pieces move together
-end to end. Those flows cross four or five decisions each and are therefore inside none of them.
+It owns *what* and *how the pieces fit*. It never owns *why* (`decisions.md` — cite `D_`), *what
+must hold* (`requirements.md` — cite `R_`), *what Dokku does* (`research.md`), how to operate the
+box (`README.md`), or a script's own arguments and env knobs (that script's comment header).
+Where a one-line fact saves a jump it is repeated here; the argument behind it never is.
 
-**What it does not own, and must never restate:** *why* a piece was chosen (`DECISIONS.md`), *what
-Dokku does* (`RESEARCH.md`), *how to operate the box* (`README.md`), or a script's arguments and env
-knobs (that script's comment header, once it exists). Where a one-line fact saves a jump it is
-repeated here; the argument behind it never is. There is no feature list anywhere and no `F_` namespace
-(`D_no_feature_list`): what the box *does* is this file plus `README.md`'s cheat sheet, and what it
-deliberately does not do is *What v1 does not do*, at the end.
+What the box *does* is this file plus `README.md`'s cheat sheet, and what it deliberately does
+not do is *What v1 does not do*, at the end. There is no feature list and no `F_` namespace
+(`D_no_feature_list`).
 
 ---
 
@@ -65,7 +60,7 @@ makes the downgrade unrepairable from here (`D_cert`).
 `domains:set-global` is identical in both, and so is everything about building and running apps. The
 http mode is defined by *absence*: an app with no certificate is served over port 80 by the same nginx,
 with no redirect and no HSTS header — confirmed on a box, along with the fact that `hsts` is *inert*
-rather than unset there, which is what makes the choice one-way (`RESEARCH.md` → *nginx*).
+rather than unset there, which is what makes the choice one-way (`research.md` → *nginx*).
 
 ## `shepherd2-install`, in order
 
@@ -194,7 +189,7 @@ to that ref, and every later sync can then omit it.
    other half of the cache story, since concurrent writers are what corrupt one. Whether `rebuild`
    takes the same lock is an implementation choice; if it does not, the backstop is Dokku's own per-app
    deploy lock, which is *non-waiting* — a collision on the same app fails fast and tells the operator
-   to retry, it does not queue (`RESEARCH.md` → *`git:sync`*).
+   to retry, it does not queue (`research.md` → *`git:sync`*).
 2. For each app in `apps:list` that has a `SHEPHERD_GIT_URL`, in turn:
    `dokku git:sync --build-if-changes <app> <url>` — no ref needed, Dokku remembers the deploy branch.
 3. **Dokku fetches. If the ref did not move, nothing is built** — so 288 ticks produce a build only on a
@@ -220,7 +215,7 @@ to that ref, and every later sync can then omit it.
 
    **The records are mostly poll noise, and two things make them readable anyway** (`D_poll_churn`). A
    no-change tick writes a record too, and reaped ticks land on disk as `failed` with `exit_code: -1`
-   (`RESEARCH.md` → *Build tracking*) — so the install raises the window to 300 records, about a day of
+   (`research.md` → *Build tracking*) — so the install raises the window to 300 records, about a day of
    ticks, and `shepherd2 last-build` is the read that skips past them. `dokku builds:report` is *not*:
    it names the newest record, which on an idle app is always an abandoned tick. The same churn reaches
    the reboot flow below, where it decides how `wait-idle` asks whether a build is running.
@@ -255,7 +250,7 @@ Unattended: Docker's `always` policy plus Dokku's `ps:restore` from the init ser
 back after a reboot, skipping any that was manually stopped. A **daemon** restart is gentler than that
 and was run on a live box: `live-restore` — set by Dokku's own postinst — means the containers are
 never stopped at all, `ps:restore` still fires and briefly leaves a duplicate container that exits 143
-on its own within ~17 s, and nginx's upstreams still match afterwards (`RESEARCH.md` → *Processes,
+on its own within ~17 s, and nginx's upstreams still match afterwards (`research.md` → *Processes,
 restarts and reboot*). **A true power cycle remains untested**; see *What is not yet proven on a box*.
 
 Deliberate: `shepherd2 wait-idle` first. It blocks on the same poll lock and on `builds:list` with no
@@ -277,7 +272,7 @@ shepherd2 destroy-app demo
 two tails matters. Without the network destroy the box leaks a Docker network per project destroyed
 (`D_isolation`). Without the reload the *running* nginx keeps serving `demo.mydomain.me` from a config
 it still holds in memory, so requests to a destroyed project hang for 60s each rather than being
-refused: `apps:destroy` removes the vhost file without signalling nginx (`RESEARCH.md` → *nginx*).
+refused: `apps:destroy` removes the vhost file without signalling nginx (`research.md` → *nginx*).
 `apps:destroy` removes the `cache-demo` volume itself (verified on a box), so `destroy-app`'s
 `repo:purge-cache` first is belt-and-braces rather than load-bearing. There is nothing else per
 project: no file, no certificate, no service, no firewall rule.
@@ -316,17 +311,17 @@ Each of these is deferred with a decision behind it, not forgotten:
   deferral on this list — a database attaches to an app that already exists — except that when it lands
   it must be created with `--initial-network app-<id>`, which is creation-time only (`D_isolation`).
 - **No private repos.** Every hosted repo must be publicly cloneable; the box holds no git credential
-  (`Q_credentials` in `ideas/private-repo-credentials.md`).
+  (`ideas/private-repo-credentials.md` is the open question).
 - **No custom or apex domains**, because the wildcard covers neither (`D_cert`). Both are v2 rather than
   dropped, and v2 is `dokku-letsencrypt` on the affected apps only.
 - **No multi-user anything.** One keyholder, who can do everything to every app (`D_single_operator`),
-  and no web UI (`Q_web_admin` in `ideas/web-admin-ui.md`). Password and Google-SSO login go with the
+  and no web UI (`ideas/web-admin-ui.md`). Password and Google-SSO login go with the
   UI — a CLI has nothing to log in to — and the one v2 route that brings them back is option 3 there.
 - **No egress filtering, and the host is reachable from every container.** Unchanged from both
   predecessors; deferred to v2 in `ideas/harden-container-egress.md`, which also records the two things
   v1 must not do to keep that fix cheap.
 - **No memory quota.** Nothing refuses a project whose runtime + build memory overflows the box
-  (`Q_quota` in `ideas/box-memory-quota.md`): the only enforcement point available is `create-app`, and
+  (`ideas/box-memory-quota.md`): the only enforcement point available is `create-app`, and
   a later hand `resource:limit` bypasses it. `shepherd2 stats` *reports* the over-commit — the sum of
   the limits against what the box has — and refuses nothing (`D_stats`).
 - **No frontend build cache.** Every app here uses Vaadin's pre-compiled production bundle, so there is
@@ -336,7 +331,7 @@ Each of these is deferred with a decision behind it, not forgotten:
 
 ## What is not yet proven on a box
 
-The 2026-09-11 run settled most of the punch list — `RESEARCH.md` → *Questions only a box can answer*
+The 2026-09-11 run settled most of the punch list — `research.md` → *Questions only a box can answer*
 records each answer against its item. Four things are left, and only the first is load-bearing for v1:
 
 - **Item 4, the whole `D_cert` chain.** Step 8 above — lego's first issuance, `global-cert:set`, the

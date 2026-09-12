@@ -2,7 +2,7 @@
 
 # Test doubles for Shepherd2's seams: every process a verb would start, recorded instead of run, plus
 # the two callbacks a front-end supplies. What the tests then assert is the *sequence* — which is the
-# design (SOLUTION.md's registration flow), not an implementation detail. A reordering that put
+# design (design/solution.md's registration flow), not an implementation detail. A reordering that put
 # `network:set` after the first build would still work on a happy path and quietly build the first
 # image on the wrong network.
 

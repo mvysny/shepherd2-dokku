@@ -18,7 +18,7 @@ requirements are met for the Java half, which is the half every app on this box 
 
 **Gradle apps are a different, better story, and it is already settled** (2026-09-11). The Heroku
 Gradle buildpack puts `GRADLE_USER_HOME` *inside* the cache volume, so dependencies, the Gradle build
-cache, the wrapper's distribution and the JDK all come back warm — see `RESEARCH.md` → *Build
+cache, the wrapper's distribution and the JDK all come back warm — see `research.md` → *Build
 caching*. Candidates 2 and 3 below are Maven's problem specifically. What Gradle does not fix is the
 frontend: that buildpack deletes `${CACHE_DIR}/.gradle/nodejs` after every successful build, on
 purpose, so a Node toolchain fetched under `GRADLE_USER_HOME` is never kept either.
@@ -176,7 +176,7 @@ save *after* the Java buildpack, this comes back.
 
 - The v1 recommendation — *stay on the pre-compiled bundle* — is already in **`README.md`**; nothing
   else here belongs there until v2 needs it.
-- Whatever the box says about 1–3 → **`RESEARCH.md`** → *Build caching*, for the Dokku/buildpack half
+- Whatever the box says about 1–3 → **`research.md`** → *Build caching*, for the Dokku/buildpack half
   only. The Vaadin half (no knob for `~/.vaadin`, the bundle behaviour) has no durable home in this
   repo and stays here until it lands in README's onboarding recipe.
 - If a fix ever costs a `docker-options` line per app → **`create-app`'s comment header**, and a line in

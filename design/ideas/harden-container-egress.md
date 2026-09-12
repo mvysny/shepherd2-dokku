@@ -5,7 +5,7 @@ decision walls app off from app; **this note is the axis it left open**, and it 
 has no decision.
 
 **Measured on a box, 2026-09-11 (punch-list 11), and the verdict is: v2 should bother.** The full table
-is in `RESEARCH.md` → *Networking and app isolation*; what it changes here is that three of the bullets
+is in `research.md` → *Networking and app isolation*; what it changes here is that three of the bullets
 below stop being inference:
 
 - **A host service bound to `0.0.0.0` is reachable from inside every app container; one bound to
@@ -91,13 +91,13 @@ Rough shape, to be argued with rather than copied:
   flagged and never resolved. Likely answer: drop per-port rather than per-host, or allow 53.
 - **Does it break `dokku-postgres` or any linked service?** Those are container-to-container, so they
   should not touch `DOCKER-USER` at all — but the `--link` residue in `postgres:link` is already
-  `[unverified]` (`RESEARCH.md` punch-list item 9) and this is a second reason to pin it down. Both
+  `[unverified]` (`research.md` punch-list item 9) and this is a second reason to pin it down. Both
   halves are v2 now: the managed database was deferred the same day, so there is no linked service in
   v1 to break.
 - **Where does the rule live so a reinstall reproduces it?** `iptables-save`/`iptables-restore` state is
   not in this repo. Options: a `shepherd2-install` step writing an `iptables-persistent` rules file, or
   a tiny systemd unit. Whichever — *"anything the box must survive a reinstall of belongs in this repo"*
-  (`CLAUDE.md`), so it cannot stay a command someone typed once.
+  (`AGENTS.md`), so it cannot stay a command someone typed once.
 - **Is it worth it at all**, given the threat model is "someone's demo app is compromised"? This is now
   the question that decides whether v2 does any of this. The honest case for yes is the metadata
   endpoint: on a cloud VM that single address can hand out credentials for the whole account, and it is
@@ -105,7 +105,7 @@ Rough shape, to be argued with rather than copied:
 
 ## Punch list additions
 
-For `RESEARCH.md` → *Questions only a box can answer*, once these are sharp enough to be worth a box's
+For `research.md` → *Questions only a box can answer*, once these are sharp enough to be worth a box's
 time (they are not yet — every one of them is a question about *our* configuration rather than about
 Dokku, so several may belong nowhere near that file):
 
@@ -121,8 +121,8 @@ Dokku, so several may belong nowhere near that file):
 Not before v2, and possibly never — a decision *against* is a graduation too, and the last bullet under
 *Open questions* is the one that settles which it is.
 
-- The rule, its interface/subnet match and the reinstall mechanism → a **`D_egress`** entry, plus the
-  step itself in **`README.md`** and in `shepherd2-install`'s comment header.
-- Anything learned about Docker's or Dokku's own netfilter behaviour → **`RESEARCH.md`**.
+- The rule, its interface/subnet match and the reinstall mechanism → an entry of its own in
+  **`decisions.md`** (it earns its slug when the decision is taken, not before), plus the step itself in **`README.md`** and in `shepherd2-install`'s comment header.
+- Anything learned about Docker's or Dokku's own netfilter behaviour → **`research.md`**.
 - If it is decided *against*: a one-line road-not-taken inside `D_isolation`'s *Consequences*, where the
   open axis is already named — not a `D_` of its own.

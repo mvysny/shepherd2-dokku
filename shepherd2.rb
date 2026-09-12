@@ -30,7 +30,7 @@ require 'open3'
 #   daemon, so even the quiet ones run for seconds. Four hold the thread for *minutes*: `create_app`,
 #   `poll`, `rebuild` and `wait_idle`, each saying so in its own rdoc. They are synchronous because
 #   Dokku is — `git:sync` returns only once the container is up, and its exit code *is* the build's,
-#   which is the one trustworthy build status there is (RESEARCH.md → `git:sync`; D_poll_churn for why
+#   which is the one trustworthy build status there is (design/research.md → `git:sync`; D_poll_churn for why
 #   the records are not).
 #
 # PROGRESS, AND ASKING
@@ -55,7 +55,7 @@ require 'open3'
 #   file is enough; it loads nothing else of ours.
 #
 # SEE ALSO
-#   SOLUTION.md — the flows these verbs implement, step by step
+#   design/solution.md — the flows these verbs implement, step by step
 #   D_api_surface (why the rendering is elsewhere) · D_dokku_is_truth · D_isolation
 #   D_builder (herokuish, and the cache volume) · D_admin_namespace · D_ruby
 class Shepherd2
@@ -425,7 +425,7 @@ class Shepherd2
                '--cpu', options.fetch(:cpu, DEFAULT_CPU).to_s, id)
 
     # Build CPU rides the herokuish path, which honours both cpu and memory against the `build`
-    # process type (RESEARCH.md, *Resource limits*) — confirmed on a box: the build container is
+    # process type (design/research.md, *Resource limits*) — confirmed on a box: the build container is
     # created with the memory limit and NanoCpus set, and a real build peaks at 200% CPU on a 4-core
     # host. The `docker-options:add <app> build '--cpus N'` route the punch list asked about is a
     # Dockerfile-builder artefact and is not needed.
@@ -482,7 +482,7 @@ class Shepherd2
     confirm_destruction!(id) unless options[:yes]
 
     # apps:destroy does remove the cache-<app> volume by itself (verified on a box 2026-09-11, see
-    # RESEARCH.md), so this purge is belt-and-braces rather than load-bearing. Kept because it is
+    # design/research.md), so this purge is belt-and-braces rather than load-bearing. Kept because it is
     # literally `docker volume rm -f cache-<app>` — it costs one call, tolerates a volume that was
     # never created, and keeps the teardown correct if that behaviour ever changes. A box where it
     # fails is still a box we want destroyed, so this is best-effort rather than fatal.
@@ -604,7 +604,7 @@ class Shepherd2
   # With +log:+ the output comes back **as a snapshot**, read once — a live build's is never fetched,
   # because `builds:output` would `tail -f` it and block. +log_status+ is what separates a build that
   # printed nothing from one whose log has been rotated away: `builds:output` exits 0 having printed
-  # nothing for both (dokku#9031, RESEARCH.md → *Build tracking*).
+  # nothing for both (dokku#9031, design/research.md → *Build tracking*).
   #
   # @param id [String, nil] the app id, or +nil+ for every registered project.
   # @param log [Boolean] also read that build's output. Needs an id.
@@ -916,7 +916,7 @@ class Shepherd2
         unregistered: apps.count { |app| !app[:registered] },
         cache_total: apps.filter_map { |app| app[:cache] }.sum,
         apps: apps,
-        # `apps:destroy` removes the cache volume itself (RESEARCH.md), so this list should stay empty
+        # `apps:destroy` removes the cache volume itself (design/research.md), so this list should stay empty
         # forever; it costs one filter, and an entry in it means that stopped being true.
         orphan_caches: orphan_caches(inventory, sizes)
       } }

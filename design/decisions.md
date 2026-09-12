@@ -1,50 +1,22 @@
-# DECISIONS.md
+# Decisions
 
-A living record of the design decisions behind Shepherd2 — especially the *roads not taken*. It exists
-because the code and its comments record *what* the box does and `README.md` records *how to operate
-it*, but the rationale for the alternative that was rejected has nowhere else to live, and that
-rationale is what a future maintainer (or agent) actually needs before "simplifying" something
-load-bearing.
+Why Shepherd2 is the way it is: one entry per decision *already taken*, with the roads not
+taken. Not what the code does (the code and its script headers), not what must hold
+(`requirements.md`), not what Dokku does (`research.md`), not a scratchpad (`ideas/`).
 
-It is the *why-we-chose* record. It is **not** the operator guide (`README.md`), the
-what-you-must-not-break orientation (`CLAUDE.md`), the what-Dokku-does reference (`RESEARCH.md`), or a
-scratchpad for undecided things (`ideas/`). When a fact belongs in one of those, put it there and link —
-see *Documentation targets* in `CLAUDE.md`.
-
-**Format.** One entry per decision. The ID is a slug, not a number: `D_` (says "this is a decision")
-plus a 1–4-word hint at the subject (`D_dokku`), so a reference carries meaning on its own — a running
-counter would not, and renumbering silently invalidates every existing reference. **Underscores
-throughout, never hyphens**: the id has to be one *token*, so that vim's `w` / `*` / `ciw` and
-`grep -w` act on the whole thing rather than on a fragment. Backtick it in prose, both because some
-downstream Markdown parsers italicise intraword `_` and because a backticked id is copy-pasteable into
-a search. The `(date)` on the heading is *decided* provenance, not a log position; git owns the edit
-history, so don't narrate how an entry used to read. Keep each entry tight: context, the decision, the
-alternatives rejected and why, and the consequences a future maintainer would trip over. A decision is
-worth logging the moment it's *made* — implementation can lag, and the `Status:` line says which.
-
-**Entries are mutable — edit in place, don't append addendums.** Each entry is the single coherent home
-for one *live* decision; keep it current as the decision is refined or extended. Two things that does
-*not* license:
-
-- **The roads-not-taken stay.** "We chose X, rejected Y because Z" is live content of the current
-  decision, not stale history — never edit it away. It is the most valuable thing in the file.
-- **A reversed *shipped* decision forks a tombstone, it is not overwritten.** When something was
-  deployed and then thrown away, leave the old entry as the scar, set its `Status:` to
-  **Superseded by `D_<slug>`**, and write the replacement fresh. The line: *refined or extended* → edit
-  in place; *reversed after shipping* → tombstone + new entry.
-
-**Only decisions already made.** An entry records a position this project has actually taken — shipped,
-or accepted and awaiting implementation (that is what `Status:` is for). Speculative features, ideas and
-"we might one day" belong in `ideas/`, never here; a TODO is not a decision. The one adjacent case that
-*is* in scope is a rejected alternative, which is a road not taken **within** a decision already made,
-not an open question.
-
-**Inherited history lives upstream.** Shepherd2 is the third implementation of the same product. The
-decisions of the first two — Kubernetes (`D_kubernetes`), then plain Docker + Traefik
-(`D_docker_traefik`, `D_network_per_project`, `D_poll_scm`, `D_no_shared_cache`) — are recorded in
-[shepherd-traefik's `DECISIONS.md`](https://github.com/mvysny/shepherd-traefik/blob/main/DECISIONS.md)
-and are **not** copied here. Cite them by slug with that repo named, e.g. "see `D_no_shared_cache` in
-shepherd-traefik". A `D_` heading in *this* file is always a Shepherd2 decision.
+- Cite an entry by slug — `D_<slug>` — never by position. `grep '^## D_' design/decisions.md`
+  is the index; there is no table of contents.
+- **No entry without a real fork.** Nothing seriously considered and rejected → not a decision.
+- Entries are mutable: refine in place. A *shipped* decision that is reversed keeps its entry as
+  a tombstone (`Status: Superseded by D_<slug>`); the replacement is written fresh. Order here is
+  the order taken, oldest first — later entries build on earlier ones.
+- Shape: `## D_<slug> — <title> (<decided date>)`, then **Status**, **Context**, **Decision**,
+  one **Rejected: …** paragraph per alternative, **Consequences**.
+- **Inherited decisions live upstream.** Shepherd2 is the third implementation of this product;
+  the decisions of the first two — `D_kubernetes`, then `D_docker_traefik`,
+  `D_network_per_project`, `D_poll_scm`, `D_no_shared_cache` — stay in
+  [shepherd-traefik's `DECISIONS.md`](https://github.com/mvysny/shepherd-traefik/blob/main/DECISIONS.md)
+  and are cited by slug *with that repo named*. A `D_` heading here is always a Shepherd2 decision.
 
 ---
 
@@ -106,21 +78,21 @@ of why the verdict landed on Dokku:
 - **Jenkins goes; the build history does not go with it — corrected 2026-09-09.** Dokku's core `builds`
   plugin (new in 0.38.0) records every deploy and keeps its log on disk, 20 per app by default, and the
   capture is trigger-independent — so `git:sync` from our rebuild cron is recorded like a `git push`
-  (`RESEARCH.md`, *Build tracking*). The per-project build list and build log that the Web Admin shows
+  (`research.md`, *Build tracking*). The per-project build list and build log that the Web Admin shows
   today have a direct upstream counterpart in `builds:list` / `builds:output`. What is genuinely lost is
   the *browser* view of them (`D_retire_shepherd_java`) and the git SHA per build, which Dokku's record
   does not carry.
   - **Amended 2026-09-10, and this one is a real dent:** "20 per app" is 20 *records*, and a
     `--build-if-changes` tick that finds nothing writes one too — so under the five-minute poll the
     default window holds ~95 minutes of no-op ticks and prunes real build logs out from under itself
-    (`RESEARCH.md`, *Build tracking*). The upstream counterpart is therefore only as good as our poll
+    (`research.md`, *Build tracking*). The upstream counterpart is therefore only as good as our poll
     is quiet. It does not change the choice — Jenkins is not coming back — but the sentence above
     over-promised, so read it with `D_poll_churn` attached, which is where the window, the way to read
     past the noise, and the upstream report live.
 - **Build cache isolation is *not* a regression, which is a large part of why Dokku won.** The
   Dockerfile builder allowlists `--cache-to`/`--cache-from` and appends them to `docker image build`, so
   today's per-project `type=local` cache directory migrates as one `docker-options:add` per app —
-  enforced on the build command, exactly as `shepherd-build` enforces it now (`RESEARCH.md`,
+  enforced on the build command, exactly as `shepherd-build` enforces it now (`research.md`,
   *Build caching*). Coolify, Dokploy and CapRover expose no such knob. What does *not* carry over is the
   `RUN --mount=type=cache` half: the app writes its own Dockerfile and so names its own mount ids, which
   stays a convention rather than a boundary — the same known gap `D_no_shared_cache` in shepherd-traefik
@@ -137,7 +109,7 @@ of why the verdict landed on Dokku:
 ## D_retire_shepherd_java — No web admin, no Java; Dokku's CLI is the interface (2026-09-09)
 
 **Status:** Accepted 2026-09-09 in principle. The shape of the CLI replacement is settled by
-`D_dokku_is_truth` (2026-09-10); whether any browser UI returns is still `Q_web_admin` in
+`D_dokku_is_truth` (2026-09-10); whether any browser UI returns is still open in
 `ideas/web-admin-ui.md`. What is decided here is that shepherd-java-client is not carried forward.
 
 **Context.** [shepherd-java-client](https://github.com/mvysny/shepherd-java-client) supplies today's
@@ -157,7 +129,7 @@ box.
 - *Keep the Vaadin Web Admin and reimplement its backend against Dokku.* The most feature-preserving
   option, and the only one that keeps a browser UI. Rejected because it keeps a second repo, a JVM
   runtime and a Gradle build alive to administer a box whose whole point is being small — and because
-  `R_admin_interface` was relaxed to accept a CLI precisely so this could go.
+  the requirement for an admin interface was relaxed to accept a CLI precisely so this could go.
 - *Dokku Pro.* The official web UI. Proprietary, paid, licence-checked against the public internet.
   Rejected: replacing a component we own with a paid closed one is the wrong direction.
 - *A third-party Dokku web UI.* `wharf` is alive (262★, AGPL-3.0, single-maintainer); `ledokku` — 642★,
@@ -173,8 +145,8 @@ box.
   (`dokku ssh-keys:add`, where a key name containing `admin` is privileged) — and that is *less* than it
   sounds: core Dokku has no app ownership, so every authorised key may run every command against every
   app. Per-user scoping would have to be built on the `user-auth` trigger. See *Users and access
-  control* in `RESEARCH.md`; `D_single_operator` scopes v1 to one keyholder and leaves per-user
-  ownership to v2 (`Q_multi_user` in `ideas/multi-user-ownership.md`).
+  control* in `research.md`; `D_single_operator` scopes v1 to one keyholder and leaves per-user
+  ownership to v2 (`ideas/multi-user-ownership.md`).
 - **Five behaviours lose their only home** and must each be re-provided, re-scoped or consciously
   dropped: the project descriptor, the box-wide memory quota, reserved ids, the smart-update logic, and
   the graceful "safe to reboot" wait. None has a Dokku counterpart. `D_dokku_is_truth` settles the first,
@@ -185,19 +157,19 @@ box.
 
 ## D_research_md — Dokku's behaviour gets a durable file, not an ideas sidecar (2026-09-09)
 
-**Status:** Accepted 2026-09-09; implemented as `RESEARCH.md`.
+**Status:** Accepted 2026-09-09; implemented as `research.md`.
 
 **Context.** This project is mostly glue around a product we don't own, so a large share of its
 knowledge is *findings about Dokku* — what a command does, which flag exists on which version, which
 documented feature turns out not to work. The `ideas-folder` convention says an idea's research goes in
 a same-stem sidecar folder and **dies with the idea**, while "verified behaviour goes to the project's
 durable place". For a glue project there was no such durable place: upstream behaviour is not our
-decision (`DECISIONS.md`), not an operator instruction (`README.md`), and not a per-script truth.
+decision (`decisions.md`), not an operator instruction (`README.md`), and not a per-script truth.
 
-**Decision.** One durable, top-level **`RESEARCH.md`** owns everything established about Dokku, with
-each claim marked `[docs]`, `[src]` or `[unverified]`. Idea sidecars stay for reasoning that dies with
+**Decision.** One durable, top-level **`research.md`** owns everything established about Dokku, with
+each claim marked `[docs]`, `[src]`, `[verified]` or `[unverified]`. Idea sidecars stay for reasoning that dies with
 the idea — why an alternative was rejected, whether a blog post was accurate. A *fact about Dokku* is
-backported to `RESEARCH.md` before the idea is deleted.
+backported to `research.md` before the idea is deleted.
 
 **Alternatives rejected.**
 
@@ -207,13 +179,14 @@ backported to `RESEARCH.md` before the idea is deleted.
   idea that prompted asking.
 - *Fold it into `README.md`.* Puts an operator reading an install step next to a paragraph on which
   version of a plugin gained DNS-01 support. Different audience, different lifetime.
-- *Fold it into `DECISIONS.md`.* Upstream behaviour is not a decision of ours, and it changes when Dokku
+- *Fold it into `decisions.md`.* Upstream behaviour is not a decision of ours, and it changes when Dokku
   releases — whereas an entry here is stable once made.
 
 **Consequences.**
 
-- **`RESEARCH.md` is the fifth documentation target**, and the graduation map in `CLAUDE.md` names it as
-  the destination for verified Dokku behaviour.
+- **`research.md` is one of the doc targets**, and the graduation map in `AGENTS.md` names it as the
+  destination for verified Dokku behaviour. `D_design_docs` later moved it under `design/`; the
+  argument for its existence is unchanged.
 - **It has a shelf life.** Claims are dated and version-stamped against a Dokku release; a claim about a
   version we no longer run is stale, not history. Re-check before relying on anything version-sensitive.
 - **`[unverified]` is load-bearing.** It is the marker that separates "Dokku's docs say" from "we saw it
@@ -253,7 +226,7 @@ plugin, shipped and enabled by the deb, so it sits on every Shepherd2 box unused
   dropped rather than refused, and **nothing appears in `traefik:logs`**. A 502 is diagnosable in
   seconds; a silent hang with empty logs is the worst diagnostic shape there is, so the cost of
   switching proxies without re-reading this entry is higher than "it breaks" — it is "it breaks
-  invisibly". `RESEARCH.md` → *Traefik (official plugin)* has the run, the controls and the generated
+  invisibly". `research.md` → *Traefik (official plugin)* has the run, the controls and the generated
   compose file.
 - **Per-app ingress tuning is first-class on nginx and absent on Traefik.** `nginx:set <app>
   client-max-body-size` / `proxy-read-timeout` are app-scoped properties, where **every `traefik:set`
@@ -266,13 +239,13 @@ plugin, shipped and enabled by the deb, so it sits on every Shepherd2 box unused
 - Two smaller Traefik restrictions: only `web` containers get labels injected, and only `http:80` /
   `https:443` port mappings are supported.
 
-All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
+All five are in `research.md` (*Proxies*), which owns the citations.
 
 **Alternatives rejected.**
 
 - *The official Traefik plugin.* Rejected on the four asymmetries above. What it genuinely buys, and
   what we are giving up: ACME renewal becomes Traefik's problem rather than a cron of ours (as it is
-  today), which is route 3 in `RESEARCH.md` → *TLS* — at the price of per-app ACME orders and no
+  today), which is route 3 in `research.md` → *TLS* — at the price of per-app ACME orders and no
   declared wildcard SAN. Familiarity was the strongest argument for it and is not enough: the
   knowledge that transfers is knowledge of a component we were trying to stop maintaining.
 - *Keep both — nginx globally, Traefik for one app that needs it.* Dokku allows this (`proxy:type` is
@@ -284,7 +257,7 @@ All five are in `RESEARCH.md` (*Proxies*), which owns the citations.
 
 **Consequences.**
 
-- **The TLS question narrows to two routes, not three** (`RESEARCH.md` → *TLS* has all three,
+- **The TLS question narrows to two routes, not three** (`research.md` → *TLS* has all three,
   `D_cert` the answer). `dokku-global-cert` (one wildcard cert we renew) and `dokku-letsencrypt`
   (per-app ACME, renewal solved upstream) both stay available; the Traefik DNS-01 route is gone.
   That is the intended direction — the requirement as written asks for one wildcard cert — but it is
@@ -357,7 +330,7 @@ properties of Dokku's version make the predecessor's price disappear:
   lives in the root network namespace, so host netfilter sees app-to-app traffic, where intra-overlay
   traffic never does. **Measured on a box 2026-09-11, and it works**: `initial-network` accepts a
   hand-made `icc=false` network, the app routes, and two apps sharing that one network isolate exactly
-  as two per-app networks do (`RESEARCH.md` → *Networking and app isolation*). So this is a live option
+  as two per-app networks do (`research.md` → *Networking and app isolation*). So this is a live option
   rejected on judgement, not a dead end — and the three counts against it survive the measurement with
   one correction:
   - `network:create` passes no driver options, so the network is a hand-made `docker network create
@@ -384,7 +357,7 @@ properties of Dokku's version make the predecessor's price disappear:
 **Consequences.**
 
 - **`/etc/docker/daemon.json` needs enlarged `default-address-pools`, at install time.** A stock daemon
-  walls at **29** bridge networks — measured, not estimated (`RESEARCH.md` → *Networking and app
+  walls at **29** bridge networks — measured, not estimated (`research.md` → *Networking and app
   isolation*) — i.e. 29 apps. This is precedent, not a new cost — shepherd-traefik already does it —
   but it needs a daemon restart, so it belongs in the installer and cannot be retrofitted cheaply.
   The file is **already there** when the installer reaches it: not from Docker's package, as this entry
@@ -401,7 +374,7 @@ properties of Dokku's version make the predecessor's price disappear:
   a Docker network per project destroyed.
 - **This decision depends on `D_proxy`.** Under the Traefik plugin it would cost either the isolation or
   a reconciler cron. Do not switch proxies without re-reading both entries.
-- **Two things isolation does not buy, both now measured** (2026-09-11, `RESEARCH.md` → *Networking and
+- **Two things isolation does not buy, both now measured** (2026-09-11, `research.md` → *Networking and
   app isolation*). The L7 front door stays open — any app can reach nginx by the bridge gateway IP and
   ask for another app's vhost with a `Host:` header: **200**, confirmed, and harmless because that
   surface is public anyway. And **the host stays reachable**, with a sharper edge than this entry
@@ -466,7 +439,7 @@ became whether to keep a second one on top of it.
   `deploy-source-set`. Many first builds fail — the `Procfile` / buildpack / `system.properties` trio
   usually needs a couple of iterations — and an app with no recorded URL is invisible to a poll derived
   from Dokku's records, so the developer's fix upstream is never picked up. A config var written *before* the first build puts the app in the poll
-  from the moment it exists, and the next upstream commit heals it. `RESEARCH.md` → *`git:sync`* has
+  from the moment it exists, and the next upstream commit heals it. `research.md` → *`git:sync`* has
   the source reading.
 
 **Alternatives rejected.**
@@ -495,7 +468,7 @@ became whether to keep a second one on top of it.
   **The box-wide memory quota is deferred to v2** (operator, 2026-09-10): the only enforcement point
   this design leaves is `create-app`, where a later hand `resource:limit` bypasses it, and a guard that
   holds only on the path the operator already controls was not worth writing before the box exists.
-  `Q_quota` in `ideas/box-memory-quota.md` stays open as the v2 question — the interesting half of which
+  `ideas/box-memory-quota.md` stays open as the v2 question — the interesting half of which
   is whether *any* enforcement point exists that Dokku's own state does not undermine. **Recording who
   owns a project** survives as `SHEPHERD_OWNER`. Per-project cache flags are set once by `create-app`.
 - **Both config vars are injected into the container's environment.** Acceptable because neither is a
@@ -510,19 +483,19 @@ became whether to keep a second one on top of it.
 - **The per-project configuration is not in git.** The reinstall story is this repo plus Dokku's own
   state (`~dokku` and `/var/lib/dokku`; that this is the complete set is `[unverified]`), or re-running
   `create-app` per project. A read-only export of the reports into git would mitigate it; not decided.
-- **The `Q_multi_user` hook stays cheap** regardless of which way that question goes: "is `$SSH_NAME`
+- **The multi-user hook stays cheap** (`ideas/multi-user-ownership.md`) regardless of which way that question goes: "is `$SSH_NAME`
   the app's `SHEPHERD_OWNER`" is one `config:get`.
 - **The choice of implementation language loses its main input** — there is no descriptor to parse,
   only reports to read; `D_ruby` decided it on `create-app`'s flag list instead.
 - **A third-party client such as wharf may be adopted, never depended on.** It is a pure SSH client
   holding no server-side state, so its death costs nothing; that is the property `D_retire_shepherd_java`
-  found missing in the class. Whether any browser UI returns is still `Q_web_admin`.
+  found missing in the class. Whether any browser UI returns is still `ideas/web-admin-ui.md`.
 - **`D_retire_shepherd_java`'s open "shape of the replacement" is closed for the CLI half** by this entry.
 
 ## D_single_operator — v1 has one keyholder; per-user project ownership is v2 (2026-09-10)
 
 **Status:** Accepted 2026-09-10 for the first version. Deliberately scoped: this decides *v1*, and it
-defers rather than drops multi-user. `Q_multi_user` in `ideas/multi-user-ownership.md` stays open as
+defers rather than drops multi-user. `ideas/multi-user-ownership.md` stays open as
 the v2 question.
 
 **Context.** Shepherd today has users: an admin adds them, and each sees, creates, edits and deletes only
@@ -530,10 +503,10 @@ their own projects, filtered on `owner.email`. Core Dokku has nothing of the kin
 may run every command against every app, the only privilege distinction being the substring `admin` in a
 key name. So "access control becomes SSH keys" is not a mapping of the old model; it is its removal. Any
 per-user model would be built on the `user-auth` trigger, by us or by the stale `dokku-acl` plugin.
-`RESEARCH.md` → *Users and access control* has the detail.
+`research.md` → *Users and access control* has the detail.
 
 **Decision.** **In v1 exactly one person holds a key: the operator.** They log into the box as an admin
-user and run `dokku` and `shepherd2` from one shell (`Q_web_admin`). No `user-auth` hook, no `dokku-acl`,
+user and run `dokku` and `shepherd2` from one shell (`ideas/web-admin-ui.md`). No `user-auth` hook, no `dokku-acl`,
 no `ssh dokku@host` remote access for anyone else. `SHEPHERD_OWNER` is a contact field, not an ACL.
 
 **Why.** Every multi-user option costs a security-critical component in the authorization path — our own
@@ -541,7 +514,7 @@ hook, an unaudited plugin, or Dokku Pro — and none of it is needed to get a bo
 projects. Deciding it later costs nothing *provided* v1 stores the one input v2 needs, which is the owner
 per app; `D_dokku_is_truth` already does.
 
-**Alternatives rejected** (for v1 only; all remain v2 candidates and are argued in `Q_multi_user`).
+**Alternatives rejected** (for v1 only; all remain v2 candidates and are argued in `ideas/multi-user-ownership.md`).
 
 - *Our own `user-auth` hook* — "is `$SSH_NAME` the app's `SHEPHERD_OWNER`", one `config:get`. Cheap, and
   the likely v2 shape, but a hook we would own in the authorization path before the box even exists.
@@ -569,7 +542,7 @@ per app; `D_dokku_is_truth` already does.
 steps (lego, the plugin, the first issuance, one root cron line — nothing per app). The **`http` mode
 ran end to end on a box 2026-09-11**, including the two claims that make it safe to run and one-way to
 leave: no HSTS header and no redirect without a certificate, and `nginx:set hsts true` emitting nothing
-at all (`RESEARCH.md` → *nginx*). **The `https` mode has never been executed anywhere** — lego, the
+at all (`research.md` → *nginx*). **The `https` mode has never been executed anywhere** — lego, the
 `global-cert` push and the renewal hook are punch-list item 4, which needs a real DNS zone and is
 planned in `ideas/production-cutover.md`. Depends on `D_proxy`: the `certs` plugin
 this rides on is ignored under the Traefik plugin. **Amended the same day** with the http-only mode: https as
@@ -587,7 +560,7 @@ It is the requirement. Every app this product has ever hosted was a demo at `PRO
 wildcard DNS record; the production use with foreign domains that the predecessors allowed for never
 materialised. Once custom and apex domains are deferred (see *Consequences*), per-app
 issuance buys nothing and the wildcard is the whole story. And a wildcard is DNS-01 by definition —
-Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*).
+Let's Encrypt issues wildcards over no other challenge (`research.md` → *TLS*).
 
 **Decision.**
 
@@ -598,7 +571,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 - **Propagation is `dokku-global-cert`**, installed by `install`. It imports the cert into every new app
   at creation, re-applies it to every app using it on `global-cert:set`, and leaves apps with their own
   certificate alone. It is the one third-party plugin Shepherd2 depends on, and this entry is the `D_`
-  that `CLAUDE.md`'s *Conventions* require for that.
+  that `AGENTS.md`'s *Conventions* require for that.
 - **No per-app ACME in v1.** `dokku-letsencrypt` is not installed; no app runs `letsencrypt:enable`.
 - **TLS is an install-time *mode*, and `http` is a supported one** — added 2026-09-10.
   `install` asks once, and the answer is recorded on the box:
@@ -677,7 +650,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 - **The mode is one-way in practice, and that is why it is an install-time question.** Mechanically
   Dokku would let you add a certificate later; what makes the switch a bad promise is the *other*
   direction. nginx's `hsts` property defaults to **`true`**, with `hsts-include-subdomains` `true` and
-  `hsts-max-age` `15724800` — 182 days (`RESEARCH.md` → *nginx*). So the moment one app is served over
+  `hsts-max-age` `15724800` — 182 days (`research.md` → *nginx*). So the moment one app is served over
   https, every browser that saw it refuses plain http for half a year, and the fix lives in each
   visitor's browser rather than on the box. Downgrading is therefore not something `install` can undo,
   and rather than support half a switch we support neither: **pick per install; to change, reinstall.**
@@ -696,7 +669,7 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
   is still set and apps are still `PROJECTID.mydomain.me`; what http mode drops is the zone, the `*`
   record and the API token. Resolution can then come from the client's `/etc/hosts`, one line per app —
   which is exactly why this mode is the one a test VM uses, and why `README.md` owns that recipe.
-- **Box questions before this can be called done** (`RESEARCH.md` → *Questions only a box can answer*).
+- **Box questions before this can be called done** (`research.md` → *Questions only a box can answer*).
   The http half is **answered** (2026-09-11): an app on a box with no certificate serves plain http on
   80, emits no `Strict-Transport-Security` and issues no redirect, and `hsts` is *inert* rather than
   merely unset — `nginx:report` computes it `true`, and the header still appears nowhere, because it
@@ -712,14 +685,14 @@ Let's Encrypt issues wildcards over no other challenge (`RESEARCH.md` → *TLS*)
 **Status:** Accepted 2026-09-10, and **the requirement it exists for was demonstrated on a box
 2026-09-11**: one repository deployed under two ids, both installing the same
 `1.0-SNAPSHOT` coordinates, downloaded 924 artifacts from Central *each* and shared nothing
-(`RESEARCH.md` → *The herokuish cache volume*). The one `[unverified]` that could have forced a
+(`research.md` → *The herokuish cache volume*). The one `[unverified]` that could have forced a
 re-read — whether a Vaadin *frontend* build stays warm across rebuilds — **stopped being load-bearing
 the same day**: every app on this box uses Vaadin's pre-compiled production bundle, so it runs no
 frontend build at all, and caching one is deferred to v2 (see *Consequences*).
 Supersedes nothing, but it makes `D_no_shared_cache` in shepherd-traefik's *Known gap* closed rather
 than inherited.
 
-**Context.** Dokku ships **seven** builders (`RESEARCH.md` → *The builders, and how one is chosen*), and
+**Context.** Dokku ships **seven** builders (`research.md` → *The builders, and how one is chosen*), and
 Shepherd2 had only ever considered one, because both predecessors built a `Dockerfile` and the feature
 survey recorded that as preserved, ✅, not examined. Two requirements, stated by
 the operator on 2026-09-10, turned out to decide the whole question:
@@ -931,8 +904,8 @@ whole decision in one sentence.
   when Maven runs. It also makes the build *fail* outright if its `detect` finds no `package.json`,
   since multi exits when any listed buildpack fails to detect **[src]**.
 - **`ideas/build-cache.md` is deleted.** Its fork was conditional on the Dockerfile builder and is moot;
-  its surviving Dokku facts went to `RESEARCH.md`, and the unpinned poll interval it flagged is now
-  pinned at five minutes (`SOLUTION.md`).
+  its surviving Dokku facts went to `research.md`, and the unpinned poll interval it flagged is now
+  pinned at five minutes (`solution.md`).
 - **`D_dokku_is_truth` is unaffected and slightly strengthened** — the builder choice is `builder:report`
   state, not a file of ours, and the cache is a Docker volume Dokku names. Still no descriptor.
 
@@ -943,7 +916,7 @@ suite exist, and all three ran on a box on 2026-09-11. The split held under the 
 have broken it — the installers needed JSON surgery on `/etc/docker/daemon.json` before Ruby exists on
 the box, and reached for `python3` rather than for an interpreter that is not there yet.
 
-**Context.** Both predecessors wrote their glue in Bash, and `CLAUDE.md` carried "scripts are Bash with
+**Context.** Both predecessors wrote their glue in Bash, and `AGENTS.md` carried "scripts are Bash with
 `set -euo pipefail`" as a convention inherited from them. `D_dokku_is_truth` then removed that
 convention's main input: there is no descriptor to parse, only `dokku *:report --format json` to read.
 What is left for the CLI to do is argument handling (`create-app` carries about eight flags), reading
@@ -969,7 +942,7 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
 - **`jq` in Bash is already a second language**, and a worse one for this shape — `--format json` output
   has to be threaded through subshells and re-quoted at every step, where Ruby parses it once into a
   hash. The Bash case rested on "no new runtime", and that is the only thing it wins.
-- **Ruby is on this operator's shelf.** `Q_web_admin`'s cheapest v2 candidate is a TUI on
+- **Ruby is on this operator's shelf.** `ideas/web-admin-ui.md`'s cheapest v2 candidate is a TUI on
   [Tuile](https://github.com/mvysny/tuile), and the prior art for the shape is the Ruby `dokku-cli` gem.
   Writing v1's CLI in Ruby means that TUI shells out to — or eventually requires — the same code rather
   than reimplementing a model of the box in a second language.
@@ -997,7 +970,7 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
 
 **Consequences.**
 
-- **`CLAUDE.md`'s Bash convention is amended, not dropped** — Bash with `set -euo pipefail` remains the
+- **`AGENTS.md`'s Bash convention is amended, not dropped** — Bash with `set -euo pipefail` remains the
   rule for `install`, `uninstall` and any future box script; Ruby is the rule for the CLI. A new script
   picks by which of the two it is.
 - **The box gains a language runtime**, so `README.md`'s requirements grow `ruby`, and `install`
@@ -1015,7 +988,7 @@ JSON, running a partly non-idempotent sequence behind guards, and holding a lock
   is also the sharpest form of the chicken-and-egg above: the address pools are install step 5 and
   `apt install ruby` is step 9, so at the moment that file is edited there is no Ruby on the box.
 - **The Ruby half still shells out to `dokku`**, never to `docker` and never to `/var/lib/dokku`
-  directly — `CLAUDE.md`'s *Conventions* are unchanged by the language. Ruby makes reaching around Dokku
+  directly — `AGENTS.md`'s *Conventions* are unchanged by the language. Ruby makes reaching around Dokku
   easier, which is the one risk this decision introduces.
 
 ## D_testing — minitest from the distro, no bundler; the CLI's seams are its test surface (2026-09-10)
@@ -1029,7 +1002,7 @@ obvious next question — "so how is it tested?" — has a tempting wrong answer
 test-only gems is what almost every Ruby project does.
 
 The thing to be tested is also unusual. `create-app` is eight `dokku` invocations behind guards; its
-*sequence* is the design (`SOLUTION.md` → *Flow — registering a project*), and a reordering that put
+*sequence* is the design (`solution.md` → *Flow — registering a project*), and a reordering that put
 the first build before `network:set` would still deploy — onto the wrong network, silently.
 
 **Decision.**
@@ -1045,7 +1018,7 @@ the first build before `network:set` would still deploy — onto the wrong netwo
   command sequence.
 - **A `ruby --disable-gems` load test** stands guard over `D_ruby`'s constraint, so "standard library
   only" is enforced rather than promised.
-- **Dokku's own behaviour is not tested here.** That is the punch list in `RESEARCH.md`, run on a box.
+- **Dokku's own behaviour is not tested here.** That is the punch list in `research.md`, run on a box.
 
 **Why.**
 
@@ -1063,7 +1036,7 @@ the first build before `network:set` would still deploy — onto the wrong netwo
   to test but string building; with one, the eight-command registration flow, its guards and its
   re-runnability are pinned by fast unit tests and a reorder goes red.
 - **Faking Dokku's *behaviour* would test our model of Dokku.** The doubles deliberately record and
-  replay rather than simulate: what Dokku actually does is `RESEARCH.md`'s job, verified on a box, and
+  replay rather than simulate: what Dokku actually does is `research.md`'s job, verified on a box, and
   a mock that "knows" how `git:sync` behaves would launder an unverified claim into a green test.
 
 **Alternatives rejected.**
@@ -1094,7 +1067,7 @@ the first build before `network:set` would still deploy — onto the wrong netwo
   in a container and prints `ruby --version` as a step.
 - **`ruby-minitest` must never enter `shepherd2-install`.** A test dependency on the box is how the
   next person concludes the box needs gems after all.
-- **The fixtures are hand-written from `RESEARCH.md` until a box exists**, and are to be replaced with
+- **The fixtures are hand-written from `research.md` until a box exists**, and are to be replaced with
   real `--format json` captures the first time one does — which is itself a small item on the punch
   list, since a fixture that never matched reality is worse than no fixture.
 
@@ -1106,7 +1079,7 @@ different shape from the rule it replaces.
 **Context.** shepherd-java refused project ids that collided with the admin plane — `admin` and
 `*-admin` — and the feature survey proposed dropping the rule outright, on the correct observation that
 there is no admin plane left to collide with. True today; likely false later. Every candidate in
-`Q_web_admin` — a cron-generated status page, wharf, a reworked Vaadin admin, even a plain nginx vhost
+`ideas/web-admin-ui.md` — a cron-generated status page, wharf, a reworked Vaadin admin, even a plain nginx vhost
 serving build logs — is reached over http and therefore needs a hostname on this box's wildcard domain.
 Hostnames here are first-come: the app name *is* the subdomain.
 
@@ -1140,7 +1113,7 @@ business, not ours to restate.
   (`D_cert`) and the apex is **not** covered by the wildcard certificate, so that route costs a second
   certificate before it costs anything else. A reserved subdomain costs nothing.
 - *Enforce it in Dokku rather than in `create-app`* — an `app-create` plugin trigger of ours. Rejected
-  by `CLAUDE.md`'s standing rule against maintaining a plugin, and unnecessary under `D_single_operator`:
+  by `AGENTS.md`'s standing rule against maintaining a plugin, and unnecessary under `D_single_operator`:
   the one person who could bypass the rule by typing `dokku apps:create admin-foo` is the person the
   rule is for.
 
@@ -1210,7 +1183,7 @@ wait, not a reason to hack.
 
 - **Ruby 3.2 is the floor** — what 24.04 ships — which supersedes the 3.0 floor `D_ruby` set for 22.04.
 - **`install` should refuse 26.04 with a real message** rather than letting `bootstrap.sh` fail with a
-  distro error the operator has to decode. The preflight is the place; see `SOLUTION.md`.
+  distro error the operator has to decode. The preflight is the place; see `solution.md`.
 - **26.04 costs us nothing else.** lego is the same 4.9.1 there as on 24.04, so `D_cert` is unaffected
   either way, and Ruby 3.3 would have been welcome but is not needed.
 - **What to watch:** dokku/dokku #8791 merging *and* a `dokku` deb appearing in packagecloud's
@@ -1229,7 +1202,7 @@ and prefers a distribution package from the authors. Both halves of that are ava
 **the deb *is* the authors' artifact**: `bootstrap.sh` does not build anything, it adds
 packagecloud's `dokku/dokku` apt repository and runs `apt-get install dokku=<version>`.
 
-Read at v0.38.27, its ten steps on our path are enumerated in `RESEARCH.md` → *Versions, platform,
+Read at v0.38.27, its ten steps on our path are enumerated in `research.md` → *Versions, platform,
 install*; the short version is that nine of them are apt plumbing and the tenth is
 `plugin:install-dependencies --core`. Everything else in the file is other distributions, the source
 path, and version branches back to 0.3.13.
@@ -1259,7 +1232,7 @@ path, and version branches back to 0.3.13.
 
 - **It is the same package from the same authors.** There is no second, more official deb; this is
   upstream's distribution channel, and the pin is the same version string bootstrap would have passed.
-  `CLAUDE.md`'s "Dokku stays upstream and unforked" is untouched — we are declining a *convenience
+  `AGENTS.md`'s "Dokku stays upstream and unforked" is untouched — we are declining a *convenience
   script*, not the product.
 - **We are writing an installer anyway**, and its stated job is that the box is
   reproducible from this repo. A dozen apt lines we can read and re-run beats a 300-line script that
@@ -1341,25 +1314,25 @@ migration inventory — every feature the old box had, what Dokku answers it wit
 `F_safe_reboot` and 36 more. The slugs were useful while the design was open: a `D_` entry could say
 "costing `F_ingress_tuning`" and the reader could look the row up. By 2026-09-10 every row had a verdict
 and the note was a ledger awaiting graduation — but it was also the only place any of the 39 slugs was
-*defined*, and they were cited 69 times across `DECISIONS.md`, `SOLUTION.md`, `RESEARCH.md`,
-`CLAUDE.md` and two other idea notes.
+*defined*, and they were cited 69 times across `decisions.md`, `solution.md`, `research.md`,
+`AGENTS.md` and two other idea notes.
 
 **Decision.** **There is no feature list, and no `F_` namespace.** The graduation dropped the slug at
 every citation and kept the prose. What each surviving feature *is* is described where it lives: the
-preserved half in `README.md` → *Day-to-day operations* (task → command) and in `SOLUTION.md`'s
-inventory, CLI surface and flows; the deferred half in `SOLUTION.md` → *What v1 does not do*; the
-dropped half in `CLAUDE.md` → *What is deliberately gone* and in the `D_` entry that dropped it. The
-enumerated-slug rule in `CLAUDE.md` now applies to exactly two namespaces: **`D_` in `DECISIONS.md`,
-`Q_` in `ideas/`.**
+preserved half in `README.md` → *Day-to-day operations* (task → command) and in `solution.md`'s
+inventory, CLI surface and flows; the deferred half in `solution.md` → *What v1 does not do*; the
+dropped half in `AGENTS.md` → *What is deliberately gone* and in the `D_` entry that dropped it. The
+enumerated-slug rule now admits no feature namespace: what the box does is `solution.md` plus the
+cheat sheet, and `D_` / `R_` / `T_` / `Q_` are the whole list.
 
 **Alternatives rejected.**
 
 - *A seventh documentation target, `FEATURES.md`, owning the slugs and the migration table.* The
-  `D_research_md` move, and the reason it doesn't apply: `RESEARCH.md` holds facts about a product we
+  `D_research_md` move, and the reason it doesn't apply: `research.md` holds facts about a product we
   don't own, which have no other home. A feature row holds facts about *this* box, and every one of
   them already has a home — so the file would be a fourth copy that drifts, which is the failure mode
   the *Documentation targets* table exists to prevent.
-- *A compact `F_` → one-line → decided-by table in `SOLUTION.md`.* The cheap option: it keeps all 69
+- *A compact `F_` → one-line → decided-by table in `solution.md`.* The cheap option: it keeps all 69
   citations valid for the price of one table. Rejected because a table of names and one-line glosses,
   with the substance elsewhere, is a **glossary** — which this repo deliberately does not have — and
   because it would define `F_web_admin`, `F_postgres` and `F_user_login` inside the file that describes
@@ -1374,10 +1347,10 @@ enumerated-slug rule in `CLAUDE.md` now applies to exactly two namespaces: **`D_
 **Consequences.**
 
 - **Don't reintroduce an `F_` namespace, or any feature-list file.** If a feature needs naming from a
-  distance, name it in prose and link the file that owns it. This is the invariant `CLAUDE.md` carries.
+  distance, name it in prose and link the file that owns it. This is the invariant `AGENTS.md` carries.
 - **The migration view is gone on purpose, and it is recoverable.** Feature-by-feature "what did
   shepherd-traefik do and what replaced it" is answered by git history here plus both predecessors,
-  which stay readable on GitHub — the same reason `CLAUDE.md` forbids copying their decisions in.
+  which stay readable on GitHub — the same reason `AGENTS.md` forbids copying their decisions in.
 - **`COMPARISON.md` in shepherd-traefik is not a feature list, and a reader sent there will assume it
   is.** Its `R_` boxes are *requirements for choosing a product*, written to discriminate between
   Coolify, Dokploy, Dokku and CapRover, so they compress or omit anything all four did equally.
@@ -1385,13 +1358,13 @@ enumerated-slug rule in `CLAUDE.md` now applies to exactly two namespaces: **`D_
   with no `R_` box at all**, most of them in the component being deleted. So `COMPARISON.md` answers
   "should some other PaaS have been picked", nothing more — which is how `README.md` cites it.
 - **The `README.md` cheat sheet is load-bearing now, not a convenience.** It is where the *Dokku does
-  it* rows landed, and `D_dokku_is_truth` and `SOLUTION.md` both promise it exists. A day-N capability
+  it* rows landed, and `D_dokku_is_truth` and `solution.md` both promise it exists. A day-N capability
   that is in neither the cheat sheet nor a `dokku` command is a capability this box has quietly lost.
-- **Four open questions kept their `Q_` slugs and got notes of their own** —
-  `ideas/multi-user-ownership.md`, `ideas/web-admin-ui.md`, `ideas/box-memory-quota.md`,
-  `ideas/private-repo-credentials.md`. The *answered* questions (`Q_descriptor`, `Q_proxy`, `Q_cert`,
-  `Q_cache`, `Q_isolation`, `Q_language`, `Q_build_history`) are cited nowhere any more: an entry that
-  used to point at one now points at the `D_` entry that answered it, or at `RESEARCH.md`.
+- **Four open questions kept notes of their own** — `ideas/multi-user-ownership.md`,
+  `ideas/web-admin-ui.md`, `ideas/box-memory-quota.md`, `ideas/private-repo-credentials.md`. The
+  questions the `D_` entries *answered* are cited nowhere any more: an entry that used to point at one
+  now points at the decision that answered it, or at `research.md`. A durable file never cites a `Q_`;
+  the slugs live in `ideas/` and in conversation only.
 
 ---
 
@@ -1403,7 +1376,7 @@ report is part of this decision and not yet filed. The `ls-remote` guard in `pol
 rejected** — see *Consequences*.
 
 **Context.** `dokku git:sync --build-if-changes` starts a build record *before* it fetches and before it
-compares refs, and its no-change path returns without finalizing that record (`RESEARCH.md` → *Build
+compares refs, and its no-change path returns without finalizing that record (`research.md` → *Build
 tracking*, `[src]`). The `*/5` poll therefore writes 288 records and 288 log files per app per day when
 nothing at all is happening. Measured on the probe box on 2026-09-11, every step of that held:
 
@@ -1432,7 +1405,7 @@ the design had noticed.
    an abandoned tick, and `--status failed` selects reaped ticks alongside real failures. The verb
    reports the newest record that really built — `status` in `succeeded|failed|canceled` **and**
    `exit_code != -1` — or the build running right now if there is one.
-3. **The ordering gets reported upstream.** `CLAUDE.md`'s *Dokku stays upstream and unforked* makes a
+3. **The ordering gets reported upstream.** `AGENTS.md`'s *Dokku stays upstream and unforked* makes a
    bug report the sanctioned move, and this looks like a plain bug rather than a design position: a
    record is opened for a run that may never build, and the no-change path is the only exit that skips
    finalization. Filed 2026-09-11 as
@@ -1445,7 +1418,7 @@ the design had noticed.
   entirely when it has not moved.* The original favourite, and **deferred rather than rejected**: it is
   cheaper than the status quo (one `ls-remote` replaces a full fetch for 287 of 288 ticks) and it stops
   the churn at the source instead of tolerating it. Not in v1 because it puts a *second* copy of
-  Dokku's change detection in our code — the shape `CLAUDE.md` warns about — and retention 300 buys
+  Dokku's change detection in our code — the shape `AGENTS.md` warns about — and retention 300 buys
   the year or so that waiting for an upstream fix might take. If it ever lands it is a tidy-up, not a
   repair.
 - *Accept the noise and stop treating the records as history.* Zero lines, and honest. Rejected because
@@ -1462,10 +1435,10 @@ the design had noticed.
   overnight question and nothing more — and since `last-build` reads a filtered listing, which Dokku
   never caps, a bigger number would buy it nothing anyway.
 - *A general build-history surface in the CLI — `shepherd2 builds`, `shepherd2 logs`.* This is
-  `shepherd-cli` reincarnated and `CLAUDE.md` forbids it. `last-build` reports exactly one build and
+  `shepherd-cli` reincarnated and `AGENTS.md` forbids it. `last-build` reports exactly one build and
   points at `dokku builds:list` / `builds:output` for everything else, which is the line between a
   verb Dokku lacks and a wrapper around verbs it has.
-- *Patch Dokku, or carry a plugin of our own.* `CLAUDE.md`: Dokku stays upstream and unforked. The
+- *Patch Dokku, or carry a plugin of our own.* `AGENTS.md`: Dokku stays upstream and unforked. The
   sanctioned moves are a wrapper, a cron line, a documented manual step — or a bug report, which is
   part 3.
 
@@ -1489,7 +1462,7 @@ the design had noticed.
   retention of 20) and only the *unfiltered* listing is cut to the count. Deletion happens in
   `PruneAppBuilds` at the end of a **real deploy**, which keeps the newest by `started_at` — so it is
   the next deploy that removes the *older real build* while keeping the ticks that are newer than it
-  (`RESEARCH.md` → *Build tracking*). Three things follow:
+  (`research.md` → *Build tracking*). Three things follow:
   - **A failed build's log survives until something deploys**, which under `--build-if-changes` means
     until upstream moves. That is better than this entry first claimed, and it is the reason the
     overnight question is answerable at all.
@@ -1513,7 +1486,7 @@ the design had noticed.
 
 **Context.** Two questions come up on a single-box farm and nothing on the box answers either. *Will
 another project fit?* — free memory does not say, because the apps are idle but capped, and Dokku has
-no command that sums anything across apps (`RESEARCH.md` → *What Dokku does not do*: "nothing sums them
+no command that sums anything across apps (`research.md` → *What Dokku does not do*: "nothing sums them
 or refuses an over-committing app"). *What is eating the disk?* — the per-app build cache is a
 `cache-<app>` Docker volume that nothing garbage-collects (`D_builder`), and **nothing in Dokku knows
 that volume belongs to an app**: `repo:purge-cache` deletes it by name and that is the whole of Dokku's
@@ -1527,7 +1500,7 @@ project (its cache volume). **And a boundary, which is the other half of the dec
 *snapshot*, not monitoring. No `--watch`, no history, no thresholds, no alerting, no exit code that
 depends on how full the disk is, no per-container CPU — `docker stats` is that, and the `README.md`
 cheat sheet already points at it. A `stats` that grows a time axis has become the status page in
-`Q_web_admin`, which is a separate decision with a separate hostname waiting for it
+`ideas/web-admin-ui.md`, which is a separate decision with a separate hostname waiting for it
 (`D_admin_namespace`).
 
 **Why.**
@@ -1537,13 +1510,13 @@ cheat sheet already points at it. A `stats` that grows a time axis has become th
   attribution — `cache-<app>` ↔ app — which only Shepherd2's own naming convention makes possible.
 - **The committed figure is the answer to the question actually being asked.** Runtime limits summed
   across every app, plus *one* build limit rather than one per app, because the poll's non-blocking
-  lock means one build runs at a time box-wide (`SOLUTION.md` → *Flow — a poll tick*). An app with no
+  lock means one build runs at a time box-wide (`solution.md` → *Flow — a poll tick*). An app with no
   readable limit is **named, not counted as zero** — the sum would otherwise be quietly wrong in the
   one direction that matters.
 - **Every app is counted, registered or not.** A hand-made `dokku apps:create` never enters the poll,
   but it eats the box's memory and disk all the same. Printing it as `(unregistered)` is also the only
   place that drift is visible (`D_dokku_is_truth` — we read Dokku's state, we do not maintain a list).
-- **`--json` from the start, because the consumer is already sketched.** Option 1 in `Q_web_admin` is a
+- **`--json` from the start, because the consumer is already sketched.** Option 1 in `ideas/web-admin-ui.md` is a
   cron-generated status page fed by `--format json` reports; this is the one report Dokku cannot
   provide, so emitting bytes-as-integers now costs a few lines and saves that page from parsing a page
   meant for a human.
@@ -1558,10 +1531,10 @@ cheat sheet already points at it. A `stats` that grows a time axis has become th
   what the box has *promised* to apps that are currently idle.
 - *Two verbs — `stats` for the machine, something else for the projects.* The two numbers are only
   useful next to each other: a cache size means nothing without the free space it is eating.
-- *A cron that mails when the box is over-committed* — option 2 in `Q_quota`. Not rejected so much as
+- *A cron that mails when the box is over-committed* — option 2 in `ideas/box-memory-quota.md`. Not rejected so much as
   **not yet**: this verb is its measurement half, and a notifier needs the transport question in
   `ideas/build-failure-notifications.md` settled first.
-- *Refuse an over-committing `create-app`.* That is `Q_quota` itself, still open, and still open for
+- *Refuse an over-committing `create-app`.* That is `ideas/box-memory-quota.md` itself, still open, and still open for
   the same reason: `create-app` is the only enforcement point available and a later hand
   `dokku resource:limit` routes around it. Reporting has no such hole — it re-reads Dokku's state every
   time it runs.
@@ -1569,7 +1542,7 @@ cheat sheet already points at it. A `stats` that grows a time axis has become th
   reserve: it needs no size-string parsing and gives exact bytes, and `docker system df -v` hands us
   the mountpoint anyway. Rejected for now because one call answers both the per-project and the
   box-wide question, and because walking Docker's storage directory ourselves is precisely the
-  reaching-around that `CLAUDE.md` warns about.
+  reaching-around that `AGENTS.md` warns about.
 - *Sum image sizes the way `docker system df` does.* Its non-verbose totals are computed by the daemon
   and cannot be derived from the verbose listing without a second call and a second walk of every
   volume. `stats` sums *unique* sizes instead, which under-reports a shared base layer rather than
@@ -1580,15 +1553,15 @@ cheat sheet already points at it. A `stats` that grows a time axis has become th
 
 - **`stats` is interactive-only and nothing periodic may call it.** The daemon walks every volume's
   directory to answer `system df -v`, so on a box with a warm multi-gigabyte Maven cache the verb takes
-  seconds. Cost unmeasured on a real box — `RESEARCH.md`'s punch list, item 21.
+  seconds. Cost unmeasured on a real box — `research.md`'s punch list, item 21.
 - **A second `docker` call joins `clearcache`'s.** Shepherd2 now reaches the daemon in two verbs rather
   than one, both for things Dokku has no command for, both named in the script header as
-  `CLAUDE.md` requires.
+  `AGENTS.md` requires.
 - **Orphaned `cache-*` volumes become visible.** `apps:destroy` removes the cache volume with the app
-  (verified, `RESEARCH.md`), so the orphan list should stay empty forever; an entry in it is a
+  (verified, `research.md`), so the orphan list should stay empty forever; an entry in it is a
   regression in that behaviour, which nothing else on the box would surface.
-- **`Q_quota` keeps its slug and its question.** Its *reporting* half has landed here; the enforcement
-  point it was really about is untouched, and `SOLUTION.md` → *What v1 does not do* still says there is
+- **`ideas/box-memory-quota.md` keeps its question.** Its *reporting* half has landed here; the enforcement
+  point it was really about is untouched, and `solution.md` → *What v1 does not do* still says there is
   no memory quota — because there is not.
 - **Shepherd2 now parses two size conventions.** Docker's SI strings on the way in, binary limit
   suffixes out of `resource:limit`, one renderer in IEC units. Anything added here has to pick a side
@@ -1607,7 +1580,7 @@ holds one public method per verb, and the four process seams (`Dokku`, `Docker`,
 `out:`/`err:` and prints prose (`say "polling demo"`), owns ~120 lines of renderer (`print_box` …
 `human_bytes`), reads `$stdin` directly to confirm a destroy, and returns an exit code from every verb.
 
-That is invisible while the only caller is a terminal. `Q_web_admin`'s option 4 — a Tuile TUI — is
+That is invisible while the only caller is a terminal. `ideas/web-admin-ui.md`'s option 4 — a Tuile TUI — is
 the candidate `D_ruby` already leaned on when it put Ruby on the box ("that TUI shells out to — or
 eventually requires — the same code"), and *requires* is the half that does not work today. A TUI
 calling `poll` gets an integer and a stream of prose to scrape; a TUI calling `destroy_app` has its
@@ -1634,10 +1607,10 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
 - **Nothing renders, nothing streams, every return value is a snapshot.** `Dokku#run` **discards** the
   child's output by default; the executable opts into inheriting the terminal, because watching a build
   scroll past is what an operator onboarding a project wants. Discarding loses nothing: Dokku captures
-  every build's output to `<build-id>.log` itself (`RESEARCH.md` → *Build tracking*), which is what
+  every build's output to `<build-id>.log` itself (`research.md` → *Build tracking*), which is what
   `last-build` then reads.
 - **Three verbs block for the length of a build, and that is Dokku's execution model rather than ours.**
-  `git:sync` is fully synchronous and its exit code *is* the build's (`RESEARCH.md` → *`git:sync`*,
+  `git:sync` is fully synchronous and its exit code *is* the build's (`research.md` → *`git:sync`*,
   from source), so `create-app`, `poll` and `rebuild` return when the container is up. Blocking and
   streaming are separate properties and only the second is ours to remove: a front-end that cannot
   block calls these off its UI thread and watches the listener. `wait-idle` blocks by design.
@@ -1666,7 +1639,7 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
   stops a `require` of this library dropping bare `Docker` and `Machine` into a caller's namespace —
   which a Docker-adjacent TUI is entitled to want for itself.
 - **The installed name is an interface and the repo name is not.** There are 66 `shepherd2 <verb>`
-  references across `README.md`, `SOLUTION.md`, `DECISIONS.md` and `ideas/`, plus both cron lines
+  references across `README.md`, `solution.md`, `decisions.md` and `ideas/`, plus both cron lines
   (`shepherd2-install`, step 10) and the hint `last-build` prints. A symlink keeps every one of them
   true, so the rename costs four lines across the two installers.
 - **This adds no layer.** The API is not something new between the CLI and Dokku; it is the object that
@@ -1686,7 +1659,7 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
   which would make the whole API non-blocking and is the shape a UI would prefer. Rejected because
   Dokku offers no detached build and doing it ourselves discards the two things that make the design
   work. The **exit code is the only trustworthy status** — `D_poll_churn` exists because the build
-  *records* are not, and `RESEARCH.md` puts it plainly: a caller branches on `$?` and needs no other
+  *records* are not, and `research.md` puts it plainly: a caller branches on `$?` and needs no other
   progress signal. And **the lock's duration is the build's**: `poll` holds `BuildLock` until the build
   ends, which is what makes the next `*/5` tick skip and `rebuild` fail fast with `EXIT_BUSY`. A poll
   that returns at once releases the lock at once, and the next tick starts a second build.
@@ -1745,4 +1718,70 @@ build log straight to fd 1, because `Dokku#run` is `system` with the terminal at
   listener contract, PREREQUISITES and WHAT THIS STORES — the caller's half. They will drift into
   duplicates if that line is not held.
 - **`uninstall` removes a directory rather than a file**, so a third file added later cannot leak.
-  `CLAUDE.md`'s *Script index* grows a row and `SOLUTION.md`'s inventory grows the lib directory.
+  `AGENTS.md`'s *Script index* grows a row and `solution.md`'s inventory grows the lib directory.
+
+## D_design_docs — Adopt the `design/` doc layer, with `solution.md` as the spec (2026-09-12)
+
+**Status:** Accepted; installed 2026-09-12.
+
+**Context.** The prose was four shouting files at the repo root — `DECISIONS.md`, `RESEARCH.md`,
+`SOLUTION.md` and a root `ideas/` — plus a `CLAUDE.md` that carried the doc map, the graduation
+map, the script index, the invariants *and* a status paragraph. Three things were going wrong.
+The root was mostly documentation, so the four scripts that are the deliverable were hard to see.
+`CLAUDE.md` is loaded on every turn of every session, and it was paying for a "v1 is written and
+has been run" paragraph that rots and for a *Documentation targets* table that restated what each
+file's own preamble already said. And there was no home for *what must hold*: obligations like
+"never build from a `Dockerfile`" lived only as a bold line in `CLAUDE.md`, with the full
+statement nowhere, so the line had to carry its own justification and grew.
+
+**Decision.** Rationale and reference move to `design/` — `decisions.md` (`D_`),
+`requirements.md` (`R_`), `solution.md`, `research.md`, `ideas/` — under lowercase names, and
+`AGENTS.md` keeps only invariants, the script index, the doc map and the graduation map, with
+`CLAUDE.md` reduced to the single line `@AGENTS.md`. Each file's preamble shrinks to ~8 lines
+stating that file's entry shape; the long-form doc rules it used to carry are this entry.
+`design/verify_design_tripwires.sh` fails on a cited `D_` / `R_` with no heading, a `T_` with no
+check, an oversized `AGENTS.md` or a `CLAUDE.md` that is not the shim.
+
+The assembled picture stays **`solution.md`, a spec**: the deliverable is two Bash installers and
+two Ruby files written *against* it, and the sequences that matter — the install order, the
+registration flow, a poll tick — are decided in that file and then implemented. When it and the
+code disagree, the code is wrong.
+
+**Rejected: `architecture.md` — describing the code instead.** That is the right authority for a
+library whose per-symbol truth lives in doc comments and is complete there. Here the script
+headers own each script's arguments and env knobs, but no header can own "step 4 merges the
+address pools *after* step 3's postinst wrote `daemon.json`" — and getting that order wrong is
+how the box breaks. The order is a spec, so the file that holds it is the authority.
+
+**Rejected: keeping the rationale in `CLAUDE.md`.** Paid for on every turn. A paragraph of
+why-not-the-alternative there compresses into a bullet that reads like a summary and is really a
+second copy of the entry it points at — which is exactly what the *Documentation targets* table
+had become.
+
+**Rejected: uppercase names inside `design/`.** The root shouts because attention there is
+contested; inside a folder whose only job is documentation, nothing needs to.
+
+**Consequences.**
+
+- **Every `D_` / `R_` cited anywhere must resolve to a heading**, and the tripwire script checks
+  it — run it before committing a doc change. It also checks the `AGENTS.md` caps (34 KB root,
+  10 KB nested), the `CLAUDE.md` shim both ways, and that no legacy root doc file has come back.
+- **A durable file never cites a `Q_`.** Open questions are temporary, so every `Q_`
+  citation in `decisions.md` and `solution.md` became a pointer to the idea file itself. `Q_`
+  survives in `ideas/` and in conversation only.
+- **`requirements.md` starts with six entries** lifted from the invariants `CLAUDE.md` was
+  carrying — `R_buildpack_only`, `R_network_per_project`, `R_dokku_is_truth`,
+  `R_api_renders_nothing`, `R_admin_reserved`, `R_tls_mode_is_one_way` — each of which keeps a
+  one-line invariant in `AGENTS.md` ending in `See R_<slug>`.
+- **The status paragraph left the loaded file entirely.** Where the box actually is — v1 written,
+  run once in `http` mode, the `https` half unproven — is `README.md`'s opening and
+  `solution.md`'s *What is not yet proven on a box*. Git is the changelog.
+- **`T_` is a live namespace with no members yet.** Each `R_` names what enforces it — a test, an
+  install step, or review — and none of them needed a mechanical check the suite does not already
+  make. The first one that does gets a `T_` on its *Enforced by* line and a check in the script.
+- **Two local amendments to the tripwire script**, both commented in it: an `INHERITED` allowlist
+  for the five shepherd-traefik slugs this repo cites by design, and `test/run` invoking the
+  script before the suite so a dangling slug trips in the session that caused it.
+- **Entries here stay oldest-first**, against the layout's newest-first default: nineteen of them
+  build on each other — `D_isolation` on `D_proxy`, `D_stats` on `D_dokku_is_truth` — and reading
+  them in the order taken is what makes that legible. The preamble says so; don't "fix" it.

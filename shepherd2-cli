@@ -12,7 +12,7 @@
 # does no monitoring by design, so there is no command to wrap — but the boundary is the point. No
 # `--watch`, no history, no thresholds, no exit code that depends on how full the disk is, and no
 # per-container CPU (that is `docker stats`, in README.md's cheat sheet). A `stats` that grows a time
-# axis has become the status page in `ideas/web-admin-ui.md`, which is a different decision (D_stats).
+# axis has become the status page in `design/ideas/web-admin-ui.md`, which is a different decision (D_stats).
 #
 # `last-build` is the one verb here with an expiry date, and it is not a log surface — it answers a
 # question Dokku has no command for. `builds:report` names the *newest* record, which under a

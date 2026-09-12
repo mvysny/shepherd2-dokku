@@ -1,18 +1,18 @@
-# RESEARCH.md — what we know about Dokku
+# Research — what we know about Dokku
 
-Everything this project has established about **Dokku**, the upstream product it is built on. This is
-the reference: when a design argument needs "does Dokku do X?", the answer belongs here and gets cited
-from wherever it is used, rather than re-derived.
+Verified facts about **Dokku**, the upstream product this project is glue for — the CLI, its
+builders, its proxy, its plugins. About *them*, never about *us*: our choices are `decisions.md`,
+and a sentence starting "we chose" is a `D_` entry. When a design argument needs "does Dokku
+actually do X?", the answer belongs here and is cited from wherever it is used, rather than
+re-derived (`D_research_md`).
 
-**Why a separate file.** Dokku is a dependency we do not own, so its behaviour is neither a decision of
-ours (`DECISIONS.md`) nor an operator instruction (`README.md`) nor a scratchpad note (`ideas/`). Facts
-about it need one durable home that survives the idea that prompted the lookup — see `D_research_md`.
+Every claim carries provenance: **[docs]** (stated in Dokku's documentation), **[src]** (read out
+of a repository), **[verified]** (run and observed — say when), or **[unverified]** (inferred or
+second-hand, and *not yet run on a box*). Treat `[unverified]` as a hypothesis: a design built on
+one says so, and *Questions only a box can answer* is the punch list that turns them into facts.
 
-**How to read it.** Every claim is either **[docs]** (stated in Dokku's own documentation), **[src]**
-(read out of a repository), or **[unverified]** (inferred, or reported by a third party, and *not yet
-run on a box*). Treat `[unverified]` as a hypothesis: the whole point of marking it is that the
-first thing the box does is turn those into facts. Checked **2026-09-09** against Dokku **v0.38.27**
-unless noted; re-check before relying on a version-sensitive claim.
+Checked **2026-09-09** against Dokku **v0.38.27** unless a section says otherwise; re-check before
+relying on a version-sensitive claim.
 
 ---
 
@@ -2018,4 +2018,4 @@ Build-cache background (carried over, not re-verified here):
 
 The product survey that chose Dokku over Coolify, Dokploy and CapRover is
 [`COMPARISON.md` in shepherd-traefik](https://github.com/mvysny/shepherd-traefik/blob/main/COMPARISON.md);
-`D_dokku` in `DECISIONS.md` links to it rather than restating it.
+`D_dokku` in `decisions.md` links to it rather than restating it.

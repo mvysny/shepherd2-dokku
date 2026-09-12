@@ -1,8 +1,8 @@
 # `Q_multi_user` — how does per-user project ownership come back in v2?
 
 **Answered for v1: it doesn't.** One keyholder, who can do everything to every app — `D_single_operator`.
-This note is the **v2** question, and it keeps the slug `Q_multi_user` because `D_retire_shepherd_java`,
-`D_single_operator`, `D_dokku_is_truth` and `SOLUTION.md` all cite it.
+This note is the **v2** question, `Q_multi_user`; `D_retire_shepherd_java`,
+`D_single_operator` and `D_dokku_is_truth` all point here.
 
 What Shepherd used to do: an admin adds users; each user sees, creates, edits and deletes only *their
 own* projects (`UserRoles.USER`/`ADMIN`, the project list filtered on `owner.email`). Nothing in core
@@ -16,7 +16,7 @@ which grants adding further keys; every other key may run every command against 
 `apps:destroy` on someone else's project included. Dokku's maintainer states this is by design — the
 product assumes a personal or fully-trusted-team box, and anyone with real SSH access bypasses added
 restrictions anyway. So a second keyholder is not a second *user*: they are a second root.
-`RESEARCH.md` → *Users and access control* has the detail.
+`research.md` → *Users and access control* has the detail.
 
 ## The three candidates
 
@@ -32,7 +32,7 @@ restrictions anyway. So a second keyholder is not a second *user*: they are a se
    all and enforcement silently disappears. That is `D_retire_shepherd_java`'s component-death-rate
    argument again, except in the authorization path. It also does not give Shepherd's model without
    glue: ACLs cannot be edited over SSH, creating an app does not add the creator to its ACL, and
-   `apps:create` is all-users-or-none. `RESEARCH.md` → *`dokku-acl`* has the rest.
+   `apps:create` is all-users-or-none. `research.md` → *`dokku-acl`* has the rest.
 3. **Dokku Pro.** Teams, `users:create`, reverse-proxy SSO — the only real mirror of Shepherd, and
    already rejected in `D_retire_shepherd_java` for being paid and proprietary.
 

@@ -7,4 +7,12 @@
 # dev-only dependency and must never appear in shepherd2-install — the box runs the CLI, not the tests
 # (D_ruby: no Gemfile, no bundler, no gem to pin).
 
+# The doc-layer checks run first and fail the suite: a dangling `D_` / `R_` slug or an oversized
+# AGENTS.md should trip while you are still in the session that caused it, not in CI afterwards.
+# Skipped where bash or git is missing (the box never runs this file).
+tripwires = File.expand_path('../design/verify_design_tripwires.sh', __dir__)
+if File.executable?(tripwires) && system('git', 'rev-parse', '--git-dir', out: File::NULL, err: File::NULL)
+  abort 'design tripwires failed' unless system(tripwires)
+end
+
 Dir[File.expand_path('*_test.rb', __dir__)].sort.each { |test| require test }

@@ -80,9 +80,9 @@ arrives first, the cc stops being a spam hazard and may simply be the default.
 - **There is no failure hook.** None of Dokku's 180 plugin triggers fires on a failed build or deploy;
   `post-deploy`'s own doc example is literally *"notify an external service that a successful deploy has
   occurred"*, and the only failure-named triggers are `retire-container-failed` (old containers would
-  not retire) and `scheduler-logs-failed`. Recorded in `RESEARCH.md` → *What Dokku does not do*.
+  not retire) and `scheduler-logs-failed`. Recorded in `research.md` → *What Dokku does not do*.
   **Consequence: the notifier lives in the caller — `poll` — not in a plugin**, which also keeps us
-  inside `CLAUDE.md`'s no-plugins-of-ours rule for free.
+  inside `AGENTS.md`'s no-plugins-of-ours rule for free.
 - **…so a plain `git push` deploy is not covered.** Acceptable, and it is GitHub's actor rule again:
   the human who pushed is watching the output stream. Same for `rebuild` and `create-app`, which are
   interactive — **the poll is the only path that should mail**, which is a pleasingly small surface.
@@ -92,13 +92,13 @@ arrives first, the cc stops being a spam hazard and may simply be the default.
   **Careful: `config:set --global` is injected into every app's environment.** An address there is
   harmless; SMTP credentials must never be one.
 - **The commit, if we want it**, is `config:get <app> GIT_REV` — written *before* the build, so it
-  survives a failure and names the commit that failed (`RESEARCH.md` → *`git:sync`*). The author then
+  survives a failure and names the commit that failed (`research.md` → *`git:sync`*). The author then
   comes from the bare repo, `git -C ~dokku/<app> log -1 --format='%an <%ae>' "$GIT_REV"`. That is
   reaching around Dokku, sanctioned only because the build record has no SHA and no Dokku command
   exposes commit metadata at all. Two edges: git run as root against a `dokku`-owned repo trips
   *detected dubious ownership* (so `sudo -u dokku git …`), and **[unverified]** that the object is
   present and readable there after a build that failed early.
-- **The log tail** is the two-step from `RESEARCH.md`: newest record whose `exit_code != -1` (the `-1`
+- **The log tail** is the two-step from `research.md`: newest record whose `exit_code != -1` (the `-1`
   filter is what separates a real failure from a reaped no-op tick — `D_poll_churn`), then
   `builds:output <app> <id>`. Last ~50 lines is what a mail should carry. `shepherd2 last-build` already
   holds that selection in Ruby, so the notifier should call the same code rather than re-derive it —
@@ -143,7 +143,7 @@ from the one failure that mattered.
 
 **Graduation destinations**, when it lands: the choice plus the rejected transports → a `D_` entry; the
 recipient rule and its reasoning → the same entry (this note's *recommendation* section is its draft);
-the install step and the credentials file → `SOLUTION.md`'s inventory and `README.md`'s requirements;
+the install step and the credentials file → `solution.md`'s inventory and `README.md`'s requirements;
 the env knobs and the credentials-file path → `shepherd2`'s comment header; "how do I check mail still
-works" → README's day-to-day cheat sheet. The Dokku no-failure-hook fact is already in `RESEARCH.md`,
+works" → README's day-to-day cheat sheet. The Dokku no-failure-hook fact is already in `research.md`,
 so it does not travel with this note.

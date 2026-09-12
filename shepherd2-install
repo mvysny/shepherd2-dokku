@@ -62,7 +62,7 @@
 # D_install_apt buys, and this list is what makes the diff cheap.
 #
 # SEE ALSO
-#   SOLUTION.md  — the install in order, and what the box holds afterwards
+#   design/solution.md  — the install in order, and what the box holds afterwards
 #   D_install_apt (why apt and not bootstrap.sh), D_host_os (why 24.04), D_cert (the two modes),
 #   D_isolation (why the address pools are enlarged here), D_builder (why herokuish is forced),
 #   D_ruby (why this is Bash and the CLI is not).
@@ -204,7 +204,7 @@ preflight() {
   if [[ "$id" != 'ubuntu' || "$version_id" != '24.04' ]]; then
     if [[ "$id" == 'ubuntu' && "$version_id" == '26.04' ]]; then
       die 'Ubuntu 26.04 is not usable yet: Dokku'"'"'s installer refuses it and packagecloud builds no
-       dokku package for the resolute dist. See D_host_os in DECISIONS.md for the two upstream
+       dokku package for the resolute dist. See D_host_os in design/decisions.md for the two upstream
        things that must change first. Install on 24.04.'
     fi
     die "this box is $id $version_id; Shepherd2 installs on Ubuntu 24.04 only (D_host_os)"
